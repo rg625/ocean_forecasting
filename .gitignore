@@ -1,0 +1,11 @@
+**/__pycache__
+**/.ipynb_checkpoints
+**/*egg-info
+**/*.sw[a-z]
+
+*.ckpt
+*.pth
+*.pt
+*.nc
+*.png
+*.json
