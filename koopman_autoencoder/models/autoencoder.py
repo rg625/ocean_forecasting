@@ -37,6 +37,41 @@ class KoopmanOperator(nn.Module):
         return self.koopman_operator(z)
 
 
+class KoopmanOperator(nn.Module):
+    def __init__(self, latent_dim, spatial_dim):
+        """
+        Koopman operator block for residual predictions in latent space.
+
+        Parameters:
+            latent_dim: int
+                Dimensionality of the latent space.
+            spatial_dim: int
+                Spatial dimension of the latent representation.
+        """
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.spatial_dim = spatial_dim
+        self.flattened_dim = latent_dim * spatial_dim * spatial_dim
+        self.koopman_operator = nn.Linear(self.flattened_dim, self.flattened_dim, bias=False)
+
+    def forward(self, z):
+        """
+        Apply Koopman operator for residual prediction.
+
+        Parameters:
+            z: torch.Tensor
+                Latent representation of shape (batch_size, latent_dim, spatial_dim, spatial_dim).
+
+        Returns:
+            torch.Tensor:
+                Flattened predicted latent representation.
+        """
+        # Ensure the input is flattened
+        batch_size = z.size(0)
+        z = z.view(batch_size, -1)  # Flatten to (batch_size, latent_dim * spatial_dim * spatial_dim)
+        return self.koopman_operator(z)
+
+
 class KoopmanAutoencoder(nn.Module):
     def __init__(self, input_channels=2, latent_dim=32, hidden_dims=[64, 128, 64], 
                  height=64, width=64, block_size=2, kernel_size=3, **conv_kwargs):
@@ -110,48 +145,40 @@ class KoopmanAutoencoder(nn.Module):
         """
         return self.decoder(z)
 
-    def forward(self, x, seq_lengths):
+    def forward(self, x, seq_length):
         """
         Forward pass through the autoencoder with Koopman prediction.
 
         Parameters:
             x: torch.Tensor
-                Input tensor.
-            seq_lengths: torch.Tensor
-                Sequence lengths for each input in the batch.
+                Input tensor of shape (batch_size, input_sequence_length, variables, height, width).
+            seq_length: int
+                Sequence length for predictions (applicable for all samples in the batch).
 
         Returns:
             tuple: (reconstructed input, predictions, latent predictions, latent differences)
         """
-        batch_size = x.size(0)
-        max_seq_length = seq_lengths.max().item()  # Get the maximum sequence length in the batch
-
         # Encode the input
-        z = self.encode(x)
+        z = self.encode(x)  # Shape: (batch_size, latent_dim, spatial_dim, spatial_dim)
         z_pred = z
         z_preds = [z]
 
-        # Roll out predictions for the maximum sequence length
-        for _ in range(max_seq_length):
+        # Roll out predictions for the given sequence length
+        for _ in range(seq_length):
             z_pred = z_pred + self.koopman_operator(z_pred)
             z_pred = z_pred.view(z_pred.size(0), self.koopman_operator.latent_dim, 
                                  self.koopman_operator.spatial_dim, self.koopman_operator.spatial_dim)
             z_preds.append(z_pred)
 
-        # Decode predictions and compute latent differences for each sequence length
+        # Decode predictions
         x_recon = self.decode(z_preds[0])  # Reconstruction from initial z
-        x_preds = []
-        latent_pred_differences = []
+        x_preds = torch.stack([self.decode(z_step) for z_step in z_preds[1:]], dim=1)
 
-        for i in range(batch_size):
-            seq_length = seq_lengths[i].item()  # Get the sequence length for this sample
-            preds = [self.decode(z_preds[t + 1][i]) for t in range(seq_length)]
-            diffs = [
-                z_preds[t + 1][i] - (z_preds[t][i] + self.koopman_operator(z_preds[t][i].view(1, -1)).view_as(z_preds[t][i]))
-                for t in range(seq_length)
-            ]
-            x_preds.append(preds)
-            latent_pred_differences.append(diffs)
+        # Compute latent prediction differences
+        latent_pred_differences = torch.stack([
+            z_preds[t + 1] - (z_preds[t] + self.koopman_operator(z_preds[t].view(z_preds[t].size(0), -1)).view_as(z_preds[t]))
+            for t in range(seq_length)
+        ], dim=1)
 
         return x_recon, x_preds, z_preds, latent_pred_differences
     
