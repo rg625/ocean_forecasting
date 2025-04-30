@@ -1,8 +1,4 @@
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-
 
 class KoopmanAutoencoder(nn.Module):
     def __init__(self, input_channels=2, latent_dim=32, hidden_dims=[64, 128, 64], spatial_dim=8):
