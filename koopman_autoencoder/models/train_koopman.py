@@ -1,140 +1,17 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import xarray as xr
-import numpy as np
-from koopman_autoencoder import KoopmanAutoencoder, KoopmanLoss
+from torch.utils.data import DataLoader
+from autoencoder import KoopmanAutoencoder
+from loss import KoopmanLoss
 import matplotlib.pyplot as plt
 from pathlib import Path
 import json
 from datetime import datetime
 from tqdm import tqdm
 
-class QGDataset(Dataset):
-    def __init__(self, data_path, sequence_length=2, variables=None):
-        self.data = xr.open_dataset(data_path)
-        self.sequence_length = sequence_length
-
-        if variables is None:
-            variables = list(self.data.data_vars.keys())
-        self.variables = variables
-
-        self.stacked_data = torch.stack([
-            torch.FloatTensor(self.data[var].values)
-            for var in variables
-        ], dim=1)
-
-        self.means = self.stacked_data.mean(dim=(0, 2, 3))
-        self.stds = self.stacked_data.std(dim=(0, 2, 3))
-        self.stacked_data = (self.stacked_data - self.means[None, :, None, None]) / self.stds[None, :, None, None]
-
-    def __len__(self):
-        return len(self.stacked_data) - self.sequence_length + 1
-
-    def __getitem__(self, idx):
-        data_seq = self.stacked_data[idx:idx + self.sequence_length]
-        return data_seq[0], data_seq[1:]
-
-    def denormalize(self, x):
-        device = x.device  # Get the device of the input tensor
-        means = self.means.to(device)  # Move means to the same device as x
-        stds = self.stds.to(device)    # Move stds to the same device as x
-        return x * stds[None, :, None, None] + means[None, :, None, None]
-
-def evaluate_model(model, dataloader, criterion, device):
-    model.eval()
-    total_loss = 0
-    total_recon_loss = 0
-    total_pred_loss = 0
-    total_latent_loss = 0
-
-    with torch.no_grad():
-        for x, x_next_seq in dataloader:
-            x, x_next_seq = x.to(device), x_next_seq.to(device)
-            x_recon, x_preds, z_preds, latent_pred_differences = model(x, rollout_steps=x_next_seq.size(1))
-            loss, recon_loss, pred_loss, latent_loss = criterion(x_recon, x_preds, latent_pred_differences, x, x_next_seq)
-            total_loss += loss.item()
-            total_recon_loss += recon_loss.item()
-            total_pred_loss += pred_loss.item()
-            total_latent_loss += latent_loss.item()
-
-    n_batches = len(dataloader)
-    return {
-        'loss': total_loss / n_batches,
-        'recon_loss': total_recon_loss / n_batches,
-        'pred_loss': total_pred_loss / n_batches,
-        'latent_loss': total_latent_loss / n_batches
-    }
-
-def visualize_results(model, dataset, num_samples=4, device='cpu', output_dir=None):
-    model.eval()
-    with torch.no_grad():
-        x, x_next_seq = next(iter(DataLoader(dataset, batch_size=num_samples, shuffle=True)))
-        x, x_next_seq = x.to(device), x_next_seq.to(device)
-
-        # Updated unpacking to handle additional return value
-        x_recon, x_preds, _, _ = model(x, rollout_steps=x_next_seq.size(1))
-
-        x = dataset.denormalize(x)
-        x_next_seq = dataset.denormalize(x_next_seq)
-        x_recon = dataset.denormalize(x_recon)
-        x_preds = [dataset.denormalize(pred) for pred in x_preds]
-
-        # Only visualize reconstruction and first prediction
-        x_pred = x_preds[0]
-
-        if output_dir:
-            output_dir = Path(output_dir)
-            output_dir.mkdir(exist_ok=True)
-
-        # Reconstruction plot
-        fig, axes = plt.subplots(num_samples, 2, figsize=(10, 4*num_samples))
-        for i in range(num_samples):
-            for j, (title, data) in enumerate([
-                ('Input', x[i, 0]),
-                ('Reconstructed', x_recon[i, 0])
-            ]):
-                axes[i, j].imshow(data.cpu().numpy(), cmap='RdBu_r')
-                axes[i, j].set_title(title)
-                axes[i, j].axis('off')
-        plt.tight_layout()
-        if output_dir:
-            plt.savefig(output_dir / 'reconstruction_comparison.png')
-        plt.close()
-
-        # Prediction plot
-        fig, axes = plt.subplots(num_samples, 2, figsize=(10, 4*num_samples))
-        for i in range(num_samples):
-            for j, (title, data) in enumerate([
-                ('True Next', x_next_seq[i, 0, 0]),
-                ('Predicted Next', x_pred[i, 0])
-            ]):
-                axes[i, j].imshow(data.cpu().numpy(), cmap='RdBu_r')
-                axes[i, j].set_title(title)
-                axes[i, j].axis('off')
-        plt.tight_layout()
-        if output_dir:
-            plt.savefig(output_dir / 'prediction_comparison.png')
-        plt.close()
-
-        # Error maps
-        fig, axes = plt.subplots(num_samples, 2, figsize=(10, 4*num_samples))
-        for i in range(num_samples):
-            recon_error = (x_recon[i, 0] - x[i, 0]).cpu().numpy()
-            pred_error = (x_pred[i, 0] - x_next_seq[i, 0, 0]).cpu().numpy()
-
-            axes[i, 0].imshow(recon_error, cmap='RdBu_r')
-            axes[i, 0].set_title('Reconstruction Error')
-            axes[i, 0].axis('off')
-
-            axes[i, 1].imshow(pred_error, cmap='RdBu_r')
-            axes[i, 1].set_title('Prediction Error')
-            axes[i, 1].axis('off')
-        plt.tight_layout()
-        if output_dir:
-            plt.savefig(output_dir / 'error_maps.png')
-        plt.close()
+from dataloder import QGDataset
+from eval import evaluate_model
+from visualization import visualize_results
 
 def train_with_validation(model, train_loader, val_loader, optimizer, criterion, 
                          device, num_epochs=100, patience=100, output_dir=None):
