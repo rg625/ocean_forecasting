@@ -9,3 +9,6 @@
 *.nc
 *.png
 *.json
+*.log
+*.txt
+*.wandb
