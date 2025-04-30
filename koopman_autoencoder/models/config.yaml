@@ -1,10 +1,10 @@
 output_dir: "model_outputs"
 data:
-  data_dir: "data/data/two_layer"
-  train_file: "qg_train_data.nc"
-  val_file: "qg_val_data.nc"
-  test_file: "qg_test_data.nc"
-  sequence_length: 2
+  data_dir: "./data"
+  train_file: "jet/qg_jet_train_data.nc"
+  val_file: "jet/qg_jet_val_data.nc"
+  test_file: "jet/qg_jet_test_data.nc"
+  max_sequence_length: 10  # Maximum sequence length
 model:
   encoder:
     input_channels: 6
@@ -35,7 +35,7 @@ model:
     spatial_dim: 8
   latent_dim: 2048 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 1
+  batch_size: 128
   learning_rate: 0.001
   num_epochs: 100
   patience: 10

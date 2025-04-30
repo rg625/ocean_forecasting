@@ -45,10 +45,10 @@ def train_with_validation(model, train_loader, val_loader, optimizer, criterion,
     for epoch in progress_bar:
         model.train()
         total_loss = 0
-        for x, x_next_seq in train_loader:
-            x, x_next_seq = x.to(device), x_next_seq.to(device)
+        for x, x_next_seq, seq_length in train_loader:
+            x, x_next_seq, seq_length = x.to(device), x_next_seq.to(device), seq_length.to(device)
             optimizer.zero_grad()
-            x_recon, x_preds, z_preds, latent_pred_differences = model(x, rollout_steps=x_next_seq.size(1))
+            x_recon, x_preds, z_preds, latent_pred_differences = model(x, rollout_steps=seq_length)
             loss, recon_loss, pred_loss, latent_loss = criterion(x_recon, x_preds, latent_pred_differences, x, x_next_seq)
             loss.backward()
             optimizer.step()
@@ -133,9 +133,9 @@ def main(config_path):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     data_dir = Path(config['data']['data_dir'])
-    train_dataset = QGDataset(data_dir / config['data']['train_file'], sequence_length=config['data']['sequence_length'])
-    val_dataset = QGDataset(data_dir / config['data']['val_file'], sequence_length=config['data']['sequence_length'])
-    test_dataset = QGDataset(data_dir / config['data']['test_file'], sequence_length=config['data']['sequence_length'])
+    train_dataset = QGDataset(data_dir / config['data']['train_file'], max_sequence_length=config['data']['max_sequence_length'])
+    val_dataset = QGDataset(data_dir / config['data']['val_file'], max_sequence_length=config['data']['max_sequence_length'])
+    test_dataset = QGDataset(data_dir / config['data']['test_file'], max_sequence_length=config['data']['max_sequence_length'])
 
     train_loader = DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
@@ -179,8 +179,8 @@ def main(config_path):
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
-        'means': train_dataset.means,
-        'stds': train_dataset.stds,
+        'means': train_dataset.mins,
+        'stds': train_dataset.maxs,
         'variables': train_dataset.variables,
         'test_metrics': test_metrics,
         'history': history
@@ -194,3 +194,4 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, required=True, help="Path to the YAML configuration file")
     args = parser.parse_args()
     main(args.config)
+    
