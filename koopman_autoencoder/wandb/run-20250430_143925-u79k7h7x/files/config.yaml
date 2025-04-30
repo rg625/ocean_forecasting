@@ -1,0 +1,71 @@
+_wandb:
+    value:
+        cli_version: 0.19.10
+        m: []
+        python_version: 3.10.13
+        t:
+            "1":
+                - 1
+                - 55
+            "2":
+                - 1
+                - 54
+                - 55
+            "3":
+                - 16
+                - 23
+                - 55
+            "4": 3.10.13
+            "5": 0.19.10
+            "8":
+                - 5
+            "12": 0.19.10
+            "13": linux-x86_64
+data:
+    value:
+        data_dir: data/data/two_layer
+        sequence_length: 2
+        test_file: qg_test_data.nc
+        train_file: qg_train_data.nc
+        val_file: qg_val_data.nc
+loss:
+    value:
+        alpha: 1
+model:
+    value:
+        decoder:
+            block_size: 2
+            conv_kwargs:
+                padding: 1
+                padding_mode: circular
+            hidden_dims:
+                - 64
+                - 128
+                - 64
+            input_channels: 6
+            kernel_size: 3
+            spatial_dim: 8
+        encoder:
+            block_size: 2
+            conv_kwargs:
+                padding: 1
+                padding_mode: circular
+            hidden_dims:
+                - 64
+                - 128
+                - 64
+            input_channels: 6
+            kernel_size: 3
+            spatial_dim: 8
+        koopman_operator:
+            latent_dim: 32
+            spatial_dim: 8
+        latent_dim: 2048
+output_dir:
+    value: model_outputs
+training:
+    value:
+        batch_size: 1
+        learning_rate: 0.001
+        num_epochs: 100
+        patience: 10

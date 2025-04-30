@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 from datetime import datetime
 from tqdm import tqdm
+import wandb  # Import Weights & Biases
 
 from dataloder import QGDataset
 from eval import evaluate_model
@@ -63,6 +64,17 @@ def train_with_validation(model, train_loader, val_loader, optimizer, criterion,
         history['train_pred_loss'].append(train_metrics['pred_loss'])
         history['val_pred_loss'].append(val_metrics['pred_loss'])
 
+        # Log metrics to W&B
+        wandb.log({
+            'epoch': epoch + 1,
+            'train_loss': train_metrics['loss'],
+            'val_loss': val_metrics['loss'],
+            'train_recon_loss': train_metrics['recon_loss'],
+            'val_recon_loss': val_metrics['recon_loss'],
+            'train_pred_loss': train_metrics['pred_loss'],
+            'val_pred_loss': val_metrics['pred_loss']
+        })
+
         # Update the progress bar with the current metrics
         progress_bar.set_postfix({
             'Train Loss': f"{train_metrics['loss']:.4f}",
@@ -111,6 +123,9 @@ def train_with_validation(model, train_loader, val_loader, optimizer, criterion,
 def main(config_path):
     config = load_config(config_path)
 
+    # Initialize W&B
+    wandb.init(project="koopman-autoencoder", config=config)
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
@@ -130,12 +145,14 @@ def main(config_path):
         input_channels=config['model']['encoder']['input_channels'],
         latent_dim=config['model']['latent_dim'],
         hidden_dims=config['model']['encoder']['hidden_dims'],
-        # spatial_dim=config['model']['encoder']['spatial_dim'],
         **config['model']['encoder']['conv_kwargs']
     ).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
     criterion = KoopmanLoss(alpha=config['loss']['alpha'])
+
+    # Log model architecture to W&B
+    wandb.watch(model, log="all")
 
     history = train_with_validation(
         model=model,
@@ -158,6 +175,7 @@ def main(config_path):
     visualize_results(model, test_dataset, num_samples=4, device=device, 
                      output_dir=output_dir / 'visualizations')
 
+    # Save final model and log it to W&B
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
@@ -167,6 +185,7 @@ def main(config_path):
         'test_metrics': test_metrics,
         'history': history
     }, output_dir / 'final_model.pth')
+    wandb.save(str(output_dir / 'final_model.pth'))
 
 
 if __name__ == '__main__':
