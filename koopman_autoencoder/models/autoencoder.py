@@ -1,82 +1,150 @@
-import torch.nn as nn
+import torch
+from torch import nn
+from cnn import ConvEncoder, ConvDecoder
+
+class KoopmanOperator(nn.Module):
+    def __init__(self, latent_dim, spatial_dim):
+        """
+        Koopman operator block for residual predictions in latent space.
+
+        Parameters:
+            latent_dim: int
+                Dimensionality of the latent space.
+            spatial_dim: int
+                Spatial dimension of the latent representation.
+        """
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.spatial_dim = spatial_dim
+        self.flattened_dim = latent_dim * spatial_dim * spatial_dim
+        self.koopman_operator = nn.Linear(self.flattened_dim, self.flattened_dim, bias=False)
+
+    def forward(self, z):
+        """
+        Apply Koopman operator for residual prediction.
+
+        Parameters:
+            z: torch.Tensor
+                Latent representation of shape (batch_size, latent_dim, spatial_dim, spatial_dim).
+
+        Returns:
+            torch.Tensor:
+                Flattened predicted latent representation.
+        """
+        # Ensure the input is flattened
+        batch_size = z.size(0)
+        z = z.view(batch_size, -1)  # Flatten to (batch_size, latent_dim * spatial_dim * spatial_dim)
+        return self.koopman_operator(z)
+    
 
 class KoopmanAutoencoder(nn.Module):
-    def __init__(self, input_channels=2, latent_dim=32, hidden_dims=[64, 128, 64], spatial_dim=8):
-        super(KoopmanAutoencoder, self).__init__()
-        self.spatial_dim = spatial_dim
+    def __init__(self, input_channels=2, latent_dim=32, hidden_dims=[64, 128, 64], 
+                 height=64, width=64, block_size=2, kernel_size=3, **conv_kwargs):
+        """
+        Koopman Autoencoder built using ConvEncoder, ConvDecoder, and KoopmanOperator blocks.
 
-        # Encoder
-        encoder_layers = []
-        in_channels = input_channels
+        Parameters:
+            input_channels: int
+                Number of input channels in the data.
+            latent_dim: int
+                Dimensionality of the latent space.
+            hidden_dims: list of int
+                List of hidden dimensions for encoder/decoder layers.
+            height: int
+                Height of the input data.
+            width: int
+                Width of the input data.
+            block_size: int
+                Number of convolutional layers in a block.
+            kernel_size: int
+                Size of the convolution kernel.
+            conv_kwargs: dict
+                Additional arguments for convolutional layers.
+        """
+        super().__init__()
 
-        for hidden_dim in hidden_dims:
-            encoder_layers.extend([
-                nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1, padding_mode='circular'),
-                nn.ReLU(),
-                nn.BatchNorm2d(hidden_dim),
-                nn.MaxPool2d(2)
-            ])
-            in_channels = hidden_dim
+        # Initialize Encoder
+        self.encoder = ConvEncoder(
+            C=input_channels, H=height, W=width, D=latent_dim, hiddens=hidden_dims,
+            block_size=block_size, kernel_size=kernel_size, **conv_kwargs
+        )
 
-        encoder_layers.append(nn.Conv2d(in_channels, latent_dim, kernel_size=3, padding=1, padding_mode='circular'))
-        self.encoder = nn.Sequential(*encoder_layers)
+        # Compute spatial dimensions after encoding
+        self.spatial_dim = height // (2 ** len(hidden_dims))
 
-        # Decoder
-        decoder_layers = []
-        hidden_dims.reverse()
-        in_channels = latent_dim
+        if self.spatial_dim <= 0 or width % (2 ** len(hidden_dims)) != 0:
+            raise ValueError("Input dimensions must be divisible by 2 ** len(hidden_dims).")
 
-        for hidden_dim in hidden_dims:
-            decoder_layers.extend([
-                nn.ConvTranspose2d(in_channels, hidden_dim, kernel_size=2, stride=2),
-                nn.ReLU(),
-                nn.BatchNorm2d(hidden_dim),
-                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, padding_mode='circular')
-            ])
-            in_channels = hidden_dim
+        # Initialize Decoder
+        self.decoder = ConvDecoder(
+            C=input_channels, H=height, W=width, D=latent_dim, hiddens=hidden_dims,
+            block_size=block_size, kernel_size=kernel_size, **conv_kwargs
+        )
 
-        decoder_layers.append(nn.Conv2d(in_channels, input_channels, kernel_size=3, padding=1, padding_mode='circular'))
-        self.decoder = nn.Sequential(*decoder_layers)
-
-        # Koopman operator (residual prediction version)
-        self.koopman_operator = nn.Linear(latent_dim * spatial_dim * spatial_dim, latent_dim * spatial_dim * spatial_dim, bias=False)
+        # Initialize Koopman Operator
+        self.koopman_operator = KoopmanOperator(latent_dim, self.spatial_dim)
 
     def encode(self, x):
-        batch_size = x.size(0)
-        encoded = self.encoder(x)
-        return encoded.view(batch_size, -1)
+        """
+        Encode the input data into the latent space.
+
+        Parameters:
+            x: torch.Tensor
+                Input tensor.
+
+        Returns:
+            torch.Tensor: Flattened latent representation.
+        """
+        return self.encoder(x)
 
     def decode(self, z):
-        batch_size = z.size(0)
-        z = z.view(batch_size, -1, self.spatial_dim, self.spatial_dim)
+        """
+        Decode the latent representation back to the input space.
+
+        Parameters:
+            z: torch.Tensor
+                Latent representation.
+
+        Returns:
+            torch.Tensor: Reconstructed input.
+        """
         return self.decoder(z)
 
     def forward(self, x, rollout_steps=1):
+        """
+        Forward pass through the autoencoder with Koopman prediction.
+
+        Parameters:
+            x: torch.Tensor
+                Input tensor.
+            rollout_steps: int
+                Number of Koopman prediction steps.
+
+        Returns:
+            tuple: (reconstructed input, predictions, latent predictions, latent differences)
+        """
+        print(f'x.shape: {x.shape}')
         z = self.encode(x)
+        print(f'z.shape: {z.shape}')
         z_pred = z
         z_preds = [z]
 
         for _ in range(rollout_steps):
-            z_pred = z_pred + self.koopman_operator(z_pred)  # residual prediction
+            # Apply Koopman operator
+            z_pred = z_pred + self.koopman_operator(z_pred)
+            # Unflatten the Koopman operator output
+            z_pred = z_pred.view(z_pred.size(0), self.koopman_operator.latent_dim, 
+                                 self.koopman_operator.spatial_dim, self.koopman_operator.spatial_dim)
             z_preds.append(z_pred)
 
-        x_recon = self.decode(z_preds[0])  # reconstruction from initial z
+        x_recon = self.decode(z_preds[0])  # Reconstruction from initial z
         x_preds = [self.decode(z_step) for z_step in z_preds[1:]]
 
-        # Compute latent losses directly here
+        # Compute latent prediction differences
         latent_pred_differences = [
-            z_preds[t + 1] - (z_preds[t] + self.koopman_operator(z_preds[t]))
+            z_preds[t + 1] - (z_preds[t] + self.koopman_operator(z_preds[t].view(z_preds[t].size(0), -1)))
             for t in range(rollout_steps)
         ]
 
         return x_recon, x_preds, z_preds, latent_pred_differences
-
-    def predict_next(self, x, steps=1):
-        z = self.encode(x)
-        preds = []
-
-        for _ in range(steps):
-            z = z + self.koopman_operator(z)
-            preds.append(self.decode(z))
-
-        return preds
+    

@@ -5,7 +5,7 @@ from autoencoder import KoopmanAutoencoder
 from loss import KoopmanLoss
 import matplotlib.pyplot as plt
 from pathlib import Path
-import json
+import yaml
 from datetime import datetime
 from tqdm import tqdm
 
@@ -13,8 +13,24 @@ from dataloder import QGDataset
 from eval import evaluate_model
 from visualization import visualize_results
 
+
+def load_config(config_path):
+    """
+    Load the YAML configuration file for the model and training process.
+
+    Parameters:
+        config_path: str
+            Path to the YAML configuration file.
+
+    Returns:
+        dict: Loaded configuration.
+    """
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
+
+
 def train_with_validation(model, train_loader, val_loader, optimizer, criterion, 
-                         device, num_epochs=100, patience=100, output_dir=None):
+                          device, num_epochs=100, patience=100, output_dir=None):
     best_val_loss = float('inf')
     patience_counter = 0
     history = {'train_loss': [], 'val_loss': [], 'train_recon_loss': [], 
@@ -86,35 +102,40 @@ def train_with_validation(model, train_loader, val_loader, optimizer, criterion,
         plt.savefig(output_dir / 'training_history.png')
         plt.close()
 
-        with open(output_dir / 'training_history.json', 'w') as f:
-            json.dump(history, f)
+        with open(output_dir / 'training_history.yaml', 'w') as f:
+            yaml.dump(history, f)
 
     return history
 
-def main():
+
+def main(config_path):
+    config = load_config(config_path)
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    output_dir = Path('model_outputs') / datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_dir = Path(config['output_dir']) / datetime.now().strftime('%Y%m%d_%H%M%S')
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    data_dir = Path('data/data/two_layer')
-    train_dataset = QGDataset(data_dir / 'qg_train_data.nc', sequence_length=2)
-    val_dataset = QGDataset(data_dir / 'qg_val_data.nc', sequence_length=2)
-    test_dataset = QGDataset(data_dir / 'qg_test_data.nc', sequence_length=2)
+    data_dir = Path(config['data']['data_dir'])
+    train_dataset = QGDataset(data_dir / config['data']['train_file'], sequence_length=config['data']['sequence_length'])
+    val_dataset = QGDataset(data_dir / config['data']['val_file'], sequence_length=config['data']['sequence_length'])
+    test_dataset = QGDataset(data_dir / config['data']['test_file'], sequence_length=config['data']['sequence_length'])
 
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=config['training']['batch_size'], shuffle=False)
 
     model = KoopmanAutoencoder(
-        input_channels=len(train_dataset.variables),
-        latent_dim=32,
-        hidden_dims=[64, 128, 64]
+        input_channels=config['model']['encoder']['input_channels'],
+        latent_dim=config['model']['latent_dim'],
+        hidden_dims=config['model']['encoder']['hidden_dims'],
+        # spatial_dim=config['model']['encoder']['spatial_dim'],
+        **config['model']['encoder']['conv_kwargs']
     ).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    criterion = KoopmanLoss(alpha=1.0)
+    optimizer = optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
+    criterion = KoopmanLoss(alpha=config['loss']['alpha'])
 
     history = train_with_validation(
         model=model,
@@ -123,8 +144,8 @@ def main():
         optimizer=optimizer,
         criterion=criterion,
         device=device,
-        num_epochs=100,
-        patience=100,
+        num_epochs=config['training']['num_epochs'],
+        patience=config['training']['patience'],
         output_dir=output_dir
     )
 
@@ -147,5 +168,10 @@ def main():
         'history': history
     }, output_dir / 'final_model.pth')
 
+
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Train Koopman Autoencoder with configuration file")
+    parser.add_argument('--config', type=str, required=True, help="Path to the YAML configuration file")
+    args = parser.parse_args()
+    main(args.config)
