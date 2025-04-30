@@ -35,7 +35,7 @@ class KoopmanOperator(nn.Module):
         batch_size = z.size(0)
         z = z.view(batch_size, -1)  # Flatten to (batch_size, latent_dim * spatial_dim * spatial_dim)
         return self.koopman_operator(z)
-    
+
 
 class KoopmanAutoencoder(nn.Module):
     def __init__(self, input_channels=2, latent_dim=32, hidden_dims=[64, 128, 64], 
@@ -110,41 +110,48 @@ class KoopmanAutoencoder(nn.Module):
         """
         return self.decoder(z)
 
-    def forward(self, x, rollout_steps=1):
+    def forward(self, x, seq_lengths):
         """
         Forward pass through the autoencoder with Koopman prediction.
 
         Parameters:
             x: torch.Tensor
                 Input tensor.
-            rollout_steps: int
-                Number of Koopman prediction steps.
+            seq_lengths: torch.Tensor
+                Sequence lengths for each input in the batch.
 
         Returns:
             tuple: (reconstructed input, predictions, latent predictions, latent differences)
         """
-        print(f'x.shape: {x.shape}')
+        batch_size = x.size(0)
+        max_seq_length = seq_lengths.max().item()  # Get the maximum sequence length in the batch
+
+        # Encode the input
         z = self.encode(x)
-        print(f'z.shape: {z.shape}')
         z_pred = z
         z_preds = [z]
 
-        for _ in range(rollout_steps):
-            # Apply Koopman operator
+        # Roll out predictions for the maximum sequence length
+        for _ in range(max_seq_length):
             z_pred = z_pred + self.koopman_operator(z_pred)
-            # Unflatten the Koopman operator output
             z_pred = z_pred.view(z_pred.size(0), self.koopman_operator.latent_dim, 
                                  self.koopman_operator.spatial_dim, self.koopman_operator.spatial_dim)
             z_preds.append(z_pred)
 
+        # Decode predictions and compute latent differences for each sequence length
         x_recon = self.decode(z_preds[0])  # Reconstruction from initial z
-        x_preds = [self.decode(z_step) for z_step in z_preds[1:]]
+        x_preds = []
+        latent_pred_differences = []
 
-        # Compute latent prediction differences
-        latent_pred_differences = [
-            z_preds[t + 1] - (z_preds[t] + self.koopman_operator(z_preds[t].view(z_preds[t].size(0), -1)))
-            for t in range(rollout_steps)
-        ]
+        for i in range(batch_size):
+            seq_length = seq_lengths[i].item()  # Get the sequence length for this sample
+            preds = [self.decode(z_preds[t + 1][i]) for t in range(seq_length)]
+            diffs = [
+                z_preds[t + 1][i] - (z_preds[t][i] + self.koopman_operator(z_preds[t][i].view(1, -1)).view_as(z_preds[t][i]))
+                for t in range(seq_length)
+            ]
+            x_preds.append(preds)
+            latent_pred_differences.append(diffs)
 
         return x_recon, x_preds, z_preds, latent_pred_differences
     
