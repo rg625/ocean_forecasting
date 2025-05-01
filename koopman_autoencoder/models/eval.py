@@ -8,10 +8,10 @@ def evaluate_model(model, dataloader, criterion, device):
     total_latent_loss = 0
 
     with torch.no_grad():
-        for x, x_next_seq in dataloader:
-            x, x_next_seq = x.to(device), x_next_seq.to(device)
-            x_recon, x_preds, z_preds, latent_pred_differences = model(x, seq_length=x_next_seq.size(1))
-            loss, recon_loss, pred_loss, latent_loss = criterion(x_recon, x_preds, latent_pred_differences, x, x_next_seq)
+        for input, target in dataloader:
+            input, target = input.to(device), target.to(device)
+            x_recon, x_preds, z_preds, latent_pred_differences = model(input, seq_length=target.size(1))
+            loss, recon_loss, pred_loss, latent_loss = criterion(x_recon, x_preds, latent_pred_differences, input[:, -1], target)
             total_loss += loss.item()
             total_recon_loss += recon_loss.item()
             total_pred_loss += pred_loss.item()
