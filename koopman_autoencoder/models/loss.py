@@ -15,7 +15,7 @@ class KoopmanLoss(nn.Module):
         pred_loss = 0.0
         latent_loss = 0.0
         for t in range(self.rollout_steps):
-            pred_loss += F.mse_loss(x_preds[t], x_future[:, t])
+            pred_loss += F.mse_loss(x_preds[:, t], x_future[:, t])
             latent_loss += F.mse_loss(latent_pred_differences[t], torch.zeros_like(latent_pred_differences[t]))
 
         pred_loss /= self.rollout_steps

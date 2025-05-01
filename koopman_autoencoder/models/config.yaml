@@ -6,36 +6,22 @@ data:
   test_file: "jet/qg_jet_test_data.nc"
   max_sequence_length: 10  # Maximum sequence length
 model:
-  encoder:
-    input_channels: 6
-    hidden_dims:
-      - 64
-      - 128
-      - 64
-    block_size: 2
-    kernel_size: 3
-    spatial_dim: 8
-    conv_kwargs:
-      padding: 1
-      padding_mode: "circular"
-  decoder:
-    input_channels: 6
-    hidden_dims:
-      - 64
-      - 128
-      - 64
-    block_size: 2
-    kernel_size: 3
-    spatial_dim: 8
-    conv_kwargs:
-      padding: 1
-      padding_mode: "circular"
-  koopman_operator:
-    latent_dim: 32
-    spatial_dim: 8
+  height: 256
+  width: 256
+  input_channels: 6
+  hidden_dims:
+    - 64
+    - 128
+    - 64
+  block_size: 2
+  kernel_size: 3
+  spatial_dim: 8
+  conv_kwargs:
+    padding: 1
+    padding_mode: "circular"
   latent_dim: 2048 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 128
+  batch_size: 10
   learning_rate: 0.001
   num_epochs: 100
   patience: 10

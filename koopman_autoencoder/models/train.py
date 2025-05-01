@@ -10,7 +10,7 @@ from datetime import datetime
 from tqdm import tqdm
 import wandb  # Import Weights & Biases
 
-from dataloder import QGDataset
+from dataloder import QGDataset, create_dataloaders
 from eval import evaluate_model
 from visualization import visualize_results
 
@@ -45,11 +45,12 @@ def train_with_validation(model, train_loader, val_loader, optimizer, criterion,
     for epoch in progress_bar:
         model.train()
         total_loss = 0
-        for x, x_next_seq, seq_length in train_loader:
-            x, x_next_seq, seq_length = x.to(device), x_next_seq.to(device), seq_length.to(device)
+        for input, target in train_loader:
+            input, target = input.to(device), target.to(device)
+            seq_length = target.size(1)
             optimizer.zero_grad()
-            x_recon, x_preds, z_preds, latent_pred_differences = model(x, rollout_steps=seq_length)
-            loss, recon_loss, pred_loss, latent_loss = criterion(x_recon, x_preds, latent_pred_differences, x, x_next_seq)
+            x_recon, x_preds, z_preds, latent_pred_differences = model(input, seq_length=seq_length)
+            loss, recon_loss, pred_loss, latent_loss = criterion(x_recon, x_preds, latent_pred_differences, input[:, -1], target)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -133,19 +134,27 @@ def main(config_path):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     data_dir = Path(config['data']['data_dir'])
-    train_dataset = QGDataset(data_dir / config['data']['train_file'], max_sequence_length=config['data']['max_sequence_length'])
-    val_dataset = QGDataset(data_dir / config['data']['val_file'], max_sequence_length=config['data']['max_sequence_length'])
-    test_dataset = QGDataset(data_dir / config['data']['test_file'], max_sequence_length=config['data']['max_sequence_length'])
-
-    train_loader = DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=config['training']['batch_size'], shuffle=False)
-
+    train_dataset = QGDataset(data_dir / config['data']['train_file'], 
+                             max_sequence_length=config['data']['max_sequence_length'])
+    val_dataset = QGDataset(data_dir / config['data']['val_file'], 
+                           max_sequence_length=config['data']['max_sequence_length'])
+    test_dataset = QGDataset(data_dir / config['data']['test_file'], 
+                            max_sequence_length=config['data']['max_sequence_length'])
+    
+    train_loader, val_loader, test_loader = create_dataloaders(
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        test_dataset=test_dataset,
+        config=config,
+        )
+    
     model = KoopmanAutoencoder(
-        input_channels=config['model']['encoder']['input_channels'],
+        input_channels=config['model']['input_channels'],
+        height=config['model']['height'],
+        width=config['model']['width'],
         latent_dim=config['model']['latent_dim'],
-        hidden_dims=config['model']['encoder']['hidden_dims'],
-        **config['model']['encoder']['conv_kwargs']
+        hidden_dims=config['model']['hidden_dims'],
+        **config['model']['conv_kwargs']
     ).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=config['training']['learning_rate'])

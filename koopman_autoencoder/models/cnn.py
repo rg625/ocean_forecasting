@@ -23,20 +23,29 @@ class ConvBlock(nn.Module):
                 Additional arguments for nn.Conv2d.
         """
         super().__init__()
-        layers = []
-        for i in range(block_size):
-            in_channels = C_in if i == 0 else C_out
-            out_channels = C_out if i < block_size - 1 or not decoder_block else C_in
-            layers.append(nn.Conv2d(in_channels, out_channels, kernel_size, **conv_kwargs))
-            layers.append(nn.ReLU())
-        self.block = nn.Sequential(*layers)
+        if not decoder_block:
+            first_layer = [nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs), nn.ReLU()]
+            subsequent_layers = (block_size-1) * [
+                nn.Conv2d(C_out, C_out, kernel_size, **conv_kwargs),
+                nn.ReLU()
+            ]
+            self.stack = nn.ModuleList([*first_layer, *subsequent_layers])
+        else:
+            initial_layers = (block_size-1) * [
+                nn.Conv2d(C_in, C_in, kernel_size, **conv_kwargs),
+                nn.ReLU()
+            ]
+            output_layer = [nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs), nn.ReLU()]
+            self.stack = nn.ModuleList([*initial_layers, *output_layer])
 
     def forward(self, x):
-        return self.block(x)
+        for module in self.stack:
+            x = module(x)
+        return x
 
 
 class BaseEncoderDecoder(nn.Module):
-    def __init__(self, C, H, W, D, hiddens, block_size=1, kernel_size=3, is_encoder=True, **conv_kwargs):
+    def __init__(self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, is_encoder=True, **conv_kwargs):
         """
         Base class for both encoder and decoder blocks.
 
@@ -64,7 +73,7 @@ class BaseEncoderDecoder(nn.Module):
         self.C = C
         self.H = H
         self.W = W
-        self.D = D
+        self.D = latent_dim
         self.hiddens = hiddens
         self.is_encoder = is_encoder
 
@@ -74,14 +83,14 @@ class BaseEncoderDecoder(nn.Module):
             raise ValueError(
                 f"Input dimensions (H={H}, W={W}) must be divisible by 2^{self.n_pools} due to pooling."
             )
-        self.H_out = H // (2**self.n_pools)
-        self.W_out = W // (2**self.n_pools)
+        self.H_out = H // (2**(self.n_pools))
+        self.W_out = W // (2**(self.n_pools))
 
         # Define the linear layer
         if is_encoder:
-            self.linear = nn.Linear(hiddens[-1] * self.H_out * self.W_out, D)
+            self.linear = nn.Linear(hiddens[-1] * self.H_out * self.W_out, latent_dim)
         else:
-            self.linear = nn.Linear(D, hiddens[-1] * self.H_out * self.W_out)
+            self.linear = nn.Linear(latent_dim, hiddens[-1] * self.H_out * self.W_out)
 
         # Build convolutional layers
         self.layers = self._build_layers(block_size, kernel_size, conv_kwargs)
@@ -125,28 +134,28 @@ class BaseEncoderDecoder(nn.Module):
         else:
             # Apply linear layer and unflatten
             out = self.linear(x)
-            out = out.view(out.size(0), self.hiddens[-1], self.H_out, self.W_out)
-            return self.layers(out)
+            out = out.view(-1, self.hiddens[-1], self.H_out, self.W_out)
+            return self.layers(out)#.view(out.size(0), -1, self.C, self.H, self.W)
 
 
 class ConvEncoder(BaseEncoderDecoder):
-    def __init__(self, C, H, W, D, hiddens, block_size=1, kernel_size=3, **conv_kwargs):
+    def __init__(self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, **conv_kwargs):
         """
         Encoder module for encoding input into a latent representation.
 
         Parameters:
             See BaseEncoderDecoder.
         """
-        super().__init__(C, H, W, D, hiddens, block_size, kernel_size, is_encoder=True, **conv_kwargs)
+        super().__init__(C, H, W, latent_dim, hiddens, block_size, kernel_size, is_encoder=True, **conv_kwargs)
 
 
 class ConvDecoder(BaseEncoderDecoder):
-    def __init__(self, C, H, W, D, hiddens, block_size=1, kernel_size=3, **conv_kwargs):
+    def __init__(self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, **conv_kwargs):
         """
         Decoder module for reconstructing input from a latent representation.
 
         Parameters:
             See BaseEncoderDecoder.
         """
-        super().__init__(C, H, W, D, hiddens, block_size, kernel_size, is_encoder=False, **conv_kwargs)
+        super().__init__(C, H, W, latent_dim, hiddens, block_size, kernel_size, is_encoder=False, **conv_kwargs)
         
