@@ -7,19 +7,14 @@ class KoopmanLoss(nn.Module):
         super(KoopmanLoss, self).__init__()
         self.alpha = alpha  # weight for prediction loss
         self.beta = beta    # weight for latent loss
-        self.rollout_steps = rollout_steps
 
     def forward(self, x_recon, x_preds, latent_pred_differences, x_true, x_future):
         recon_loss = F.mse_loss(x_recon, x_true)
+        pred_loss = F.mse_loss(x_preds, x_future)
+        latent_loss  = F.mse_loss(latent_pred_differences, torch.zeros_like(latent_pred_differences))
 
-        pred_loss = 0.0
-        latent_loss = 0.0
-        for t in range(self.rollout_steps):
-            pred_loss += F.mse_loss(x_preds[t], x_future[:, t])
-            latent_loss += F.mse_loss(latent_pred_differences[t], torch.zeros_like(latent_pred_differences[t]))
-
-        pred_loss /= self.rollout_steps
-        latent_loss /= self.rollout_steps
+        pred_loss /= x_preds.size(1)
+        latent_loss /= x_preds.size(1)
 
         total_loss = recon_loss + self.alpha * pred_loss + self.beta * latent_loss
         return total_loss, recon_loss, pred_loss, latent_loss

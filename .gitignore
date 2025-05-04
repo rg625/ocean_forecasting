@@ -12,3 +12,10 @@
 *.log
 *.txt
 *.wandb
+*.ipynb_checkpoints
+*.ipynb
+*.yaml
+
+
+**/koopman_autoencoder/wandb/latest-run
+**/koopman_autoencoder/wandb/settings

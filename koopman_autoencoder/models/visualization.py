@@ -11,7 +11,7 @@ def visualize_results(model, dataset, num_samples=4, device='cpu', output_dir=No
         x, x_next_seq = x.to(device), x_next_seq.to(device)
 
         # Updated unpacking to handle additional return value
-        x_recon, x_preds, _, _ = model(x, rollout_steps=x_next_seq.size(1))
+        x_recon, x_preds, _, _ = model(x, seq_length=x_next_seq.size(1))
 
         x = dataset.denormalize(x)
         x_next_seq = dataset.denormalize(x_next_seq)
