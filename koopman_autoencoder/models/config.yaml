@@ -1,7 +1,7 @@
 output_dir: "model_outputs"
 data:
   data_dir: "./data"
-  train_file: "jet/qg_jet_train_data.nc"
+  train_file: "jet/qg_jet_train_data_clean.nc"
   val_file: "jet/qg_jet_val_data.nc"
   test_file: "jet/qg_jet_test_data.nc"
   max_sequence_length: 10  # Maximum sequence length

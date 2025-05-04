@@ -106,6 +106,30 @@ def generate(config):
     print(f"Data saved to {output_dir}")
     return train_data, val_data, test_data
 
+def clean_training_data(train_data_path, output_path, drop_samples=2000):
+    """
+    Remove initial unstable samples from training data.
+
+    Args:
+        train_data_path: str or Path
+            Path to the training data NetCDF file.
+        output_path: str or Path
+            Path to save the cleaned training dataset.
+        drop_samples: int
+            Number of initial samples to drop.
+    """
+    # Load training data
+    train_data = xr.open_dataset(train_data_path)
+    print(f"Original training data time steps: {len(train_data.time)}")
+
+    # Drop initial unstable samples
+    cleaned_data = train_data.isel(time=slice(drop_samples, None))
+    print(f"Cleaned training data time steps: {len(cleaned_data.time)}")
+
+    # Save the cleaned data
+    cleaned_data.to_netcdf(output_path)
+    print(f"Cleaned training data saved to {output_path}")
+
 
 def main(config_path):
     """
@@ -122,6 +146,10 @@ def main(config_path):
     # Generate dataset
     generate(config)
 
+    # Example usage
+    train_data_path = f"{config["output"]["output_dir"]}/qg_{config['simulation']['model_type']}_train_data.nc"
+    output_path = f"{config["output"]["output_dir"]}/qg_{config['simulation']['model_type']}_train_data_clean.nc"
+    clean_training_data(train_data_path, output_path, drop_samples=2000)
 
 if __name__ == '__main__':
     import argparse
