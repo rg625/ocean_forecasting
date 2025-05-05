@@ -1,0 +1,12 @@
+grid:
+  nx: 256                # Grid resolution in the x-direction
+  ny: 256                # Grid resolution in the y-direction
+
+simulation:
+  dt: 3600.0             # Time step in seconds
+  tmax: 864000000.0      # Maximum simulation time (in seconds, ~27.4 years)
+  save_interval: 86400.0 # Interval to save snapshots (in seconds, 1 day)
+  model_type: "jet"     # Type of model ("eddy", "jet", or "barotropic")
+
+output:
+  output_dir: "./data/jet"   # Directory to save the generated dataset
