@@ -64,7 +64,7 @@ class Trainer:
             target: Target tensor.
 
         Returns:
-            Loss value for the step.
+            Losses for the step (including total loss).
         """
         self.model.train()
         input, target = input.to(self.device), target.to(self.device)
@@ -80,10 +80,32 @@ class Trainer:
             x_recon, x_preds, latent_pred_differences, input[:, -1], target
         )
         loss = losses["total_loss"]
+        assert isinstance(loss, torch.Tensor)
 
-        # Backward pass and optimization
+        # Backward pass
         loss.backward()
+
+        # Compute gradient norms
+        grad_norms = {}
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                grad_norms[f"gradient_norms/{name}"] = param.grad.norm(
+                    2
+                ).item()  # L2 norm of gradients
+
+        # Compute parameter norms
+        param_norms = {}
+        for name, param in self.model.named_parameters():
+            param_norms[f"parameter_norms/{name}"] = param.norm(
+                2
+            ).item()  # L2 norm of parameters
+
+        # Optimizer step
         self.optimizer.step()
+
+        # Log gradients and parameters independently to W&B
+        wandb.log(grad_norms)  # Log gradient norms
+        wandb.log(param_norms)  # Log parameter norms
 
         return losses
 
@@ -115,7 +137,7 @@ class Trainer:
                 total_losses = accumulate_losses(total_losses, losses)
 
                 # Visualization for the first batch
-                if epoch == 0 and self.output_dir:
+                if self.output_dir:
                     input_denorm = dataloader.denormalize(input)
                     target_denorm = dataloader.denormalize(target)
                     x_preds_denorm = dataloader.denormalize(x_preds)
@@ -172,28 +194,28 @@ class Trainer:
             if isinstance(value, dict):  # For nested dictionaries
                 for sub_key, sub_value in value.items():
                     if isinstance(sub_value, TensorDict):  # Check if it's a TensorDict
-                        wandb_log_dict[f"{prefix}{key}_{sub_key}"] = (
+                        wandb_log_dict[f"loss/{prefix}{key}_{sub_key}"] = (
                             tensor_dict_to_json(sub_value)
                         )
                     elif isinstance(sub_value, torch.Tensor):  # Check if it's a tensor
-                        wandb_log_dict[f"{prefix}{key}_{sub_key}"] = (
+                        wandb_log_dict[f"loss/{prefix}{key}_{sub_key}"] = (
                             sub_value.item()
                             if sub_value.numel() == 1
                             else sub_value.cpu().numpy().tolist()
                         )
                     else:  # Handle scalars or other types
-                        wandb_log_dict[f"{prefix}{key}_{sub_key}"] = sub_value
+                        wandb_log_dict[f"loss/{prefix}{key}_{sub_key}"] = sub_value
             elif isinstance(value, TensorDict):  # For top-level TensorDicts
                 for sub_key, sub_value in value.items():
-                    wandb_log_dict[f"{prefix}{key}_{sub_key}"] = tensor_dict_to_json(
-                        sub_value
+                    wandb_log_dict[f"loss/{prefix}{key}_{sub_key}"] = (
+                        tensor_dict_to_json(sub_value)
                     )
             elif isinstance(value, torch.Tensor):  # For top-level tensors
-                wandb_log_dict[f"{prefix}{key}"] = (
+                wandb_log_dict[f"loss/{prefix}{key}"] = (
                     value.item() if value.numel() == 1 else value.cpu().numpy().tolist()
                 )
             else:  # For other types (e.g., scalars)
-                wandb_log_dict[f"{prefix}{key}"] = value
+                wandb_log_dict[f"loss/{prefix}{key}"] = value
 
         # Log to W&B
         wandb.log(wandb_log_dict)

@@ -172,6 +172,8 @@ class DataLoaderWrapper(DataLoader):
             **kwargs: Additional keyword arguments for the DataLoader.
         """
         super().__init__(*args, **kwargs)
+        for var, tensor in self.dataset.stacked_data.items():
+            print(f"{var} Min:", tensor.min().item(), "Max:", tensor.max().item())
 
     def denormalize(self, x):
         """
@@ -183,6 +185,7 @@ class DataLoaderWrapper(DataLoader):
         Returns:
             The denormalized tensor or tensordict.
         """
+
         if hasattr(self.dataset, "denormalize"):
             return self.dataset.denormalize(x)
         else:

@@ -3,14 +3,15 @@ from torch import nn
 
 
 class KoopmanLoss(nn.Module):
-    def __init__(self, alpha=1.0, beta=0.1):
-        """
-        Custom loss function for Koopman-based models.
+    """
+    Custom loss function for Koopman-based models.
 
-        Args:
-            alpha (float): Weight for the prediction loss term.
-            beta (float): Weight for the latent loss term.
-        """
+    Args:
+        alpha (float): Weight for the prediction loss term.
+        beta (float): Weight for the latent loss term.
+    """
+
+    def __init__(self, alpha=1.0, beta=0.1):
         super(KoopmanLoss, self).__init__()
         self.alpha = alpha  # weight for prediction loss
         self.beta = beta  # weight for latent loss
@@ -33,9 +34,7 @@ class KoopmanLoss(nn.Module):
             diff = (x[key] - y[key]).flatten(
                 start_dim=1
             )  # Flatten all non-batch dimensions
-            losses[key] = (
-                torch.square(diff).sum(dim=-1).mean().item()
-            )  # Mean over batches (no backprop)
+            losses[key] = torch.square(diff).sum(dim=-1).mean()  # Keep as tensor
         return losses
 
     @staticmethod
@@ -51,11 +50,8 @@ class KoopmanLoss(nn.Module):
             dict: Rollout loss per variable.
         """
         assert x.batch_size == y.batch_size, "Mismatch in batch size."
-
-        # Exclude the `seq_length` key
         x_filtered = x.exclude("seq_length")
         y_filtered = y.exclude("seq_length")
-
         losses = {}
         for key in x_filtered.keys():
             diff = (x_filtered[key] - y_filtered[key]).flatten(
@@ -64,7 +60,7 @@ class KoopmanLoss(nn.Module):
             per_step_loss = (
                 torch.square(diff).sum(dim=-1).mean(dim=0).mean()
             )  # Average over batches and steps
-            losses[key] = per_step_loss.item()  # No backpropagation
+            losses[key] = per_step_loss  # Keep as tensor
         return losses
 
     def forward(self, x_recon, x_preds, latent_pred_differences, x_true, x_future):
@@ -83,30 +79,28 @@ class KoopmanLoss(nn.Module):
         """
         # Reconstruction loss (per variable)
         recon_loss_per_variable = self.recon_loss(x_recon, x_true)
-
         # Prediction loss (per variable)
         pred_loss_per_variable = self.rollout_loss(x_preds, x_future)
-
-        # Latent consistency loss (averaged over the rollout steps)
         latent_loss = torch.mean(
             torch.square(latent_pred_differences.flatten(start_dim=2))
         )
 
         # Combine total losses (only total_loss will backpropagate)
         total_loss = (
-            sum(recon_loss_per_variable.values())
+            sum(recon_loss_per_variable.values())  # Tensors sum to a tensor
             + self.alpha * sum(pred_loss_per_variable.values())
-            + self.beta * latent_loss
+            # + self.beta * latent_loss
         )
 
-        # Detach latent_loss and per-variable losses for logging/no-backprop
         return {
             "total_loss": total_loss,  # This will backpropagate
             "latent_loss": latent_loss.detach().item(),
             "recon_loss": {
-                key: value for key, value in recon_loss_per_variable.items()
-            },  # Already detached (float)
+                key: value.detach().item()
+                for key, value in recon_loss_per_variable.items()
+            },
             "pred_loss": {
-                key: value for key, value in pred_loss_per_variable.items()
-            },  # Already detached (float)
+                key: value.detach().item()
+                for key, value in pred_loss_per_variable.items()
+            },
         }
