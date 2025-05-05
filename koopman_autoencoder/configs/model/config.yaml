@@ -1,6 +1,7 @@
 output_dir: "model_outputs"
 data:
   data_dir: "./data"
+  # train_file: "jet/qg_jet_train_data_clean.nc"
   train_file: "jet/qg_jet_train_data_clean.nc"
   val_file: "jet/qg_jet_val_data.nc"
   test_file: "jet/qg_jet_test_data.nc"
@@ -21,10 +22,11 @@ model:
     padding_mode: "circular"
   latent_dim: 2048 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 10
+  batch_size: 4
   learning_rate: 0.0001
   num_epochs: 100
   patience: 10
+  use_checkpoint: True
 loss:
   alpha: 1.0
   beta: 0.1
