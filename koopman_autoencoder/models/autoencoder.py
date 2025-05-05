@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from cnn import ConvEncoder, ConvDecoder
+from models.cnn import ConvEncoder, ConvDecoder
 
 
 class KoopmanOperator(nn.Module):
@@ -32,8 +32,17 @@ class KoopmanOperator(nn.Module):
 
 
 class KoopmanAutoencoder(nn.Module):
-    def __init__(self, input_channels=6, height=64, width=64, latent_dim=32, 
-                 hidden_dims=[64, 128, 64], block_size=2, kernel_size=3, **conv_kwargs):
+    def __init__(
+        self,
+        input_channels=6,
+        height=64,
+        width=64,
+        latent_dim=32,
+        hidden_dims=[64, 128, 64],
+        block_size=2,
+        kernel_size=3,
+        **conv_kwargs,
+    ):
         """
         Koopman Autoencoder for learning dynamical systems in latent space.
 
@@ -59,16 +68,26 @@ class KoopmanAutoencoder(nn.Module):
 
         # Initialize Encoder
         self.encoder = ConvEncoder(
-            C=2*input_channels, H=height, W=width, latent_dim=latent_dim, 
-            hiddens=hidden_dims, block_size=block_size, kernel_size=kernel_size, 
-            **conv_kwargs
+            C=2 * input_channels,
+            H=height,
+            W=width,
+            latent_dim=latent_dim,
+            hiddens=hidden_dims,
+            block_size=block_size,
+            kernel_size=kernel_size,
+            **conv_kwargs,
         )
 
         # Initialize Decoder
         self.decoder = ConvDecoder(
-            C=input_channels, H=height, W=width, latent_dim=latent_dim, 
-            hiddens=hidden_dims, block_size=block_size, kernel_size=kernel_size, 
-            **conv_kwargs
+            C=input_channels,
+            H=height,
+            W=width,
+            latent_dim=latent_dim,
+            hiddens=hidden_dims,
+            block_size=block_size,
+            kernel_size=kernel_size,
+            **conv_kwargs,
         )
 
         # Initialize Koopman Operator
@@ -88,7 +107,9 @@ class KoopmanAutoencoder(nn.Module):
 
         # Collapse the sequence and batch dimensions
         batch_size, sequence_length, channels, height, width = x.shape
-        x = x.view(batch_size, sequence_length * channels, height, width)  # Merge batch and sequence dims
+        x = x.view(
+            batch_size, sequence_length * channels, height, width
+        )  # Merge batch and sequence dims
         z = self.encoder(x)  # Pass through encoder
         return z.view(batch_size, *z.shape[1:])  # Restore sequence dim
 
@@ -146,10 +167,12 @@ class KoopmanAutoencoder(nn.Module):
         x_preds = torch.stack([self.decode(z_step) for z_step in z_preds[1:]], dim=1)
 
         # Compute latent prediction differences
-        latent_pred_differences = torch.stack([
-            z_preds[t + 1] - self.predict_latent(z_preds[t])
-            for t in range(seq_length)
-        ], dim=1)
+        latent_pred_differences = torch.stack(
+            [
+                z_preds[t + 1] - self.predict_latent(z_preds[t])
+                for t in range(seq_length)
+            ],
+            dim=1,
+        )
 
         return x_recon, x_preds, z_preds, latent_pred_differences
-    
