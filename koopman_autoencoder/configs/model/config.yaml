@@ -5,7 +5,7 @@ data:
   train_file: "jet/qg_jet_train_data_clean.nc"
   val_file: "jet/qg_jet_val_data.nc"
   test_file: "jet/qg_jet_test_data.nc"
-  max_sequence_length: 10  # Maximum sequence length
+  max_sequence_length: 5  # Maximum sequence length
 model:
   height: 256
   width: 256
@@ -22,7 +22,7 @@ model:
     padding_mode: "circular"
   latent_dim: 2048 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 4
+  batch_size: 3
   learning_rate: 0.0001
   num_epochs: 100
   patience: 10

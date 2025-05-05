@@ -85,7 +85,7 @@ def main(config_path):
     # Evaluate the model on the test set
     test_metrics = trainer.evaluate(test_loader, epoch=-1)
     print("\nTest Set Results:")
-    print(f"Loss: {test_metrics['loss']:.4f}")
+    print(f"Loss: {test_metrics['total_loss']:.4f}")
     print(f"Reconstruction Loss: {test_metrics['recon_loss']:.4f}")
     print(f"Prediction Loss: {test_metrics['pred_loss']:.4f}")
 
