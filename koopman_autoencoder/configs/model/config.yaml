@@ -1,8 +1,8 @@
 output_dir: "model_outputs"
 data:
   data_dir: "./data"
+  train_file: "jet/qg_jet_train_data_clean_small.nc"
   # train_file: "jet/qg_jet_train_data_clean.nc"
-  train_file: "jet/qg_jet_train_data_clean.nc"
   val_file: "jet/qg_jet_val_data.nc"
   test_file: "jet/qg_jet_test_data.nc"
   max_sequence_length: 5  # Maximum sequence length
@@ -20,9 +20,9 @@ model:
   conv_kwargs:
     padding: 1
     padding_mode: "circular"
-  latent_dim: 2048 # sparial_dimˆ2 * koopman latent dim
+  latent_dim: 1024 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 3
+  batch_size: 10
   learning_rate: 0.0001
   num_epochs: 100
   patience: 10
