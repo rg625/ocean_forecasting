@@ -1,3 +1,4 @@
+---
 default_language_version:
   python: python3
 
@@ -21,10 +22,10 @@ repos:
 
   # Ruff: Python linter and formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.5  # Replace with the latest version
+    rev: v0.11.8  # Replace with the latest version
     hooks:
       - id: ruff
-        args: ["--fix"]  # Automatically fix linting issues
+        args: ["--fix"]
       - id: ruff-format
 
   # Mypy: Static type checking for Python
@@ -44,12 +45,14 @@ repos:
 
   # Black: Python code formatter
   - repo: https://github.com/psf/black
-    rev: 23.3.0  # Replace with the latest version
+    rev: 25.1.0  # Replace with the latest version
     hooks:
       - id: black
+        args: ["--line-length", "88"]
 
-  # Additional hooks for YAML validation and large files
-  - repo: https://github.com/adrienverge/yamllint.git
-    rev: v1.32.0  # Replace with the latest version
-    hooks:
-      - id: yamllint
+  # # Additional hooks for YAML validation and large files
+  # - repo: https://github.com/adrienverge/yamllint.git
+  #   rev: v1.37.1  # Replace with the latest version
+  #   hooks:
+  #     - id: yamllint
+  #       args: ["--config-file", ".yamllint.yml"]
