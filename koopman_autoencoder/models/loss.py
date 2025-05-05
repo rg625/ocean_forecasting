@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from tensordict import TensorDict
 
 
 class KoopmanLoss(nn.Module):
@@ -18,54 +19,61 @@ class KoopmanLoss(nn.Module):
     @staticmethod
     def recon_loss(x, y):
         """
-        Explicit implementation of Mean Squared Error (MSE) loss for reconstruction.
+        Compute the reconstruction loss for each field in the TensorDict.
 
         Args:
-            x (torch.Tensor): Predicted tensor.
-            y (torch.Tensor): Ground truth tensor.
+            x (TensorDict): Predicted TensorDict.
+            y (TensorDict): Ground truth TensorDict.
 
         Returns:
-            torch.Tensor: MSE loss.
+            TensorDict: Reconstruction loss for each field.
         """
-        assert x.shape == y.shape, "x_recon and x_true must have the same shape"
-        diff = (x - y).flatten(start_dim=1)  # Flatten all non-batch dimensions
-        return (torch.square(diff).sum(dim=-1)).mean()  # Mean over all batches
+        losses = {}
+        for key in x.keys():
+            assert x[key].shape == y[key].shape, f"Shape mismatch for key '{key}'"
+            diff = (x[key] - y[key]).flatten(
+                start_dim=1
+            )  # Flatten all non-batch dimensions
+            losses[key] = (torch.square(diff).sum(dim=-1)).mean()  # Mean over batches
+        return TensorDict(losses, batch_size=[])
 
     @staticmethod
     def rollout_loss(x, y):
         """
-        Explicit implementation of Mean Squared Error (MSE) loss for rollouts.
+        Compute the rollout loss for each field in the TensorDict.
 
         Args:
-            x (torch.Tensor): Predicted tensor of shape [batch, N, ...].
-            y (torch.Tensor): Ground truth tensor of shape [batch, N, ...].
+            x (TensorDict): Predicted TensorDict of shape [batch, N, ...].
+            y (TensorDict): Ground truth TensorDict of shape [batch, N, ...].
 
         Returns:
-            torch.Tensor: MSE loss averaged over rollout steps.
+            TensorDict: Rollout loss for each field.
         """
-        assert x.shape == y.shape, "x_preds and x_future must have the same shape"
-        diff = (x - y).flatten(
-            start_dim=2
-        )  # Flatten all non-batch and non-rollout dimensions
-        per_step_loss = (torch.square(diff).sum(dim=-1)).mean(dim=0)  # Mean over batch
-        return per_step_loss.mean()  # Average over rollout steps
+        losses = {}
+        for key in x.keys():
+            assert x[key].shape == y[key].shape, f"Shape mismatch for key '{key}'"
+            diff = (x[key] - y[key]).flatten(
+                start_dim=2
+            )  # Flatten all non-batch and non-rollout dimensions
+            per_step_loss = (
+                torch.square(diff).sum(dim=-1).mean(dim=0)
+            )  # Mean over batches
+            losses[key] = per_step_loss.mean()  # Average over rollout steps
+        return TensorDict(losses, batch_size=[])
 
     def forward(self, x_recon, x_preds, latent_pred_differences, x_true, x_future):
         """
         Compute the Koopman loss.
 
         Args:
-            x_recon (torch.Tensor): Reconstructed input of shape [batch, channels, height, width].
-            x_preds (torch.Tensor): Rollout predictions of shape [batch, N, channels, height, width].
-            latent_pred_differences (torch.Tensor): Differences in latent space predictions, same shape as x_preds.
-            x_true (torch.Tensor): Ground truth input of shape [batch, channels, height, width].
-            x_future (torch.Tensor): Ground truth future states of shape [batch, N, channels, height, width].
+            x_recon (TensorDict): Reconstructed input of shape [batch, channels, height, width].
+            x_preds (TensorDict): Rollout predictions of shape [batch, N, channels, height, width].
+            latent_pred_differences (torch.Tensor): Differences in latent space predictions.
+            x_true (TensorDict): Ground truth input TensorDict.
+            x_future (TensorDict): Ground truth future states TensorDict.
 
         Returns:
-            total_loss (torch.Tensor): Combined total loss.
-            recon_loss (torch.Tensor): Reconstruction loss.
-            pred_loss (torch.Tensor): Prediction loss.
-            latent_loss (torch.Tensor): Latent consistency loss.
+            TensorDict: Combined total loss, reconstruction loss, prediction loss, and latent loss.
         """
         # Reconstruction loss
         recon_loss = self.recon_loss(x_recon, x_true)
@@ -74,11 +82,26 @@ class KoopmanLoss(nn.Module):
         pred_loss = self.rollout_loss(x_preds, x_future)
 
         # Latent consistency loss (averaged over the rollout steps)
-        latent_loss = self.rollout_loss(
-            latent_pred_differences, torch.zeros_like(latent_pred_differences)
+        latent_loss_value = torch.mean(
+            torch.square(latent_pred_differences.flatten(start_dim=2))
         )
+        latent_loss = TensorDict({"latent": latent_loss_value}, batch_size=[])
 
         # Combine the losses
-        total_loss = recon_loss + self.alpha * pred_loss + self.beta * latent_loss
+        total_loss_value = (
+            sum(recon_loss.values())
+            + self.alpha * sum(pred_loss.values())
+            + self.beta * latent_loss["latent"]
+        )
+        total_loss = TensorDict({"total": total_loss_value}, batch_size=[])
 
-        return total_loss, recon_loss, pred_loss, latent_loss
+        # Return all losses as TensorDicts
+        return TensorDict(
+            {
+                "total_loss": total_loss,
+                "recon_loss": recon_loss,
+                "pred_loss": pred_loss,
+                "latent_loss": latent_loss,
+            },
+            batch_size=[],
+        )

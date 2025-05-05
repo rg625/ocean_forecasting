@@ -7,7 +7,6 @@ import yaml
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.dataloader import QGDataset, create_dataloaders
-from models.visualization import visualize_results
 from models.trainer import Trainer
 
 
@@ -83,20 +82,11 @@ def main(config_path):
     history = trainer.run_training_loop()
 
     # Evaluate the model on the test set
-    test_metrics = trainer.evaluate(test_loader)
+    test_metrics = trainer.evaluate(test_loader, epoch=-1)
     print("\nTest Set Results:")
     print(f"Loss: {test_metrics['loss']:.4f}")
     print(f"Reconstruction Loss: {test_metrics['recon_loss']:.4f}")
     print(f"Prediction Loss: {test_metrics['pred_loss']:.4f}")
-
-    # Visualize results
-    visualize_results(
-        model,
-        test_dataset,
-        num_samples=4,
-        device=device,
-        output_dir=output_dir / "visualizations",
-    )
 
     # Save final model and log it to W&B
     torch.save(

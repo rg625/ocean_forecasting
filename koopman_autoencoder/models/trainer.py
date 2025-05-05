@@ -1,9 +1,11 @@
 import torch
+from tensordict import TensorDict
 import matplotlib.pyplot as plt
 from pathlib import Path
 import yaml
 from tqdm import tqdm
 import wandb
+from models.utils import average_losses, accumulate_losses, denormalize_and_visualize
 
 
 class Trainer:
@@ -43,14 +45,7 @@ class Trainer:
         self.patience = patience
         self.best_val_loss = float("inf")
         self.patience_counter = 0
-        self.history: dict[str, list[float]] = {
-            "train_loss": [],
-            "val_loss": [],
-            "train_recon_loss": [],
-            "val_recon_loss": [],
-            "train_pred_loss": [],
-            "val_pred_loss": [],
-        }
+        self.history: dict[str, dict[str, list[float]]] = {}
         self.output_dir = Path(output_dir) if output_dir else None
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True)
@@ -67,19 +62,19 @@ class Trainer:
             Loss value for the step.
         """
         self.model.train()
-        seq_length = target.size(1)
         input, target = input.to(self.device), target.to(self.device)
         self.optimizer.zero_grad()
 
         # Forward pass
         x_recon, x_preds, z_preds, latent_pred_differences = self.model(
-            input, seq_length=seq_length
+            input, seq_length=target["seq_length"]
         )
 
         # Compute loss
-        loss, recon_loss, pred_loss, latent_loss = self.criterion(
+        losses = self.criterion(
             x_recon, x_preds, latent_pred_differences, input[:, -1], target
         )
+        loss = losses["total_loss"]["total"]
 
         # Backward pass and optimization
         loss.backward()
@@ -87,34 +82,54 @@ class Trainer:
 
         return loss.item()
 
-    def evaluate(self, dataloader):
+    def evaluate(self, dataloader, epoch):
+        """
+        Evaluates the model on the given dataloader.
+
+        Args:
+            dataloader: DataLoader to evaluate on.
+            epoch: Current epoch.
+
+        Returns:
+            TensorDict: Averaged losses over the dataset.
+        """
         self.model.eval()
-        total_loss = 0
-        total_recon_loss = 0
-        total_pred_loss = 0
-        total_latent_loss = 0
+        total_losses = TensorDict({}, batch_size=[])
 
         with torch.no_grad():
             for input, target in dataloader:
                 input, target = input.to(self.device), target.to(self.device)
                 x_recon, x_preds, z_preds, latent_pred_differences = self.model(
-                    input, seq_length=target.size(1)
+                    input, seq_length=target["seq_length"]
                 )
-                loss, recon_loss, pred_loss, latent_loss = self.criterion(
+                losses = self.criterion(
                     x_recon, x_preds, latent_pred_differences, input[:, -1], target
                 )
-                total_loss += loss.item()
-                total_recon_loss += recon_loss.item()
-                total_pred_loss += pred_loss.item()
-                total_latent_loss += latent_loss.item()
 
+                # Accumulate losses
+                total_losses = accumulate_losses(total_losses, losses)
+
+                # Visualization for the first batch
+                if epoch == 0 and self.output_dir:
+                    input_denorm = dataloader.denormalize(input)
+                    target_denorm = dataloader.denormalize(target)
+                    x_preds_denorm = dataloader.denormalize(x_preds)
+
+                    denormalize_and_visualize(
+                        epoch,
+                        input_denorm,
+                        target_denorm,
+                        x_recon,
+                        x_preds_denorm,
+                        self.output_dir,
+                    )
+                break  # Break after the first batch for visualization
+
+        # Average losses over batches
         n_batches = len(dataloader)
-        return {
-            "loss": total_loss / n_batches,
-            "recon_loss": total_recon_loss / n_batches,
-            "pred_loss": total_pred_loss / n_batches,
-            "latent_loss": total_latent_loss / n_batches,
-        }
+        total_losses = average_losses(total_losses, n_batches)
+
+        return total_losses
 
     def save_checkpoint(self, epoch, val_loss):
         """
@@ -136,33 +151,29 @@ class Trainer:
                 self.output_dir / "best_model.pth",
             )
 
-    def log_metrics(self, epoch, train_metrics, val_metrics):
+    def log_metrics(self, epoch, train_losses, val_losses):
         """
         Logs metrics to W&B and updates the history.
 
         Args:
             epoch: Current epoch.
-            train_metrics: Training metrics for the epoch.
-            val_metrics: Validation metrics for the epoch.
+            train_losses: Training losses for the epoch as a TensorDict.
+            val_losses: Validation losses for the epoch as a TensorDict.
         """
-        self.history["train_loss"].append(train_metrics["loss"])
-        self.history["val_loss"].append(val_metrics["loss"])
-        self.history["train_recon_loss"].append(train_metrics["recon_loss"])
-        self.history["val_recon_loss"].append(val_metrics["recon_loss"])
-        self.history["train_pred_loss"].append(train_metrics["pred_loss"])
-        self.history["val_pred_loss"].append(val_metrics["pred_loss"])
+        # Log to history
+        for key in train_losses.keys():
+            if key not in self.history:
+                self.history[key] = {"train": [], "val": []}
+            self.history[key]["train"].append(train_losses[key].item())
+            self.history[key]["val"].append(val_losses[key].item())
 
-        wandb.log(
-            {
-                "epoch": epoch + 1,
-                "train_loss": train_metrics["loss"],
-                "val_loss": val_metrics["loss"],
-                "train_recon_loss": train_metrics["recon_loss"],
-                "val_recon_loss": val_metrics["recon_loss"],
-                "train_pred_loss": train_metrics["pred_loss"],
-                "val_pred_loss": val_metrics["pred_loss"],
-            }
-        )
+        # Log to W&B
+        wandb_log_dict = {"epoch": epoch + 1}
+        for key, value in train_losses.items():
+            wandb_log_dict[f"train_{key}"] = value.item()
+        for key, value in val_losses.items():
+            wandb_log_dict[f"val_{key}"] = value.item()
+        wandb.log(wandb_log_dict)
 
     def plot_training_history(self):
         """
@@ -170,8 +181,9 @@ class Trainer:
         """
         if self.output_dir:
             plt.figure(figsize=(12, 6))
-            plt.plot(self.history["train_loss"], label="Train Loss")
-            plt.plot(self.history["val_loss"], label="Val Loss")
+            for key in self.history.keys():
+                plt.plot(self.history[key]["train"], label=f"Train {key}")
+                plt.plot(self.history[key]["val"], label=f"Val {key}")
             plt.xlabel("Epoch")
             plt.ylabel("Loss")
             plt.title("Training History")
@@ -196,23 +208,23 @@ class Trainer:
                 self.train_step(input, target)
 
             # Evaluate on train and validation sets
-            train_metrics = self.evaluate(self.train_loader)
-            val_metrics = self.evaluate(self.val_loader)
+            train_losses = self.evaluate(self.train_loader, epoch=epoch)
+            val_losses = self.evaluate(self.val_loader, epoch=epoch)
 
             # Log metrics and update progress bar
-            self.log_metrics(epoch, train_metrics, val_metrics)
+            self.log_metrics(epoch, train_losses, val_losses)
             progress_bar.set_postfix(
                 {
-                    "Train Loss": f"{train_metrics['loss']:.4f}",
-                    "Val Loss": f"{val_metrics['loss']:.4f}",
+                    "Train Loss": f"{train_losses['total_loss']['total']:.4f}",
+                    "Val Loss": f"{val_losses['total_loss']['total']:.4f}",
                 }
             )
 
             # Early stopping and checkpoint saving
-            if val_metrics["loss"] < self.best_val_loss:
-                self.best_val_loss = val_metrics["loss"]
+            if val_losses["total_loss"]["total"] < self.best_val_loss:
+                self.best_val_loss = val_losses["total_loss"]["total"]
                 self.patience_counter = 0
-                self.save_checkpoint(epoch, val_metrics["loss"])
+                self.save_checkpoint(epoch, val_losses["total_loss"]["total"])
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:

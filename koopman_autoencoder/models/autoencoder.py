@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from models.cnn import ConvEncoder, ConvDecoder
+from tensordict import TensorDict
 
 
 class KoopmanOperator(nn.Module):
@@ -98,46 +99,56 @@ class KoopmanAutoencoder(nn.Module):
         Encode the input data into the latent space.
 
         Parameters:
-            x: torch.Tensor
-                Input tensor of shape (batch_size, channels, height, width).
+            x: TensorDict
+                Input TensorDict with tensors of shape (batch_size, seq_length, height, width).
 
         Returns:
-            torch.Tensor: Latent representation.
+            TensorDict: Updated TensorDict with key 'latent'.
         """
+        # Stack tensors along the channel dimension
+        stacked_input = torch.cat(
+            [x[var] for var in x.keys()], dim=1
+        )  # Shape: (batch_size, seq_length, channels, height, width)
+        self.vars = list(x.keys())  # Convert keys to a list
+        batch_size, seq_length, height, width = stacked_input.shape
+        stacked_input = stacked_input.view(batch_size, seq_length, height, width)
 
-        # Collapse the sequence and batch dimensions
-        batch_size, sequence_length, channels, height, width = x.shape
-        x = x.view(
-            batch_size, sequence_length * channels, height, width
-        )  # Merge batch and sequence dims
-        z = self.encoder(x)  # Pass through encoder
-        return z.view(batch_size, *z.shape[1:])  # Restore sequence dim
+        # Pass stacked input through the encoder
+        latent = self.encoder(stacked_input)
+        return latent
 
-    def decode(self, z):
+    def decode(self, x):
         """
         Decode the latent representation back to the input space.
 
         Parameters:
-            z: torch.Tensor
-                Latent representation of shape (batch_size, latent_dim).
+            x: TensorDict
+                TensorDict with key 'latent' of shape (batch_size, latent_dim).
 
         Returns:
-            torch.Tensor: Reconstructed input.
+            TensorDict: Updated TensorDict with reconstructed variables.
         """
-        return self.decoder(z)
+        # Decode the latent representation
+        reconstructed = self.decoder(
+            x
+        )  # Shape: (batch_size, channels * seq_length, height, width)
+
+        return TensorDict(
+            {self.vars[i]: reconstructed[:, i] for i in range(len(self.vars))}
+        )
 
     def predict_latent(self, z):
         """
         Predict the next state in latent space.
 
         Parameters:
-            z: torch.Tensor
-                Current latent state.
+            z: TensorDict
+                TensorDict with key 'latent'.
 
         Returns:
-            torch.Tensor: Predicted next latent state.
+            TensorDict: Updated TensorDict with key 'latent_pred'.
         """
-        return z + self.koopman_operator(z)
+        return self.koopman_operator(z)
 
     def forward(self, x, seq_length=1):
         """
@@ -158,19 +169,29 @@ class KoopmanAutoencoder(nn.Module):
         z_preds = [z]
 
         # Roll out predictions for the given sequence length
-        for _ in range(seq_length):
+        for _ in range(seq_length[0]):
             z_pred = self.predict_latent(z_pred)
             z_preds.append(z_pred)
 
         # Decode predictions
         x_recon = self.decode(z_preds[0])  # Reconstruction from initial z
-        x_preds = torch.stack([self.decode(z_step) for z_step in z_preds[1:]], dim=1)
+        # Construct x_preds as a TensorDict, stacking along the seq_length dimension
+        x_preds = TensorDict(
+            {
+                key: torch.stack(
+                    [self.decode(z_step)[key] for z_step in z_preds[1:]],
+                    dim=1,  # Stack along the seq_length dimension
+                )
+                for key in self.vars
+            },
+            batch_size=[x.shape[0]],  # Maintain batch size consistency
+        )
 
         # Compute latent prediction differences
         latent_pred_differences = torch.stack(
             [
                 z_preds[t + 1] - self.predict_latent(z_preds[t])
-                for t in range(seq_length)
+                for t in range(seq_length[0])
             ],
             dim=1,
         )
