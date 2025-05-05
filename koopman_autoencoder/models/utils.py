@@ -6,6 +6,32 @@ import torch
 from tensordict import TensorDict
 
 
+def tensor_dict_to_json(tensor_dict):
+    """
+    Convert a TensorDict or Tensor to a JSON-serializable dictionary or list.
+
+    Args:
+        tensor_dict (TensorDict or torch.Tensor): Input TensorDict or tensor.
+
+    Returns:
+        dict or list or scalar: JSON-serializable dictionary, list, or scalar.
+    """
+    if isinstance(tensor_dict, torch.Tensor):
+        # Handle tensors: return as a Python scalar if it's a single value, otherwise convert to a list
+        return (
+            tensor_dict.item()
+            if tensor_dict.numel() == 1
+            else tensor_dict.cpu().numpy().tolist()
+        )
+    elif isinstance(tensor_dict, TensorDict):
+        # Handle TensorDict: recursively convert each item to JSON-serializable format
+        return {key: tensor_dict_to_json(value) for key, value in tensor_dict.items()}
+    else:
+        raise TypeError(
+            f"Unsupported type for tensor_dict_to_json: {type(tensor_dict)}"
+        )
+
+
 def plot_comparison(
     x, x_recon, output_dir=None, title="reconstruction_comparison_epoch", epoch=None
 ):
@@ -147,10 +173,10 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, epoch=None):
         filename = output_dir / f"energy_spectrum_comparison_epoch_{epoch}.png"
         plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
 
-        # Log to W&B
-        wandb.log(
-            {f"energy_spectrum_comparison_epoch {epoch}": wandb.Image(str(filename))}
-        )
+        # # Log to W&B
+        # wandb.log(
+        #     {f"energy_spectrum_comparison_epoch {epoch}": wandb.Image(str(filename))}
+        # )
 
     plt.close()
 

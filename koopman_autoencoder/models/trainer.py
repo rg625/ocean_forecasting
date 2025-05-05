@@ -5,7 +5,12 @@ from pathlib import Path
 import yaml
 from tqdm import tqdm
 import wandb
-from models.utils import average_losses, accumulate_losses, denormalize_and_visualize
+from models.utils import (
+    average_losses,
+    accumulate_losses,
+    denormalize_and_visualize,
+    tensor_dict_to_json,
+)
 
 
 class Trainer:
@@ -74,13 +79,13 @@ class Trainer:
         losses = self.criterion(
             x_recon, x_preds, latent_pred_differences, input[:, -1], target
         )
-        loss = losses["total_loss"]["total"]
+        loss = losses["total_loss"]
 
         # Backward pass and optimization
         loss.backward()
         self.optimizer.step()
 
-        return loss.item()
+        return losses
 
     def evaluate(self, dataloader, epoch):
         """
@@ -151,41 +156,44 @@ class Trainer:
                 self.output_dir / "best_model.pth",
             )
 
-    def log_metrics(self, epoch, train_losses, val_losses):
+    def log_metrics(self, step, losses, prefix="train_"):
         """
-        Logs metrics to W&B and updates the history.
+        Logs metrics to W&B.
 
         Args:
-            epoch: Current epoch.
-            train_losses: Training losses for the epoch as a TensorDict.
-            val_losses: Validation losses for the epoch as a TensorDict.
+            step: Current step (iteration or epoch).
+            losses: Losses for the step as a dictionary.
+            prefix: Prefix for logging (e.g., 'train_' or 'val_').
         """
-        # Log to history
-        for key in train_losses.keys():
-            if key not in self.history:
-                self.history[key] = {"train": [], "val": []}
-            # Ensure values are scalar before calling .item()
-            train_value = (
-                train_losses[key].item()
-                if isinstance(train_losses[key], torch.Tensor)
-                else train_losses.item()
-            )
-            val_value = (
-                val_losses[key].item()
-                if isinstance(val_losses[key], torch.Tensor)
-                else val_losses.item()
-            )
-            self.history[key]["train"].append(train_value)
-            self.history[key]["val"].append(val_value)
+        # Prepare the W&B log dictionary
+        wandb_log_dict = {"step": step}
 
-        # Convert TensorDict values to scalars for W&B logging
-        wandb_log_dict = {"epoch": epoch + 1}
-        for key, value in train_losses.items():
-            train_value = value.item() if isinstance(value, torch.Tensor) else value
-            wandb_log_dict[f"train_{key}"] = train_value
-        for key, value in val_losses.items():
-            val_value = value.item() if isinstance(value, torch.Tensor) else value
-            wandb_log_dict[f"val_{key}"] = val_value
+        for key, value in losses.items():
+            if isinstance(value, dict):  # For nested dictionaries
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, TensorDict):  # Check if it's a TensorDict
+                        wandb_log_dict[f"{prefix}{key}_{sub_key}"] = (
+                            tensor_dict_to_json(sub_value)
+                        )
+                    elif isinstance(sub_value, torch.Tensor):  # Check if it's a tensor
+                        wandb_log_dict[f"{prefix}{key}_{sub_key}"] = (
+                            sub_value.item()
+                            if sub_value.numel() == 1
+                            else sub_value.cpu().numpy().tolist()
+                        )
+                    else:  # Handle scalars or other types
+                        wandb_log_dict[f"{prefix}{key}_{sub_key}"] = sub_value
+            elif isinstance(value, TensorDict):  # For top-level TensorDicts
+                for sub_key, sub_value in value.items():
+                    wandb_log_dict[f"{prefix}{key}_{sub_key}"] = tensor_dict_to_json(
+                        sub_value
+                    )
+            elif isinstance(value, torch.Tensor):  # For top-level tensors
+                wandb_log_dict[f"{prefix}{key}"] = (
+                    value.item() if value.numel() == 1 else value.cpu().numpy().tolist()
+                )
+            else:  # For other types (e.g., scalars)
+                wandb_log_dict[f"{prefix}{key}"] = value
 
         # Log to W&B
         wandb.log(wandb_log_dict)
@@ -217,29 +225,33 @@ class Trainer:
             Dictionary with training history.
         """
         progress_bar = tqdm(range(self.num_epochs), desc="Training", unit="epoch")
+        global_step = 0  # Track the global training step
         for epoch in progress_bar:
             # Training step
             for input, target in self.train_loader:
-                self.train_step(input, target)
+                losses = self.train_step(input, target)
+                self.log_metrics(global_step, losses, prefix="train_")
+                global_step += 1
 
             # Evaluate on train and validation sets
             train_losses = self.evaluate(self.train_loader, epoch=epoch)
             val_losses = self.evaluate(self.val_loader, epoch=epoch)
 
             # Log metrics and update progress bar
-            self.log_metrics(epoch, train_losses, val_losses)
+            self.log_metrics(epoch, train_losses, prefix="epoch_train_")
+            self.log_metrics(epoch, val_losses, prefix="epoch_val_")
             progress_bar.set_postfix(
                 {
-                    "Train Loss": f"{train_losses['total_loss']['total']:.4f}",
-                    "Val Loss": f"{val_losses['total_loss']['total']:.4f}",
+                    "Train Loss": f"{train_losses['total_loss']:.4f}",
+                    "Val Loss": f"{val_losses['total_loss']:.4f}",
                 }
             )
 
             # Early stopping and checkpoint saving
-            if val_losses["total_loss"]["total"] < self.best_val_loss:
-                self.best_val_loss = val_losses["total_loss"]["total"]
+            if val_losses["total_loss"] < self.best_val_loss:
+                self.best_val_loss = val_losses["total_loss"]
                 self.patience_counter = 0
-                self.save_checkpoint(epoch, val_losses["total_loss"]["total"])
+                self.save_checkpoint(epoch, val_losses["total_loss"])
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:

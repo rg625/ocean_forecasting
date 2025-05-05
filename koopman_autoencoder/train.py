@@ -55,6 +55,7 @@ def main(config_path):
         width=config["model"]["width"],
         latent_dim=config["model"]["latent_dim"],
         hidden_dims=config["model"]["hidden_dims"],
+        use_checkpoint=config["training"]["use_checkpoint"],
         **config["model"]["conv_kwargs"],
     ).to(device)
 

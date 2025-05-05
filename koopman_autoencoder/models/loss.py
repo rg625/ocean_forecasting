@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from tensordict import TensorDict
 
 
 class KoopmanLoss(nn.Module):
@@ -19,47 +18,54 @@ class KoopmanLoss(nn.Module):
     @staticmethod
     def recon_loss(x, y):
         """
-        Compute the reconstruction loss for each field in the TensorDict.
+        Compute the reconstruction loss per variable.
 
         Args:
             x (TensorDict): Predicted TensorDict.
             y (TensorDict): Ground truth TensorDict.
 
         Returns:
-            TensorDict: Reconstruction loss for each field.
+            dict: Reconstruction loss per variable.
         """
+        assert x.batch_size == y.batch_size, "Mismatch in batch size."
         losses = {}
         for key in x.keys():
-            assert x[key].shape == y[key].shape, f"Shape mismatch for key '{key}'"
             diff = (x[key] - y[key]).flatten(
                 start_dim=1
             )  # Flatten all non-batch dimensions
-            losses[key] = (torch.square(diff).sum(dim=-1)).mean()  # Mean over batches
-        return TensorDict(losses, batch_size=[])
+            losses[key] = (
+                torch.square(diff).sum(dim=-1).mean().item()
+            )  # Mean over batches (no backprop)
+        return losses
 
     @staticmethod
     def rollout_loss(x, y):
         """
-        Compute the rollout loss for each field in the TensorDict.
+        Compute the rollout loss per variable, ignoring the `seq_length` key.
 
         Args:
             x (TensorDict): Predicted TensorDict of shape [batch, N, ...].
             y (TensorDict): Ground truth TensorDict of shape [batch, N, ...].
 
         Returns:
-            TensorDict: Rollout loss for each field.
+            dict: Rollout loss per variable.
         """
+        assert x.batch_size == y.batch_size, "Mismatch in batch size."
+
+        # Exclude the `seq_length` key
+        x_filtered = x.exclude("seq_length")
+        y_filtered = y.exclude("seq_length")
+
         losses = {}
-        for key in x.keys():
-            assert x[key].shape == y[key].shape, f"Shape mismatch for key '{key}'"
-            diff = (x[key] - y[key]).flatten(
+        for key in x_filtered.keys():
+            diff = (x_filtered[key] - y_filtered[key]).flatten(
                 start_dim=2
-            )  # Flatten all non-batch and non-rollout dimensions
+            )  # Flatten non-batch and non-rollout dims
             per_step_loss = (
-                torch.square(diff).sum(dim=-1).mean(dim=0)
-            )  # Mean over batches
-            losses[key] = per_step_loss.mean()  # Average over rollout steps
-        return TensorDict(losses, batch_size=[])
+                torch.square(diff).sum(dim=-1).mean(dim=0).mean()
+            )  # Average over batches and steps
+            losses[key] = per_step_loss.item()  # No backpropagation
+        return losses
 
     def forward(self, x_recon, x_preds, latent_pred_differences, x_true, x_future):
         """
@@ -73,35 +79,34 @@ class KoopmanLoss(nn.Module):
             x_future (TensorDict): Ground truth future states TensorDict.
 
         Returns:
-            TensorDict: Combined total loss, reconstruction loss, prediction loss, and latent loss.
+            dict: Combined total loss, reconstruction loss (per variable), prediction loss (per variable), and latent loss.
         """
-        # Reconstruction loss
-        recon_loss = self.recon_loss(x_recon, x_true)
+        # Reconstruction loss (per variable)
+        recon_loss_per_variable = self.recon_loss(x_recon, x_true)
 
-        # Prediction loss (averaged over the rollout steps)
-        pred_loss = self.rollout_loss(x_preds, x_future)
+        # Prediction loss (per variable)
+        pred_loss_per_variable = self.rollout_loss(x_preds, x_future)
 
         # Latent consistency loss (averaged over the rollout steps)
-        latent_loss_value = torch.mean(
+        latent_loss = torch.mean(
             torch.square(latent_pred_differences.flatten(start_dim=2))
         )
-        latent_loss = TensorDict({"latent": latent_loss_value}, batch_size=[])
 
-        # Combine the losses
-        total_loss_value = (
-            sum(recon_loss.values())
-            + self.alpha * sum(pred_loss.values())
-            + self.beta * latent_loss["latent"]
+        # Combine total losses (only total_loss will backpropagate)
+        total_loss = (
+            sum(recon_loss_per_variable.values())
+            + self.alpha * sum(pred_loss_per_variable.values())
+            + self.beta * latent_loss
         )
-        total_loss = TensorDict({"total": total_loss_value}, batch_size=[])
 
-        # Return all losses as TensorDicts
-        return TensorDict(
-            {
-                "total_loss": total_loss,
-                "recon_loss": recon_loss,
-                "pred_loss": pred_loss,
-                "latent_loss": latent_loss,
-            },
-            batch_size=[],
-        )
+        # Detach latent_loss and per-variable losses for logging/no-backprop
+        return {
+            "total_loss": total_loss,  # This will backpropagate
+            "latent_loss": latent_loss.detach().item(),
+            "recon_loss": {
+                key: value for key, value in recon_loss_per_variable.items()
+            },  # Already detached (float)
+            "pred_loss": {
+                key: value for key, value in pred_loss_per_variable.items()
+            },  # Already detached (float)
+        }

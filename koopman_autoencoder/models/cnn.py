@@ -1,5 +1,6 @@
 from itertools import pairwise
 from torch import nn
+from models.checkpoint import checkpoint
 
 
 class ConvBlock(nn.Module):
@@ -10,6 +11,7 @@ class ConvBlock(nn.Module):
         block_size=1,
         kernel_size=3,
         decoder_block=False,
+        use_checkpoint=False,  # Add this to toggle checkpointing
         **conv_kwargs,
     ):
         """
@@ -26,10 +28,14 @@ class ConvBlock(nn.Module):
                 Size of the convolution kernel.
             decoder_block: bool
                 If True, the block is used in a decoder, and layer configurations are adjusted accordingly.
+            use_checkpoint: bool
+                If True, enables gradient checkpointing for the block.
             conv_kwargs: dict
                 Additional arguments for nn.Conv2d.
         """
         super().__init__()
+        self.use_checkpoint = use_checkpoint  # Store the checkpointing flag
+
         if not decoder_block:
             first_layer = [
                 nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs),
@@ -52,6 +58,15 @@ class ConvBlock(nn.Module):
             self.stack = nn.ModuleList([*initial_layers, *output_layer])
 
     def forward(self, x):
+        # Use gradient checkpointing if the flag is enabled
+        if self.use_checkpoint:
+            return checkpoint(
+                self._forward, (x,), self.parameters(), self.use_checkpoint
+            )
+        else:
+            return self._forward(x)
+
+    def _forward(self, x):
         for module in self.stack:
             x = module(x)
         return x
@@ -68,6 +83,7 @@ class BaseEncoderDecoder(nn.Module):
         block_size=1,
         kernel_size=3,
         is_encoder=True,
+        use_checkpoint=False,  # Add checkpointing flag here
         **conv_kwargs,
     ):
         """
@@ -80,7 +96,7 @@ class BaseEncoderDecoder(nn.Module):
                 Input height dimension.
             W: int
                 Input width dimension.
-            D: int
+            latent_dim: int
                 Latent dimensionality.
             hiddens: list of int
                 List of hidden dimensions for each block.
@@ -90,6 +106,8 @@ class BaseEncoderDecoder(nn.Module):
                 Size of the convolutional kernel.
             is_encoder: bool
                 Specifies whether the block is an encoder (True) or decoder (False).
+            use_checkpoint: bool
+                If True, enables gradient checkpointing for convolutional blocks.
             conv_kwargs: dict
                 Additional arguments for nn.Conv2d.
         """
@@ -100,6 +118,7 @@ class BaseEncoderDecoder(nn.Module):
         self.D = latent_dim
         self.hiddens = hiddens
         self.is_encoder = is_encoder
+        self.use_checkpoint = use_checkpoint  # Store the flag
 
         # Compute the output dimensions after pooling
         self.n_pools = len(hiddens)
@@ -143,6 +162,7 @@ class BaseEncoderDecoder(nn.Module):
                     block_size,
                     kernel_size,
                     decoder_block=False,
+                    use_checkpoint=self.use_checkpoint,  # Pass the flag
                     **conv_kwargs,
                 )
             )
@@ -155,6 +175,7 @@ class BaseEncoderDecoder(nn.Module):
                         block_size,
                         kernel_size,
                         decoder_block=False,
+                        use_checkpoint=self.use_checkpoint,  # Pass the flag
                         **conv_kwargs,
                     )
                 )
@@ -169,6 +190,7 @@ class BaseEncoderDecoder(nn.Module):
                         block_size,
                         kernel_size,
                         decoder_block=True,
+                        use_checkpoint=self.use_checkpoint,  # Pass the flag
                         **conv_kwargs,
                     )
                 )
@@ -180,6 +202,7 @@ class BaseEncoderDecoder(nn.Module):
                     block_size,
                     kernel_size,
                     decoder_block=True,
+                    use_checkpoint=self.use_checkpoint,  # Pass the flag
                     **conv_kwargs,
                 )
             )
@@ -200,14 +223,17 @@ class BaseEncoderDecoder(nn.Module):
 
 class ConvEncoder(BaseEncoderDecoder):
     def __init__(
-        self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, **conv_kwargs
+        self,
+        C,
+        H,
+        W,
+        latent_dim,
+        hiddens,
+        block_size=1,
+        kernel_size=3,
+        use_checkpoint=False,
+        **conv_kwargs,
     ):
-        """
-        Encoder module for encoding input into a latent representation.
-
-        Parameters:
-            See BaseEncoderDecoder.
-        """
         super().__init__(
             C,
             H,
@@ -217,20 +243,24 @@ class ConvEncoder(BaseEncoderDecoder):
             block_size,
             kernel_size,
             is_encoder=True,
+            use_checkpoint=use_checkpoint,  # Pass the flag
             **conv_kwargs,
         )
 
 
 class ConvDecoder(BaseEncoderDecoder):
     def __init__(
-        self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, **conv_kwargs
+        self,
+        C,
+        H,
+        W,
+        latent_dim,
+        hiddens,
+        block_size=1,
+        kernel_size=3,
+        use_checkpoint=False,
+        **conv_kwargs,
     ):
-        """
-        Decoder module for reconstructing input from a latent representation.
-
-        Parameters:
-            See BaseEncoderDecoder.
-        """
         super().__init__(
             C,
             H,
@@ -240,5 +270,6 @@ class ConvDecoder(BaseEncoderDecoder):
             block_size,
             kernel_size,
             is_encoder=False,
+            use_checkpoint=use_checkpoint,  # Pass the flag
             **conv_kwargs,
         )

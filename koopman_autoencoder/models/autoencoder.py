@@ -2,10 +2,11 @@ import torch
 from torch import nn
 from models.cnn import ConvEncoder, ConvDecoder
 from tensordict import TensorDict
+from models.checkpoint import checkpoint
 
 
 class KoopmanOperator(nn.Module):
-    def __init__(self, latent_dim):
+    def __init__(self, latent_dim, use_checkpoint=False):
         """
         Koopman operator for linear dynamics in latent space.
 
@@ -14,10 +15,20 @@ class KoopmanOperator(nn.Module):
                 Dimensionality of the latent space.
         """
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.latent_dim = latent_dim
         self.koopman_operator = nn.Linear(latent_dim, latent_dim, bias=False)
 
     def forward(self, z):
+        # Use gradient checkpointing if the flag is enabled
+        if self.use_checkpoint:
+            return checkpoint(
+                self._forward, (z,), self.parameters(), self.use_checkpoint
+            )
+        else:
+            return self._forward(z)
+
+    def _forward(self, z):
         """
         Apply Koopman operator to predict the next state.
 
@@ -42,6 +53,7 @@ class KoopmanAutoencoder(nn.Module):
         hidden_dims=[64, 128, 64],
         block_size=2,
         kernel_size=3,
+        use_checkpoint=False,
         **conv_kwargs,
     ):
         """
@@ -76,6 +88,7 @@ class KoopmanAutoencoder(nn.Module):
             hiddens=hidden_dims,
             block_size=block_size,
             kernel_size=kernel_size,
+            use_checkpoint=use_checkpoint,
             **conv_kwargs,
         )
 
@@ -88,11 +101,14 @@ class KoopmanAutoencoder(nn.Module):
             hiddens=hidden_dims,
             block_size=block_size,
             kernel_size=kernel_size,
+            use_checkpoint=use_checkpoint,
             **conv_kwargs,
         )
 
         # Initialize Koopman Operator
-        self.koopman_operator = KoopmanOperator(latent_dim)
+        self.koopman_operator = KoopmanOperator(
+            latent_dim, use_checkpoint=use_checkpoint
+        )
 
     def encode(self, x):
         """
@@ -134,7 +150,8 @@ class KoopmanAutoencoder(nn.Module):
         )  # Shape: (batch_size, channels * seq_length, height, width)
 
         return TensorDict(
-            {self.vars[i]: reconstructed[:, i] for i in range(len(self.vars))}
+            {self.vars[i]: reconstructed[:, i] for i in range(len(self.vars))},
+            batch_size=x.size(0),
         )
 
     def predict_latent(self, z):
