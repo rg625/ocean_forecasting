@@ -164,15 +164,28 @@ class Trainer:
         for key in train_losses.keys():
             if key not in self.history:
                 self.history[key] = {"train": [], "val": []}
-            self.history[key]["train"].append(train_losses[key].item())
-            self.history[key]["val"].append(val_losses[key].item())
+            # Ensure values are scalar before calling .item()
+            train_value = (
+                train_losses[key].item()
+                if isinstance(train_losses[key], torch.Tensor)
+                else train_losses[key]
+            )
+            val_value = (
+                val_losses[key].item()
+                if isinstance(val_losses[key], torch.Tensor)
+                else val_losses[key]
+            )
+            self.history[key]["train"].append(train_value)
+            self.history[key]["val"].append(val_value)
 
         # Log to W&B
         wandb_log_dict = {"epoch": epoch + 1}
         for key, value in train_losses.items():
-            wandb_log_dict[f"train_{key}"] = value.item()
+            train_value = value.item() if isinstance(value, torch.Tensor) else value
+            wandb_log_dict[f"train_{key}"] = train_value
         for key, value in val_losses.items():
-            wandb_log_dict[f"val_{key}"] = value.item()
+            val_value = value.item() if isinstance(value, torch.Tensor) else value
+            wandb_log_dict[f"val_{key}"] = val_value
         wandb.log(wandb_log_dict)
 
     def plot_training_history(self):
