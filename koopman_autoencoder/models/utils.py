@@ -23,7 +23,9 @@ def plot_comparison(
     """
     variables = x.keys()  # Get variable names from TensorDict
     num_channels = len(variables)  # Number of variables
-    fig, axes = plt.subplots(3, num_channels, figsize=(15, 15))
+    fig, axes = plt.subplots(
+        3, num_channels, figsize=(4 * num_channels, 12)
+    )  # Adjusted size
 
     # Iterate through variables to plot input, reconstructed, and error images
     for j, var in enumerate(variables):
@@ -34,7 +36,7 @@ def plot_comparison(
 
         # Plot input image
         mat = axes[0, j].matshow(x_var.cpu().numpy(), cmap="RdBu_r", aspect="auto")
-        axes[0, j].set_title(f"True {var}")
+        axes[0, j].set_title(f"True {var}", fontsize=12)
         axes[0, j].axis("off")
         plt.colorbar(mat, ax=axes[0, j])
 
@@ -42,13 +44,13 @@ def plot_comparison(
         mat = axes[1, j].matshow(
             x_recon_var.cpu().numpy(), cmap="RdBu_r", aspect="auto"
         )
-        axes[1, j].set_title(f"Reconstructed {var}")
+        axes[1, j].set_title(f"Reconstructed {var}", fontsize=12)
         axes[1, j].axis("off")
         plt.colorbar(mat, ax=axes[1, j])
 
         # Plot error image
         mat = axes[2, j].matshow(error.cpu().numpy(), cmap="hot", aspect="auto")
-        axes[2, j].set_title(f"Error {var}")
+        axes[2, j].set_title(f"Error {var}", fontsize=12)
         axes[2, j].axis("off")
         plt.colorbar(mat, ax=axes[2, j])
 
@@ -59,10 +61,10 @@ def plot_comparison(
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = output_dir / f"{title}_{epoch}.png"
-        plt.savefig(filename)
+        plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
 
         # Log to W&B
-        wandb.log({f"{title} {epoch}": wandb.Image(str(filename))})
+        # wandb.log({f"{title} {epoch}": wandb.Image(str(filename))})
 
     # Close the plot to free up memory
     plt.close()
@@ -121,7 +123,7 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, epoch=None):
         epoch (int, optional): Current epoch for logging.
     """
     variables = true_fields.keys()  # Extract variable names from the TensorDict
-    plt.figure(figsize=(12, 8))
+    plt.figure(figsize=(12, 6))  # Adjusted size for better readability in W&B
 
     for var in variables:
         # Compute isotropic energy spectrum for each variable
@@ -132,10 +134,10 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, epoch=None):
         plt.loglog(k_bins, true_spec, label=f"True {var}", linestyle="--")
         plt.loglog(k_bins, pred_spec, label=f"Pred {var}")
 
-    plt.xlabel("Wavenumber")
-    plt.ylabel("Energy Spectrum")
-    plt.title("Isotropic Energy Spectrum Comparison")
-    plt.legend(loc="best", fontsize=12, title="Variables")
+    plt.xlabel("Wavenumber", fontsize=12)
+    plt.ylabel("Energy Spectrum", fontsize=12)
+    plt.title("Isotropic Energy Spectrum Comparison", fontsize=14)
+    plt.legend(loc="best", fontsize=10, title="Variables")
     plt.grid(True, which="both", linestyle="--", alpha=0.7)
     plt.tight_layout()
 
@@ -143,7 +145,7 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, epoch=None):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = output_dir / f"energy_spectrum_comparison_epoch_{epoch}.png"
-        plt.savefig(filename)
+        plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
 
         # Log to W&B
         wandb.log(

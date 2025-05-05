@@ -168,17 +168,17 @@ class Trainer:
             train_value = (
                 train_losses[key].item()
                 if isinstance(train_losses[key], torch.Tensor)
-                else train_losses[key]
+                else train_losses.item()
             )
             val_value = (
                 val_losses[key].item()
                 if isinstance(val_losses[key], torch.Tensor)
-                else val_losses[key]
+                else val_losses.item()
             )
             self.history[key]["train"].append(train_value)
             self.history[key]["val"].append(val_value)
 
-        # Log to W&B
+        # Convert TensorDict values to scalars for W&B logging
         wandb_log_dict = {"epoch": epoch + 1}
         for key, value in train_losses.items():
             train_value = value.item() if isinstance(value, torch.Tensor) else value
@@ -186,6 +186,8 @@ class Trainer:
         for key, value in val_losses.items():
             val_value = value.item() if isinstance(value, torch.Tensor) else value
             wandb_log_dict[f"val_{key}"] = val_value
+
+        # Log to W&B
         wandb.log(wandb_log_dict)
 
     def plot_training_history(self):
