@@ -20,25 +20,34 @@ This repository provides a framework for ocean forecasting using machine learnin
 ```
 ocean_forecasting/
 ├── koopman_autoencoder/
+│   ├── configs/
+│   │   ├── models/
+│   │   │   └── config.yaml         # Model and training configuration
+│   │   ├── data/
+│   │   │   └── config.yaml         # Data generation configuration
 │   ├── models/
+│   │   ├── __init__.py
 │   │   ├── autoencoder.py          # Model definition
+│   │   ├── checkpoint.py           # Gradient checkpointing
+│   │   ├── cnn.py                  # Base networks
 │   │   ├── dataloader.py           # Custom dataset and data loader
-│   │   ├── train.py                # Training script
 │   │   ├── loss.py                 # Loss function
-│   │   ├── visualization.py        # Visualization utilities
-│   │   └── config.yaml             # Model and training configuration
+│   │   ├── lr_schedule.py          # Custom learning rate scheduler
+│   │   ├── trainer.py              # Main training methods
+│   │   ├── utils.py                # Visualization and logging utilities
 │   ├── data/
+│   │   ├── data/  # Script to generate training data
 │   │   ├── generate_training_data.py  # Script to generate training data
-│   │   └── config.yaml               # Data generation configuration
-│   └── outputs/                     # Directory for storing model outputs
+│   ├── train.py                      # Main training script
+│   ├── train.sh                      # Shell file for training
+│   └── generate.sh                   # Shell file for data generation
 └── README.md                         # Project documentation
 ```
 
 ## Installation
 
 ### Prerequisites
-- Python 3.8+
-- PyTorch (tested with version 1.10+)
+- Python 3.10+
 - Additional libraries: `numpy`, `xarray`, `matplotlib`, `pyqg`, `wandb`, `yaml`
 
 ### Steps
@@ -50,32 +59,27 @@ ocean_forecasting/
 
 2. Set up a Python environment:
    ```bash
-   python -m venv env
-   source env/bin/activate
-   pip install -r requirements.txt
+   conda env create -f environment.yml
+   conda activate koopman-ocean
    ```
 
 3. Configure the project:
-   - Update `koopman_autoencoder/models/config.yaml` for model and training parameters.
-   - Update `koopman_autoencoder/data/config.yaml` for data generation parameters.
+   - Update `koopman_autoencoder/configs/model/config.yaml` for model and training parameters.
+   - Update `koopman_autoencoder/config/data/config.yaml` for data generation parameters.
 
 ## Usage
 
 ### 1. Generate Training Data
 Run the data generation script:
 ```bash
-python koopman_autoencoder/data/generate_training_data.py --config koopman_autoencoder/data/config.yaml
+sh generate.sh
 ```
 
 ### 2. Train the Model
 Train the Koopman Autoencoder:
 ```bash
-python koopman_autoencoder/models/train.py --config koopman_autoencoder/models/config.yaml
+sh train.sh
 ```
-
-### 3. Visualize Results
-Use the `visualization.py` script to generate visualizations for reconstructions and predictions.
-
 ## Key Components
 
 ### Model
@@ -95,8 +99,8 @@ The repository includes tools for generating synthetic datasets using the `pyqg`
 
 ## Configuration
 The main configurations are stored in YAML files:
-- `models/config.yaml`: Defines model architecture, training parameters, and loss weights.
-- `data/config.yaml`: Sets grid resolution, simulation time, and output directory.
+- `configs/model/config.yaml`: Defines model architecture, training parameters, and loss weights.
+- `configs/data/config.yaml`: Sets grid resolution, simulation time, and output directory.
 
 ## Results
 - **Reconstruction**: The model reconstructs input fields with high fidelity.
@@ -104,10 +108,10 @@ The main configurations are stored in YAML files:
 - **Energy Spectra**: The isotropic energy spectra are compared for true and predicted fields.
 
 ## Contributing
-Contributions are welcome! Please fork the repository and submit a pull request.
-
-## License
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Contributions are welcome! Please fork the repository and submit a pull request. For better code consitency please run
+```bash
+pre-commit install
+```
 
 ## Acknowledgments
 This project uses the following libraries:
