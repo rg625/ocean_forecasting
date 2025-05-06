@@ -6,6 +6,7 @@ import wandb  # Import Weights & Biases
 import yaml
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
+from models.lr_schedule import CosineWarmup
 from models.dataloader import QGDataset, create_dataloaders
 from models.trainer import Trainer
 
@@ -60,9 +61,17 @@ def main(config_path):
     ).to(device)
 
     # Initialize optimizer and loss function
-    optimizer = optim.Adam(model.parameters(), lr=config["training"]["learning_rate"])
+    optimizer = optim.Adam(
+        model.parameters(), lr=config["lr_scheduler"]["learning_rate"]
+    )
     criterion = KoopmanLoss(alpha=config["loss"]["alpha"], beta=config["loss"]["beta"])
 
+    lr_scheduler = CosineWarmup(
+        optimizer=optimizer,
+        warmup_steps=config["lr_scheduler"]["warmup_steps"],
+        decay_steps=config["lr_scheduler"]["decay_steps"],
+        final_lr=config["lr_scheduler"]["final_lr"],
+    )
     # Log model architecture to W&B
     wandb.watch(model, log="all")
 
@@ -73,6 +82,7 @@ def main(config_path):
         val_loader=val_loader,
         optimizer=optimizer,
         criterion=criterion,
+        lr_scheduler=lr_scheduler,
         device=device,
         num_epochs=config["training"]["num_epochs"],
         patience=config["training"]["patience"],
@@ -83,7 +93,7 @@ def main(config_path):
     history = trainer.run_training_loop()
 
     # Evaluate the model on the test set
-    test_metrics = trainer.evaluate(test_loader, epoch=-1)
+    test_metrics = trainer.evaluate(test_loader, mode="test")
     print("\nTest Set Results:")
     print(f"Loss: {test_metrics['total_loss']:.4f}")
     print(f"Reconstruction Loss: {test_metrics['recon_loss']:.4f}")

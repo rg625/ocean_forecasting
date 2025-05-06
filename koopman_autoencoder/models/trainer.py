@@ -21,6 +21,7 @@ class Trainer:
         val_loader,
         optimizer,
         criterion,
+        lr_scheduler,
         device,
         num_epochs=100,
         patience=10,
@@ -45,6 +46,7 @@ class Trainer:
         self.val_loader = val_loader
         self.optimizer = optimizer
         self.criterion = criterion
+        self.lr_scheduler = lr_scheduler
         self.device = device
         self.num_epochs = num_epochs
         self.patience = patience
@@ -109,14 +111,13 @@ class Trainer:
 
         return losses
 
-    def evaluate(self, dataloader, epoch):
+    def evaluate(self, dataloader, mode="train"):
         """
         Evaluates the model on the given dataloader.
 
         Args:
             dataloader: DataLoader to evaluate on.
-            epoch: Current epoch.
-
+            mode: train/val/test
         Returns:
             TensorDict: Averaged losses over the dataset.
         """
@@ -143,12 +144,12 @@ class Trainer:
                     x_preds_denorm = dataloader.denormalize(x_preds)
 
                     denormalize_and_visualize(
-                        epoch,
                         input_denorm,
                         target_denorm,
                         x_recon,
                         x_preds_denorm,
                         self.output_dir,
+                        mode=mode,
                     )
                 break  # Break after the first batch for visualization
 
@@ -255,9 +256,11 @@ class Trainer:
                 self.log_metrics(global_step, losses, prefix="train_")
                 global_step += 1
 
+            self.lr_scheduler.step()
+
             # Evaluate on train and validation sets
-            train_losses = self.evaluate(self.train_loader, epoch=epoch)
-            val_losses = self.evaluate(self.val_loader, epoch=epoch)
+            train_losses = self.evaluate(self.train_loader, mode="train")
+            val_losses = self.evaluate(self.val_loader, mode="val")
 
             # Log metrics and update progress bar
             self.log_metrics(epoch, train_losses, prefix="epoch_train_")

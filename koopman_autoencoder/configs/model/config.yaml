@@ -22,11 +22,15 @@ model:
     padding_mode: "circular"
   latent_dim: 1024 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 10
-  learning_rate: 0.0001
-  num_epochs: 100
-  patience: 10
+  batch_size: 15
+  num_epochs: 1000
+  patience: 1000
   use_checkpoint: True
+lr_scheduler:
+  learning_rate: !!float 1e-4
+  warmup_steps: 500
+  decay_steps: 10000
+  final_lr: !!float 1e-5
 loss:
   alpha: 1.0
   beta: 0.1

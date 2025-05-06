@@ -33,7 +33,7 @@ def tensor_dict_to_json(tensor_dict):
 
 
 def plot_comparison(
-    x, x_recon, output_dir=None, title="reconstruction_comparison_epoch", epoch=None
+    x, x_recon, output_dir=None, title="reconstruction_comparison", mode="train"
 ):
     """
     Plots input vs reconstructed images for each variable in the TensorDict with colorbars,
@@ -45,16 +45,22 @@ def plot_comparison(
         x_recon (TensorDict): Reconstructed TensorDict with tensors of shape (B, H, W) for each variable.
         output_dir (Path, optional): Directory to save the plot.
         title (str, optional): Title prefix for the saved plot and W&B log.
-        epoch (int, optional): Current epoch for logging.
     """
     variables = x.keys()  # Get variable names from TensorDict
     num_channels = len(variables)  # Number of variables
+
+    # Reuse existing figure (create once, clear later)
     fig, axes = plt.subplots(
-        3, num_channels, figsize=(4 * num_channels, 12)
+        3, num_channels, figsize=(4 * num_channels, 16)
     )  # Adjusted size
 
     # Iterate through variables to plot input, reconstructed, and error images
     for j, var in enumerate(variables):
+        # Clear axes for reuse
+        axes[0, j].clear()
+        axes[1, j].clear()
+        axes[2, j].clear()
+
         # Extract corresponding tensors for the first sample in the batch
         x_var = x[var][0]  # Shape: (H, W)
         x_recon_var = x_recon[var][0]  # Shape: (H, W)
@@ -64,7 +70,7 @@ def plot_comparison(
         mat = axes[0, j].matshow(x_var.cpu().numpy(), cmap="RdBu_r", aspect="auto")
         axes[0, j].set_title(f"True {var}", fontsize=12)
         axes[0, j].axis("off")
-        plt.colorbar(mat, ax=axes[0, j])
+        plt.colorbar(mat, ax=axes[0, j], orientation="vertical")
 
         # Plot reconstructed image
         mat = axes[1, j].matshow(
@@ -72,13 +78,13 @@ def plot_comparison(
         )
         axes[1, j].set_title(f"Reconstructed {var}", fontsize=12)
         axes[1, j].axis("off")
-        plt.colorbar(mat, ax=axes[1, j])
+        plt.colorbar(mat, ax=axes[1, j], orientation="vertical")
 
         # Plot error image
         mat = axes[2, j].matshow(error.cpu().numpy(), cmap="hot", aspect="auto")
         axes[2, j].set_title(f"Error {var}", fontsize=12)
         axes[2, j].axis("off")
-        plt.colorbar(mat, ax=axes[2, j])
+        plt.colorbar(mat, ax=axes[2, j], orientation="vertical")
 
     plt.tight_layout()
 
@@ -86,13 +92,14 @@ def plot_comparison(
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        filename = output_dir / f"{title}_{epoch}.png"
+        filename = output_dir / f"{title}.png"
         plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
 
         # Log to W&B
-        # wandb.log({f"{title} {epoch}": wandb.Image(str(filename))})
+        wandb.log({f"figures/{mode}/{title}": wandb.Image(str(filename))})
 
-    # Close the plot to free up memory
+    # Clear the figure to reuse it
+    plt.clf()
     plt.close()
 
 
@@ -138,7 +145,7 @@ def compute_isotropic_energy_spectrum(field):
     return k_bins, spectrum
 
 
-def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, epoch=None):
+def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, mode="train"):
     """
     Plots the isotropic energy spectrum comparison for each channel and logs to W&B.
 
@@ -146,7 +153,6 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, epoch=None):
         true_fields (TensorDict): True fields TensorDict with tensors of shape (B, H, W) for each variable.
         pred_fields (TensorDict): Predicted fields TensorDict with tensors of shape (B, H, W) for each variable.
         output_dir (Path, optional): Directory to save the plot.
-        epoch (int, optional): Current epoch for logging.
     """
     variables = true_fields.keys()  # Extract variable names from the TensorDict
     plt.figure(figsize=(12, 6))  # Adjusted size for better readability in W&B
@@ -170,25 +176,22 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, epoch=None):
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        filename = output_dir / f"energy_spectrum_comparison_epoch_{epoch}.png"
+        filename = output_dir / "energy_spectrum.png"
         plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
 
-        # # Log to W&B
-        # wandb.log(
-        #     {f"energy_spectrum_comparison_epoch {epoch}": wandb.Image(str(filename))}
-        # )
+        # Log to W&B
+        wandb.log({f"figures/{mode}/energy_spectrum": wandb.Image(str(filename))})
 
     plt.close()
 
 
 def denormalize_and_visualize(
-    epoch, input, target, x_recon, x_preds_denormalized, output_dir
+    input, target, x_recon, x_preds_denormalized, output_dir, mode
 ):
     """
     Handles denormalization and visualization for the first batch.
 
     Args:
-        epoch: Current epoch.
         input: Input TensorDict.
         target: Target TensorDict.
         x_recon: Reconstructed TensorDict.
@@ -207,8 +210,8 @@ def denormalize_and_visualize(
         ),
         x_recon,
         output_dir,
-        title="reconstruction_comparison_epoch",
-        epoch=epoch,
+        title="reconstruction_comparison",
+        mode=mode,
     )
 
     # Prepare and save prediction comparison plot
@@ -225,8 +228,8 @@ def denormalize_and_visualize(
             batch_size=x_preds_denormalized.batch_size,
         ),
         output_dir,
-        title="prediction_comparison_epoch",
-        epoch=epoch,
+        title="prediction_comparison",
+        mode=mode,
     )
 
     # Prepare and save energy spectrum comparison plot
@@ -243,22 +246,7 @@ def denormalize_and_visualize(
             batch_size=x_preds_denormalized.batch_size,
         ),
         output_dir,
-        epoch=epoch,
-    )
-
-    # Log plots to W&B
-    wandb.log(
-        {
-            f"Reconstruction Comparison (Epoch {epoch})": wandb.Image(
-                str(output_dir / f"reconstruction_comparison_epoch_{epoch}.png")
-            ),
-            f"Prediction Comparison (Epoch {epoch})": wandb.Image(
-                str(output_dir / f"prediction_comparison_epoch_{epoch}.png")
-            ),
-            f"Energy Spectrum (Epoch {epoch})": wandb.Image(
-                str(output_dir / f"energy_spectrum_comparison_epoch_{epoch}.png")
-            ),
-        }
+        mode=mode,
     )
 
 

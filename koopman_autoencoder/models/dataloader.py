@@ -37,17 +37,29 @@ class QGDataset(Dataset):
         self.maxs = TensorDict(
             {var: self.stacked_data[var].amax(dim=(0, 1, 2)) for var in variables}
         )
-
-        # Normalize data to the range [-1, 1]
+        self.means = TensorDict(
+            {var: self.stacked_data[var].mean(dim=(0, 1, 2)) for var in variables}
+        )
+        self.stds = TensorDict(
+            {var: self.stacked_data[var].std(dim=(0, 1, 2)) for var in variables}
+        )
         self.stacked_data = TensorDict(
             {
-                var: 2
-                * (self.stacked_data[var] - self.mins[var])
-                / (self.maxs[var] - self.mins[var])
-                - 1
+                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
                 for var in variables
             }
         )
+
+        # # Normalize data to the range [-1, 1]
+        # self.stacked_data = TensorDict(
+        #     {
+        #         var: 2
+        #         * (self.stacked_data[var] - self.mins[var])
+        #         / (self.maxs[var] - self.mins[var])
+        #         - 1
+        #         for var in variables
+        #     }
+        # )
 
     def __len__(self):
         """
@@ -101,9 +113,31 @@ class QGDataset(Dataset):
         # Return the input sequence and target sequence as dictionaries
         return input_seq, target_seq
 
+    # def denormalize(self, x):
+    #     """
+    #     Denormalize the data from [-1, 1] back to the original range.
+    #     Parameters:
+    #         x: dict of torch.Tensor
+    #             Normalized tensor dictionary.
+    #     Returns:
+    #         dict of torch.Tensor: Denormalized tensor dictionary.
+    #     """
+    #     denormalized = {}
+    #     for var, tensor in x.items():
+    #         if var == "seq_length":  # Skip denormalizing sequence length
+    #             # denormalized[var] = tensor
+    #             continue
+
+    #         device = tensor.device  # Get the device of the input tensor
+    #         mins = self.mins[var].to(device)  # Move mins to the same device as tensor
+    #         maxs = self.maxs[var].to(device)  # Move maxs to the same device as tensor
+    #         denormalized[var] = 0.5 * (tensor + 1) * (maxs - mins) + mins
+
+    #     return TensorDict(denormalized, batch_size=x.batch_size)
+
     def denormalize(self, x):
         """
-        Denormalize the data from [-1, 1] back to the original range.
+        Denormalize the data from mean 0, std 1 back to the original range.
         Parameters:
             x: dict of torch.Tensor
                 Normalized tensor dictionary.
@@ -113,13 +147,14 @@ class QGDataset(Dataset):
         denormalized = {}
         for var, tensor in x.items():
             if var == "seq_length":  # Skip denormalizing sequence length
-                # denormalized[var] = tensor
                 continue
 
             device = tensor.device  # Get the device of the input tensor
-            mins = self.mins[var].to(device)  # Move mins to the same device as tensor
-            maxs = self.maxs[var].to(device)  # Move maxs to the same device as tensor
-            denormalized[var] = 0.5 * (tensor + 1) * (maxs - mins) + mins
+            means = self.means[var].to(
+                device
+            )  # Move means to the same device as tensor
+            stds = self.stds[var].to(device)  # Move stds to the same device as tensor
+            denormalized[var] = tensor * stds + means
 
         return TensorDict(denormalized, batch_size=x.batch_size)
 
@@ -172,8 +207,6 @@ class DataLoaderWrapper(DataLoader):
             **kwargs: Additional keyword arguments for the DataLoader.
         """
         super().__init__(*args, **kwargs)
-        for var, tensor in self.dataset.stacked_data.items():
-            print(f"{var} Min:", tensor.min().item(), "Max:", tensor.max().item())
 
     def denormalize(self, x):
         """
