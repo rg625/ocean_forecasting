@@ -142,11 +142,12 @@ class Trainer:
                     input_denorm = dataloader.denormalize(input)
                     target_denorm = dataloader.denormalize(target)
                     x_preds_denorm = dataloader.denormalize(x_preds)
+                    x_recon_denorm = dataloader.denormalize(x_recon)
 
                     denormalize_and_visualize(
                         input_denorm,
                         target_denorm,
-                        x_recon,
+                        x_recon_denorm,
                         x_preds_denorm,
                         self.output_dir,
                         mode=mode,
@@ -263,8 +264,8 @@ class Trainer:
             val_losses = self.evaluate(self.val_loader, mode="val")
 
             # Log metrics and update progress bar
-            self.log_metrics(epoch, train_losses, prefix="epoch_train_")
-            self.log_metrics(epoch, val_losses, prefix="epoch_val_")
+            self.log_metrics(epoch, train_losses, prefix="/train/")
+            self.log_metrics(epoch, val_losses, prefix="/val/")
             progress_bar.set_postfix(
                 {
                     "Train Loss": f"{train_losses['total_loss']:.4f}",

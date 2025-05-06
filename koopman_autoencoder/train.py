@@ -61,15 +61,13 @@ def main(config_path):
     ).to(device)
 
     # Initialize optimizer and loss function
-    optimizer = optim.Adam(
-        model.parameters(), lr=config["lr_scheduler"]["learning_rate"]
-    )
+    optimizer = optim.Adam(model.parameters(), lr=config["lr_scheduler"]["lr"])
     criterion = KoopmanLoss(alpha=config["loss"]["alpha"], beta=config["loss"]["beta"])
 
     lr_scheduler = CosineWarmup(
         optimizer=optimizer,
-        warmup_steps=config["lr_scheduler"]["warmup_steps"],
-        decay_steps=config["lr_scheduler"]["decay_steps"],
+        warmup=config["lr_scheduler"]["warmup"],
+        decay=config["lr_scheduler"]["decay"],
         final_lr=config["lr_scheduler"]["final_lr"],
     )
     # Log model architecture to W&B

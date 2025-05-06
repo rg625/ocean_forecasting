@@ -27,9 +27,9 @@ training:
   patience: 1000
   use_checkpoint: True
 lr_scheduler:
-  learning_rate: !!float 1e-4
-  warmup_steps: 500
-  decay_steps: 10000
+  lr: !!float 1e-4
+  warmup: 500
+  decay: 10000
   final_lr: !!float 1e-5
 loss:
   alpha: 1.0
