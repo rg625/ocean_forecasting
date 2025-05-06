@@ -34,7 +34,7 @@ class KoopmanLoss(nn.Module):
             diff = (x[key] - y[key]).flatten(
                 start_dim=1
             )  # Flatten all non-batch dimensions
-            losses[key] = torch.square(diff).mean()  # Keep as tensor
+            losses[key] = torch.square(diff).sum(dim=-1).mean()  # Keep as tensor
         return losses
 
     @staticmethod
@@ -57,7 +57,9 @@ class KoopmanLoss(nn.Module):
             diff = (x_filtered[key] - y_filtered[key]).flatten(
                 start_dim=2
             )  # Flatten non-batch and non-rollout dims
-            per_step_loss = torch.square(diff).mean()  # Average over batches and steps
+            per_step_loss = (
+                torch.square(diff).sum(dim=-1).mean(dim=-1).mean()
+            )  # Average over batches and steps
             losses[key] = per_step_loss  # Keep as tensor
         return losses
 

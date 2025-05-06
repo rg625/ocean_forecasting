@@ -19,36 +19,36 @@ class QGDataset(Dataset):
             variables: list of str
                 Variables to extract from the dataset. If None, all variables will be used.
         """
-        self.data = xr.open_dataset(data_path)
-        self.max_sequence_length = max_sequence_length
-        if variables is None:
-            variables = list(self.data.data_vars.keys())
-        self.variables = variables
+        # self.data = xr.open_dataset(data_path)
+        # self.max_sequence_length = max_sequence_length
+        # if variables is None:
+        #     variables = list(self.data.data_vars.keys())
+        # self.variables = variables
 
-        # Stack data into a dictionary of tensors with dimensions [time, height, width]
-        self.stacked_data = TensorDict(
-            {var: torch.FloatTensor(self.data[var].values) for var in variables}
-        )
+        # # Stack data into a dictionary of tensors with dimensions [time, height, width]
+        # self.stacked_data = TensorDict(
+        #     {var: torch.FloatTensor(self.data[var].values) for var in variables}
+        # )
 
-        # Compute the min and max values for normalization for each variable
-        self.mins = TensorDict(
-            {var: self.stacked_data[var].amin(dim=(0, 1, 2)) for var in variables}
-        )
-        self.maxs = TensorDict(
-            {var: self.stacked_data[var].amax(dim=(0, 1, 2)) for var in variables}
-        )
-        self.means = TensorDict(
-            {var: self.stacked_data[var].mean(dim=(0, 1, 2)) for var in variables}
-        )
-        self.stds = TensorDict(
-            {var: self.stacked_data[var].std(dim=(0, 1, 2)) for var in variables}
-        )
-        self.stacked_data = TensorDict(
-            {
-                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
-                for var in variables
-            }
-        )
+        # # Compute the min and max values for normalization for each variable
+        # # self.mins = TensorDict(
+        # #     {var: self.stacked_data[var].amin(dim=(0, 1, 2)) for var in variables}
+        # # )
+        # # self.maxs = TensorDict(
+        # #     {var: self.stacked_data[var].amax(dim=(0, 1, 2)) for var in variables}
+        # # )
+        # self.means = TensorDict(
+        #     {var: self.stacked_data[var].mean(dim=(0, 1, 2)) for var in variables}
+        # )
+        # self.stds = TensorDict(
+        #     {var: self.stacked_data[var].std(dim=(0, 1, 2)) for var in variables}
+        # )
+        # self.stacked_data = TensorDict(
+        #     {
+        #         var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
+        #         for var in variables
+        #     }
+        # )
 
         # # Normalize data to the range [-1, 1]
         # self.stacked_data = TensorDict(
@@ -60,6 +60,39 @@ class QGDataset(Dataset):
         #         for var in variables
         #     }
         # )
+
+        self.data = xr.open_dataset(data_path)
+        self.max_sequence_length = max_sequence_length
+        if variables is None:
+            variables = list(self.data.data_vars.keys())
+        self.variables = variables
+
+        # Stack data into a dictionary of tensors with dimensions [time, height, width]
+        self.stacked_data = TensorDict(
+            {var: torch.FloatTensor(self.data[var].values) for var in variables}
+        )
+
+        # Compute the means and stds of the raw (unnormalized) data for each variable
+        self.means = TensorDict(
+            {
+                var: torch.FloatTensor(np.mean(self.data[var].values, axis=(0, 1, 2)))
+                for var in variables
+            }
+        )
+        self.stds = TensorDict(
+            {
+                var: torch.FloatTensor(np.std(self.data[var].values, axis=(0, 1, 2)))
+                for var in variables
+            }
+        )
+
+        # Normalize the data to have mean 0 and std 1
+        self.stacked_data = TensorDict(
+            {
+                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
+                for var in variables
+            }
+        )
 
     def __len__(self):
         """
@@ -201,12 +234,16 @@ class DataLoaderWrapper(DataLoader):
     def __init__(self, *args, **kwargs):
         """
         Initialize the DataLoaderWrapper.
-
-        Args:
-            *args: Additional positional arguments for the DataLoader.
-            **kwargs: Additional keyword arguments for the DataLoader.
         """
         super().__init__(*args, **kwargs)
+
+        print("Dataset means:")
+        for var, mean in self.dataset.means.items():
+            print(f"  {var}: {mean.item():.10f}")
+
+        print("Dataset stds:")
+        for var, std in self.dataset.stds.items():
+            print(f"  {var}: {std.item():.10f}")
 
     def denormalize(self, x):
         """

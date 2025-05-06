@@ -68,21 +68,47 @@ def generate(config):
         data = {var: [] for var in ["q", "u", "v"]}
 
     # Run the model with snapshots
+    log_interval = 100  # Log every 100 snapshots
+
     for i, _ in enumerate(m.run_with_snapshots(tsnapint=save_interval)):
-        if len(times) >= 10000:  # Stop after generating 10,000 samples
+        if len(times) >= 10000:
             break
 
+        # Save snapshot
         if model_type in ["eddy", "jet"]:
-            data["q1"].append(m.q[0].copy())
-            data["q2"].append(m.q[1].copy())
-            data["u1"].append(m.u[0].copy())
-            data["v1"].append(m.v[0].copy())
-            data["u2"].append(m.u[1].copy())
-            data["v2"].append(m.v[1].copy())
-        else:  # barotropic
-            data["q"].append(m.q.copy())
-            data["u"].append(m.u.copy())
-            data["v"].append(m.v.copy())
+            q1, q2 = m.q[0].copy(), m.q[1].copy()
+            u1, v1 = m.u[0].copy(), m.v[0].copy()
+            u2, v2 = m.u[1].copy(), m.v[1].copy()
+
+            data["q1"].append(q1)
+            data["q2"].append(q2)
+            data["u1"].append(u1)
+            data["v1"].append(v1)
+            data["u2"].append(u2)
+            data["v2"].append(v2)
+
+            if i % log_interval == 0:
+                print(f"\nStats at snapshot {i} (time={m.t:.2f}):")
+                for name, arr in zip(
+                    ["q1", "q2", "u1", "v1", "u2", "v2"], [q1, q2, u1, v1, u2, v2]
+                ):
+                    print(
+                        f"  {name}: mean={np.mean(arr):.4e}, std={np.std(arr):.4e}, "
+                        f"min={np.min(arr):.4e}, max={np.max(arr):.4e}"
+                    )
+        else:
+            q, u, v = m.q.copy(), m.u.copy(), m.v.copy()
+            data["q"].append(q)
+            data["u"].append(u)
+            data["v"].append(v)
+
+            if i % log_interval == 0:
+                print(f"\nStats at snapshot {i} (time={m.t:.2f}):")
+                for name, arr in zip(["q", "u", "v"], [q, u, v]):
+                    print(
+                        f"  {name}: mean={np.mean(arr):.4e}, std={np.std(arr):.4e}, "
+                        f"min={np.min(arr):.4e}, max={np.max(arr):.4e}"
+                    )
 
         times = np.append(times, m.t)
         print(f"Saved snapshot {len(times)}/10000 at time {m.t:.2f}")

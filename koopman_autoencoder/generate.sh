@@ -6,4 +6,4 @@
 CONFIG_PATH=~/mnt/ocean_forecasting/koopman_autoencoder/configs/data/config.yaml
 
 # Run the training script with the configuration file
-python koopman_autoencoder/data/generate_training_data.py --config "$CONFIG_PATH"
+python data/generate_training_data.py --config "$CONFIG_PATH"
