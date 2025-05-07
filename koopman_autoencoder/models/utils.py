@@ -64,7 +64,7 @@ def plot_comparison(
         # Extract corresponding tensors for the first sample in the batch
         x_var = x[var][0]  # Shape: (H, W)
         x_recon_var = x_recon[var][0]  # Shape: (H, W)
-        error = torch.abs(x_var - x_recon_var)  # Compute absolute error
+        error = x_var - x_recon_var  # Compute absolute error
 
         # Plot input image
         mat = axes[0, j].matshow(x_var.cpu().numpy(), cmap="RdBu_r", aspect="auto")

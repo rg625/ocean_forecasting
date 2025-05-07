@@ -34,5 +34,5 @@ loss:
   alpha: 1.0
   beta: 0.1
 
-ckpt: None
+ckpt: null
 log_epoch: 10 # logging results every epoch

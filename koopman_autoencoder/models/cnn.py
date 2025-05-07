@@ -53,7 +53,6 @@ class ConvBlock(nn.Module):
             ]
             output_layer = [
                 nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs),
-                nn.ReLU(),
             ]
             self.stack = nn.ModuleList([*initial_layers, *output_layer])
 
