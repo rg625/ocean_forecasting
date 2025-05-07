@@ -1,10 +1,12 @@
 import torch
 from torch import nn
-from cnn import ConvEncoder, ConvDecoder
+from models.cnn import ConvEncoder, ConvDecoder
+from tensordict import TensorDict
+from models.checkpoint import checkpoint
 
 
 class KoopmanOperator(nn.Module):
-    def __init__(self, latent_dim):
+    def __init__(self, latent_dim, use_checkpoint=False):
         """
         Koopman operator for linear dynamics in latent space.
 
@@ -13,10 +15,20 @@ class KoopmanOperator(nn.Module):
                 Dimensionality of the latent space.
         """
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.latent_dim = latent_dim
         self.koopman_operator = nn.Linear(latent_dim, latent_dim, bias=False)
 
     def forward(self, z):
+        # Use gradient checkpointing if the flag is enabled
+        if self.use_checkpoint:
+            return checkpoint(
+                self._forward, (z,), self.parameters(), self.use_checkpoint
+            )
+        else:
+            return self._forward(z)
+
+    def _forward(self, z):
         """
         Apply Koopman operator to predict the next state.
 
@@ -32,8 +44,18 @@ class KoopmanOperator(nn.Module):
 
 
 class KoopmanAutoencoder(nn.Module):
-    def __init__(self, input_channels=6, height=64, width=64, latent_dim=32, 
-                 hidden_dims=[64, 128, 64], block_size=2, kernel_size=3, **conv_kwargs):
+    def __init__(
+        self,
+        input_channels=6,
+        height=64,
+        width=64,
+        latent_dim=32,
+        hidden_dims=[64, 128, 64],
+        block_size=2,
+        kernel_size=3,
+        use_checkpoint=False,
+        **conv_kwargs,
+    ):
         """
         Koopman Autoencoder for learning dynamical systems in latent space.
 
@@ -59,64 +81,91 @@ class KoopmanAutoencoder(nn.Module):
 
         # Initialize Encoder
         self.encoder = ConvEncoder(
-            C=2*input_channels, H=height, W=width, latent_dim=latent_dim, 
-            hiddens=hidden_dims, block_size=block_size, kernel_size=kernel_size, 
-            **conv_kwargs
+            C=2 * input_channels,
+            H=height,
+            W=width,
+            latent_dim=latent_dim,
+            hiddens=hidden_dims,
+            block_size=block_size,
+            kernel_size=kernel_size,
+            use_checkpoint=use_checkpoint,
+            **conv_kwargs,
         )
 
         # Initialize Decoder
         self.decoder = ConvDecoder(
-            C=input_channels, H=height, W=width, latent_dim=latent_dim, 
-            hiddens=hidden_dims, block_size=block_size, kernel_size=kernel_size, 
-            **conv_kwargs
+            C=input_channels,
+            H=height,
+            W=width,
+            latent_dim=latent_dim,
+            hiddens=hidden_dims,
+            block_size=block_size,
+            kernel_size=kernel_size,
+            use_checkpoint=use_checkpoint,
+            **conv_kwargs,
         )
 
         # Initialize Koopman Operator
-        self.koopman_operator = KoopmanOperator(latent_dim)
+        self.koopman_operator = KoopmanOperator(
+            latent_dim, use_checkpoint=use_checkpoint
+        )
 
     def encode(self, x):
         """
         Encode the input data into the latent space.
 
         Parameters:
-            x: torch.Tensor
-                Input tensor of shape (batch_size, channels, height, width).
+            x: TensorDict
+                Input TensorDict with tensors of shape (batch_size, seq_length, height, width).
 
         Returns:
-            torch.Tensor: Latent representation.
+            TensorDict: Updated TensorDict with key 'latent'.
         """
+        # Stack tensors along the channel dimension
+        stacked_input = torch.cat(
+            [x[var] for var in x.keys()], dim=1
+        )  # Shape: (batch_size, seq_length, channels, height, width)
+        self.vars = list(x.keys())  # Convert keys to a list
+        batch_size, seq_length, height, width = stacked_input.shape
+        stacked_input = stacked_input.view(batch_size, seq_length, height, width)
 
-        # Collapse the sequence and batch dimensions
-        batch_size, sequence_length, channels, height, width = x.shape
-        x = x.view(batch_size, sequence_length * channels, height, width)  # Merge batch and sequence dims
-        z = self.encoder(x)  # Pass through encoder
-        return z.view(batch_size, *z.shape[1:])  # Restore sequence dim
+        # Pass stacked input through the encoder
+        latent = self.encoder(stacked_input)
+        return latent
 
-    def decode(self, z):
+    def decode(self, x):
         """
         Decode the latent representation back to the input space.
 
         Parameters:
-            z: torch.Tensor
-                Latent representation of shape (batch_size, latent_dim).
+            x: TensorDict
+                TensorDict with key 'latent' of shape (batch_size, latent_dim).
 
         Returns:
-            torch.Tensor: Reconstructed input.
+            TensorDict: Updated TensorDict with reconstructed variables.
         """
-        return self.decoder(z)
+        # Decode the latent representation
+        reconstructed = self.decoder(
+            x
+        )  # Shape: (batch_size, channels * seq_length, height, width)
+
+        return TensorDict(
+            {self.vars[i]: reconstructed[:, i] for i in range(len(self.vars))},
+            batch_size=x.size(0),
+        )
 
     def predict_latent(self, z):
         """
         Predict the next state in latent space.
 
         Parameters:
-            z: torch.Tensor
-                Current latent state.
+            z: TensorDict
+                TensorDict with key 'latent'.
 
         Returns:
-            torch.Tensor: Predicted next latent state.
+            TensorDict: Updated TensorDict with key 'latent_pred'.
         """
-        return z + self.koopman_operator(z)
+        return self.koopman_operator(z)
 
     def forward(self, x, seq_length=1):
         """
@@ -137,19 +186,31 @@ class KoopmanAutoencoder(nn.Module):
         z_preds = [z]
 
         # Roll out predictions for the given sequence length
-        for _ in range(seq_length):
+        for _ in range(seq_length[0]):
             z_pred = self.predict_latent(z_pred)
             z_preds.append(z_pred)
 
         # Decode predictions
         x_recon = self.decode(z_preds[0])  # Reconstruction from initial z
-        x_preds = torch.stack([self.decode(z_step) for z_step in z_preds[1:]], dim=1)
+        # Construct x_preds as a TensorDict, stacking along the seq_length dimension
+        x_preds = TensorDict(
+            {
+                key: torch.stack(
+                    [self.decode(z_step)[key] for z_step in z_preds[1:]],
+                    dim=1,  # Stack along the seq_length dimension
+                )
+                for key in self.vars
+            },
+            batch_size=[x.shape[0]],  # Maintain batch size consistency
+        )
 
         # Compute latent prediction differences
-        latent_pred_differences = torch.stack([
-            z_preds[t + 1] - self.predict_latent(z_preds[t])
-            for t in range(seq_length)
-        ], dim=1)
+        latent_pred_differences = torch.stack(
+            [
+                z_preds[t + 1] - self.predict_latent(z_preds[t])
+                for t in range(seq_length[0])
+            ],
+            dim=1,
+        )
 
         return x_recon, x_preds, z_preds, latent_pred_differences
-    

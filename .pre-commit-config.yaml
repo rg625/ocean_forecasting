@@ -1,0 +1,58 @@
+---
+default_language_version:
+  python: python3
+
+ci:
+  autofix_prs: true
+  autoupdate_commit_msg: "[pre-commit.ci] pre-commit suggestions"
+  autoupdate_schedule: quarterly
+
+repos:
+  # Standard pre-commit hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: debug-statements
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=5000"]
+
+  # Ruff: Python linter and formatter
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.8  # Replace with the latest version
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # Mypy: Static type checking for Python
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0  # Replace with the latest version
+    hooks:
+      - id: mypy
+        args: ["--config-file=mypy.ini"]
+        additional_dependencies:
+          [
+            "types-requests",
+            "types-PyYAML",
+            "types-tqdm",
+            "pandas-stubs",
+            "numpy",
+          ]
+
+  # Black: Python code formatter
+  - repo: https://github.com/psf/black
+    rev: 25.1.0  # Replace with the latest version
+    hooks:
+      - id: black
+        args: ["--line-length", "88"]
+
+  # # Additional hooks for YAML validation and large files
+  # - repo: https://github.com/adrienverge/yamllint.git
+  #   rev: v1.37.1  # Replace with the latest version
+  #   hooks:
+  #     - id: yamllint
+  #       args: ["--config-file", ".yamllint.yml"]

@@ -1,10 +1,19 @@
-import itertools
-import torch
+from itertools import pairwise
 from torch import nn
+from models.checkpoint import checkpoint
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, C_in, C_out, block_size=1, kernel_size=3, decoder_block=False, **conv_kwargs):
+    def __init__(
+        self,
+        C_in,
+        C_out,
+        block_size=1,
+        kernel_size=3,
+        decoder_block=False,
+        use_checkpoint=False,  # Add this to toggle checkpointing
+        **conv_kwargs,
+    ):
         """
         A modular convolutional block consisting of convolutional layers followed by ReLU activations.
 
@@ -19,33 +28,63 @@ class ConvBlock(nn.Module):
                 Size of the convolution kernel.
             decoder_block: bool
                 If True, the block is used in a decoder, and layer configurations are adjusted accordingly.
+            use_checkpoint: bool
+                If True, enables gradient checkpointing for the block.
             conv_kwargs: dict
                 Additional arguments for nn.Conv2d.
         """
         super().__init__()
+        self.use_checkpoint = use_checkpoint  # Store the checkpointing flag
+
         if not decoder_block:
-            first_layer = [nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs), nn.ReLU()]
-            subsequent_layers = (block_size-1) * [
+            first_layer = [
+                nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs),
+                nn.ReLU(),
+            ]
+            subsequent_layers = (block_size - 1) * [
                 nn.Conv2d(C_out, C_out, kernel_size, **conv_kwargs),
-                nn.ReLU()
+                nn.ReLU(),
             ]
             self.stack = nn.ModuleList([*first_layer, *subsequent_layers])
         else:
-            initial_layers = (block_size-1) * [
+            initial_layers = (block_size - 1) * [
                 nn.Conv2d(C_in, C_in, kernel_size, **conv_kwargs),
-                nn.ReLU()
+                nn.ReLU(),
             ]
-            output_layer = [nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs), nn.ReLU()]
+            output_layer = [
+                nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs),
+            ]
             self.stack = nn.ModuleList([*initial_layers, *output_layer])
 
     def forward(self, x):
+        # Use gradient checkpointing if the flag is enabled
+        if self.use_checkpoint:
+            return checkpoint(
+                self._forward, (x,), self.parameters(), self.use_checkpoint
+            )
+        else:
+            return self._forward(x)
+
+    def _forward(self, x):
         for module in self.stack:
             x = module(x)
         return x
 
 
 class BaseEncoderDecoder(nn.Module):
-    def __init__(self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, is_encoder=True, **conv_kwargs):
+    def __init__(
+        self,
+        C,
+        H,
+        W,
+        latent_dim,
+        hiddens,
+        block_size=1,
+        kernel_size=3,
+        is_encoder=True,
+        use_checkpoint=False,  # Add checkpointing flag here
+        **conv_kwargs,
+    ):
         """
         Base class for both encoder and decoder blocks.
 
@@ -56,7 +95,7 @@ class BaseEncoderDecoder(nn.Module):
                 Input height dimension.
             W: int
                 Input width dimension.
-            D: int
+            latent_dim: int
                 Latent dimensionality.
             hiddens: list of int
                 List of hidden dimensions for each block.
@@ -66,6 +105,8 @@ class BaseEncoderDecoder(nn.Module):
                 Size of the convolutional kernel.
             is_encoder: bool
                 Specifies whether the block is an encoder (True) or decoder (False).
+            use_checkpoint: bool
+                If True, enables gradient checkpointing for convolutional blocks.
             conv_kwargs: dict
                 Additional arguments for nn.Conv2d.
         """
@@ -76,6 +117,7 @@ class BaseEncoderDecoder(nn.Module):
         self.D = latent_dim
         self.hiddens = hiddens
         self.is_encoder = is_encoder
+        self.use_checkpoint = use_checkpoint  # Store the flag
 
         # Compute the output dimensions after pooling
         self.n_pools = len(hiddens)
@@ -83,8 +125,8 @@ class BaseEncoderDecoder(nn.Module):
             raise ValueError(
                 f"Input dimensions (H={H}, W={W}) must be divisible by 2^{self.n_pools} due to pooling."
             )
-        self.H_out = H // (2**(self.n_pools))
-        self.W_out = W // (2**(self.n_pools))
+        self.H_out = H // (2 ** (self.n_pools))
+        self.W_out = W // (2 ** (self.n_pools))
 
         # Define the linear layer
         if is_encoder:
@@ -112,17 +154,57 @@ class BaseEncoderDecoder(nn.Module):
         """
         layers = nn.ModuleList()
         if self.is_encoder:
-            layers.append(ConvBlock(self.C, self.hiddens[0], block_size, kernel_size, decoder_block=False, **conv_kwargs))
+            layers.append(
+                ConvBlock(
+                    self.C,
+                    self.hiddens[0],
+                    block_size,
+                    kernel_size,
+                    decoder_block=False,
+                    use_checkpoint=self.use_checkpoint,  # Pass the flag
+                    **conv_kwargs,
+                )
+            )
             layers.append(nn.MaxPool2d(kernel_size=2))
-            for C_n, C_np1 in itertools.pairwise(self.hiddens):
-                layers.append(ConvBlock(C_n, C_np1, block_size, kernel_size, decoder_block=False, **conv_kwargs))
+            for C_n, C_np1 in pairwise(self.hiddens):
+                layers.append(
+                    ConvBlock(
+                        C_n,
+                        C_np1,
+                        block_size,
+                        kernel_size,
+                        decoder_block=False,
+                        use_checkpoint=self.use_checkpoint,  # Pass the flag
+                        **conv_kwargs,
+                    )
+                )
                 layers.append(nn.MaxPool2d(kernel_size=2))
         else:
-            for C_np1, C_n in itertools.pairwise(self.hiddens[::-1]):
-                layers.append(nn.Upsample(scale_factor=2, mode='bilinear'))
-                layers.append(ConvBlock(C_np1, C_n, block_size, kernel_size, decoder_block=True, **conv_kwargs))
-            layers.append(nn.Upsample(scale_factor=2, mode='bilinear'))
-            layers.append(ConvBlock(self.hiddens[0], self.C, block_size, kernel_size, decoder_block=True, **conv_kwargs))
+            for C_np1, C_n in pairwise(self.hiddens[::-1]):
+                layers.append(nn.Upsample(scale_factor=2, mode="bilinear"))
+                layers.append(
+                    ConvBlock(
+                        C_np1,
+                        C_n,
+                        block_size,
+                        kernel_size,
+                        decoder_block=True,
+                        use_checkpoint=self.use_checkpoint,  # Pass the flag
+                        **conv_kwargs,
+                    )
+                )
+            layers.append(nn.Upsample(scale_factor=2, mode="bilinear"))
+            layers.append(
+                ConvBlock(
+                    self.hiddens[0],
+                    self.C,
+                    block_size,
+                    kernel_size,
+                    decoder_block=True,
+                    use_checkpoint=self.use_checkpoint,  # Pass the flag
+                    **conv_kwargs,
+                )
+            )
         return nn.Sequential(*layers)
 
     def forward(self, x):
@@ -135,27 +217,58 @@ class BaseEncoderDecoder(nn.Module):
             # Apply linear layer and unflatten
             out = self.linear(x)
             out = out.view(-1, self.hiddens[-1], self.H_out, self.W_out)
-            return self.layers(out)#.view(out.size(0), -1, self.C, self.H, self.W)
+            return self.layers(out)
 
 
 class ConvEncoder(BaseEncoderDecoder):
-    def __init__(self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, **conv_kwargs):
-        """
-        Encoder module for encoding input into a latent representation.
-
-        Parameters:
-            See BaseEncoderDecoder.
-        """
-        super().__init__(C, H, W, latent_dim, hiddens, block_size, kernel_size, is_encoder=True, **conv_kwargs)
+    def __init__(
+        self,
+        C,
+        H,
+        W,
+        latent_dim,
+        hiddens,
+        block_size=1,
+        kernel_size=3,
+        use_checkpoint=False,
+        **conv_kwargs,
+    ):
+        super().__init__(
+            C,
+            H,
+            W,
+            latent_dim,
+            hiddens,
+            block_size,
+            kernel_size,
+            is_encoder=True,
+            use_checkpoint=use_checkpoint,  # Pass the flag
+            **conv_kwargs,
+        )
 
 
 class ConvDecoder(BaseEncoderDecoder):
-    def __init__(self, C, H, W, latent_dim, hiddens, block_size=1, kernel_size=3, **conv_kwargs):
-        """
-        Decoder module for reconstructing input from a latent representation.
-
-        Parameters:
-            See BaseEncoderDecoder.
-        """
-        super().__init__(C, H, W, latent_dim, hiddens, block_size, kernel_size, is_encoder=False, **conv_kwargs)
-        
+    def __init__(
+        self,
+        C,
+        H,
+        W,
+        latent_dim,
+        hiddens,
+        block_size=1,
+        kernel_size=3,
+        use_checkpoint=False,
+        **conv_kwargs,
+    ):
+        super().__init__(
+            C,
+            H,
+            W,
+            latent_dim,
+            hiddens,
+            block_size,
+            kernel_size,
+            is_encoder=False,
+            use_checkpoint=use_checkpoint,  # Pass the flag
+            **conv_kwargs,
+        )
