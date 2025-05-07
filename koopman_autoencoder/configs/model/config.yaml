@@ -8,7 +8,7 @@ data:
 model:
   height: 256
   width: 256
-  input_channels: 6
+  input_channels: 2 # q1 and q2 only
   hidden_dims:
     - 64
     - 128
@@ -21,7 +21,7 @@ model:
     padding_mode: "circular"
   latent_dim: 1024 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 15
+  batch_size: 30
   num_epochs: 1000
   patience: 1000
   use_checkpoint: True
@@ -32,7 +32,9 @@ lr_scheduler:
   final_lr: !!float 1e-5
 loss:
   alpha: 1.0
-  beta: 0.1
+  beta: 0.0
+  weighting_type: cosine
+  sigma_blur: ~
 
-ckpt: null
+ckpt: ~
 log_epoch: 10 # logging results every epoch

@@ -36,70 +36,70 @@ def plot_comparison(
     x, x_recon, output_dir=None, title="reconstruction_comparison", mode="train"
 ):
     """
-    Plots input vs reconstructed images for each variable in the TensorDict with colorbars,
-    and logs to W&B. Additionally, displays the error (absolute difference) between
-    input and reconstructed images.
-
-    Parameters:
-        x (TensorDict): Input TensorDict with tensors of shape (B, H, W) for each variable.
-        x_recon (TensorDict): Reconstructed TensorDict with tensors of shape (B, H, W) for each variable.
-        output_dir (Path, optional): Directory to save the plot.
-        title (str, optional): Title prefix for the saved plot and W&B log.
+    Plots input vs reconstructed images for each variable across all timesteps in one image.
+    Supports inputs of shape (B, T, H, W).
     """
-    variables = x.keys()  # Get variable names from TensorDict
-    num_channels = len(variables)  # Number of variables
+    variables = x.keys()
+    num_channels = len(variables)
 
-    # Reuse existing figure (create once, clear later)
-    fig, axes = plt.subplots(
-        3, num_channels, figsize=(4 * num_channels, 16)
-    )  # Adjusted size
+    # Assume shape (B, T, H, W)
+    T = next(iter(x.values())).shape[1]  # Number of timesteps
 
-    # Iterate through variables to plot input, reconstructed, and error images
-    for j, var in enumerate(variables):
-        # Clear axes for reuse
-        axes[0, j].clear()
-        axes[1, j].clear()
-        axes[2, j].clear()
+    # Create a figure with enough space to fit all the timesteps for all variables
+    fig, axes = plt.subplots(3, T * num_channels, figsize=(6 * num_channels, 4 * 3))
 
-        # Extract corresponding tensors for the first sample in the batch
-        x_var = x[var][0]  # Shape: (H, W)
-        x_recon_var = x_recon[var][0]  # Shape: (H, W)
-        error = x_var - x_recon_var  # Compute absolute error
+    if num_channels == 1:
+        axes = np.expand_dims(axes, axis=1)  # Ensure 2D layout
 
-        # Plot input image
-        mat = axes[0, j].matshow(x_var.cpu().numpy(), cmap="RdBu_r", aspect="auto")
-        axes[0, j].set_title(f"True {var}", fontsize=12)
-        axes[0, j].axis("off")
-        plt.colorbar(mat, ax=axes[0, j], orientation="vertical")
+    # For each timestep, append the images in a grid
+    for t in range(T):
+        for j, var in enumerate(variables):
+            x_var = x[var][0, t]  # (H, W)
+            x_recon_var = x_recon[var][0, t]  # (H, W)
+            error = x_var - x_recon_var
 
-        # Plot reconstructed image
-        mat = axes[1, j].matshow(
-            x_recon_var.cpu().numpy(), cmap="RdBu_r", aspect="auto"
-        )
-        axes[1, j].set_title(f"Reconstructed {var}", fontsize=12)
-        axes[1, j].axis("off")
-        plt.colorbar(mat, ax=axes[1, j], orientation="vertical")
+            # Plot the true image, reconstructed image, and error
+            mat = axes[0, t + j * T].matshow(x_var.cpu().numpy(), cmap="RdBu_r")
+            axes[0, t + j * T].set_title(f"True {var}")
+            axes[0, t + j * T].axis("off")
 
-        # Plot error image
-        mat = axes[2, j].matshow(error.cpu().numpy(), cmap="hot", aspect="auto")
-        axes[2, j].set_title(f"Error {var}", fontsize=12)
-        axes[2, j].axis("off")
-        plt.colorbar(mat, ax=axes[2, j], orientation="vertical")
+            # Adjust the colorbar size with the shrink parameter
+            cbar = plt.colorbar(mat, ax=axes[0, t + j * T], fraction=0.046, pad=0.04)
+            cbar.set_label("Intensity")
 
+            mat = axes[1, t + j * T].matshow(x_recon_var.cpu().numpy(), cmap="RdBu_r")
+            axes[1, t + j * T].set_title(f"Recon {var}")
+            axes[1, t + j * T].axis("off")
+
+            cbar = plt.colorbar(mat, ax=axes[1, t + j * T], fraction=0.046, pad=0.04)
+            cbar.set_label("Intensity")
+
+            mat = axes[2, t + j * T].matshow(error.cpu().numpy(), cmap="hot")
+            axes[2, t + j * T].set_title(f"Error {var}")
+            axes[2, t + j * T].axis("off")
+
+            cbar = plt.colorbar(mat, ax=axes[2, t + j * T], fraction=0.046, pad=0.04)
+            cbar.set_label("Intensity")
+
+    # Set a clear and large title depending on mode
+    plt.suptitle(f"{title}", fontsize=16)
+
+    # Apply tight_layout to ensure no clipping and good spacing
     plt.tight_layout()
 
-    # Save the plot if an output directory is provided
+    # Adjust the layout further to make space for the colorbars
+    plt.subplots_adjust(
+        right=0.85, hspace=0.5
+    )  # Adjust right side to make room for colorbars
+
+    # Save and log the figure if an output directory is specified
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = output_dir / f"{title}.png"
-        plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
-
-        # Log to W&B
+        plt.savefig(filename, dpi=150)
         wandb.log({f"figures/{mode}/{title}": wandb.Image(str(filename))})
 
-    # Clear the figure to reuse it
-    plt.clf()
     plt.close()
 
 
@@ -185,9 +185,7 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, mode="train"
     plt.close()
 
 
-def denormalize_and_visualize(
-    input, target, x_recon, x_preds_denormalized, output_dir, mode
-):
+def denormalize_and_visualize(input, target, x_recon, x_preds, output_dir, mode):
     """
     Handles denormalization and visualization for the first batch.
 
@@ -195,7 +193,7 @@ def denormalize_and_visualize(
         input: Input TensorDict.
         target: Target TensorDict.
         x_recon: Reconstructed TensorDict.
-        x_preds_denormalized: Predicted TensorDict (denormalized).
+        x_preds: Predicted TensorDict.
         output_dir: Output directory for saving plots.
     """
     # Ensure output directory exists
@@ -205,30 +203,28 @@ def denormalize_and_visualize(
     # Prepare and save reconstruction comparison plot
     plot_comparison(
         TensorDict(
-            {key: value[:, -1] for key, value in input.items()},  # Slice each tensor
+            {
+                key: value[:, -1].unsqueeze(1) for key, value in input.items()
+            },  # Slice each tensor
             batch_size=input.batch_size,
         ),
-        x_recon,
+        TensorDict(
+            {
+                key: value.unsqueeze(1) for key, value in x_recon.items()
+            },  # Slice each tensor
+            batch_size=input.batch_size,
+        ),
         output_dir,
-        title="reconstruction_comparison",
+        title="Reconstruction",
         mode=mode,
     )
 
     # Prepare and save prediction comparison plot
     plot_comparison(
-        TensorDict(
-            {
-                key: value[:, -1] if value.dim() > 1 else None
-                for key, value in target.items()
-            },
-            batch_size=target.batch_size,
-        ),
-        TensorDict(
-            {key: value[:, -1] for key, value in x_preds_denormalized.items()},
-            batch_size=x_preds_denormalized.batch_size,
-        ),
+        target,
+        x_preds,
         output_dir,
-        title="prediction_comparison",
+        title="Prediction",
         mode=mode,
     )
 
@@ -242,8 +238,8 @@ def denormalize_and_visualize(
             batch_size=target.batch_size,
         ),
         TensorDict(
-            {key: value[:, -1] for key, value in x_preds_denormalized.items()},
-            batch_size=x_preds_denormalized.batch_size,
+            {key: value[:, -1] for key, value in x_preds.items()},
+            batch_size=x_preds.batch_size,
         ),
         output_dir,
         mode=mode,

@@ -77,14 +77,10 @@ class Trainer:
         self.optimizer.zero_grad()
 
         # Forward pass
-        x_recon, x_preds, z_preds, latent_pred_differences = self.model(
-            input, seq_length=target["seq_length"]
-        )
+        x_recon, x_preds, z_preds = self.model(input, seq_length=target["seq_length"])
 
         # Compute loss
-        losses = self.criterion(
-            x_recon, x_preds, latent_pred_differences, input[:, -1], target
-        )
+        losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
         loss = losses["total_loss"]
         assert isinstance(loss, torch.Tensor)
 
@@ -131,29 +127,22 @@ class Trainer:
         with torch.no_grad():
             for input, target in dataloader:
                 input, target = input.to(self.device), target.to(self.device)
-                x_recon, x_preds, z_preds, latent_pred_differences = self.model(
+                x_recon, x_preds, z_preds = self.model(
                     input, seq_length=target["seq_length"]
                 )
-                losses = self.criterion(
-                    x_recon, x_preds, latent_pred_differences, input[:, -1], target
-                )
+                losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
 
                 # Accumulate losses
                 total_losses = accumulate_losses(total_losses, losses)
 
                 # Visualization for the first batch
                 if self.output_dir:
-                    input_denorm = dataloader.denormalize(input)
-                    target_denorm = dataloader.denormalize(target)
-                    x_preds_denorm = dataloader.denormalize(x_preds)
-                    x_recon_denorm = dataloader.denormalize(x_recon)
-
                     denormalize_and_visualize(
-                        input_denorm,
-                        target_denorm,
-                        x_recon_denorm,
-                        x_preds_denorm,
-                        self.output_dir,
+                        input=dataloader.denormalize(input),
+                        target=dataloader.denormalize(target),
+                        x_recon=dataloader.denormalize(x_recon),
+                        x_preds=dataloader.denormalize(x_preds),
+                        output_dir=self.output_dir,
                         mode=mode,
                     )
                 break  # Break after the first batch for visualization

@@ -63,7 +63,12 @@ def main(config_path):
 
     # Initialize optimizer and loss function
     optimizer = optim.Adam(model.parameters(), lr=config["lr_scheduler"]["lr"])
-    criterion = KoopmanLoss(alpha=config["loss"]["alpha"], beta=config["loss"]["beta"])
+    criterion = KoopmanLoss(
+        alpha=config["loss"]["alpha"],
+        beta=config["loss"]["beta"],
+        weighting_type=config["loss"]["weighting_type"],
+        sigma_blur=config["loss"]["sigma_blur"],
+    )
 
     lr_scheduler = CosineWarmup(
         optimizer=optimizer,

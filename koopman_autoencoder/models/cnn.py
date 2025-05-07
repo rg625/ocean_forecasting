@@ -1,6 +1,7 @@
 from itertools import pairwise
 from torch import nn
 from models.checkpoint import checkpoint
+from einops import rearrange
 
 
 class ConvBlock(nn.Module):
@@ -211,12 +212,18 @@ class BaseEncoderDecoder(nn.Module):
         if self.is_encoder:
             out = self.layers(x)
             # Flatten and apply linear layer
-            out = out.view(out.size(0), -1)
+            out = rearrange(out, "b c h w -> b (c h w)")
             return self.linear(out)
         else:
             # Apply linear layer and unflatten
             out = self.linear(x)
-            out = out.view(-1, self.hiddens[-1], self.H_out, self.W_out)
+            out = rearrange(
+                out,
+                "b (c h w) -> b c h w",
+                c=self.hiddens[-1],
+                h=self.H_out,
+                w=self.W_out,
+            )
             return self.layers(out)
 
 

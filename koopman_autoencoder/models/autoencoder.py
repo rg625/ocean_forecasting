@@ -31,16 +31,15 @@ class KoopmanOperator(nn.Module):
     def _forward(self, z):
         """
         Apply Koopman operator to predict the next state.
-
         Parameters:
             z: torch.Tensor
-                Latent representation of shape (batch_size, latent_dim).
-
         Returns:
             torch.Tensor:
                 Residual change in latent space.
         """
-        return self.koopman_operator(z)
+        return z + self.koopman_operator(
+            z
+        )  # Residual latent connection z_{t+1} = (A + Id) z_t
 
 
 class KoopmanAutoencoder(nn.Module):
@@ -74,6 +73,8 @@ class KoopmanAutoencoder(nn.Module):
                 Number of convolutional layers in a block.
             kernel_size: int
                 Size of the convolution kernel.
+            use_checkpoint: bool
+                Flag for gradient checkpointing.
             conv_kwargs: dict
                 Additional arguments for convolutional layers.
         """
@@ -126,8 +127,7 @@ class KoopmanAutoencoder(nn.Module):
             [x[var] for var in x.keys()], dim=1
         )  # Shape: (batch_size, seq_length, channels, height, width)
         self.vars = list(x.keys())  # Convert keys to a list
-        batch_size, seq_length, height, width = stacked_input.shape
-        stacked_input = stacked_input.view(batch_size, seq_length, height, width)
+        # stacked_input = rearrange(stacked_input, 'b t var h w -> b (t var) h w')
 
         # Pass stacked input through the encoder
         latent = self.encoder(stacked_input)
@@ -139,8 +139,7 @@ class KoopmanAutoencoder(nn.Module):
 
         Parameters:
             x: TensorDict
-                TensorDict with key 'latent' of shape (batch_size, latent_dim).
-
+                TensorDict of shape (batch_size, latent_dim).
         Returns:
             TensorDict: Updated TensorDict with reconstructed variables.
         """
@@ -205,12 +204,6 @@ class KoopmanAutoencoder(nn.Module):
         )
 
         # Compute latent prediction differences
-        latent_pred_differences = torch.stack(
-            [
-                z_preds[t + 1] - self.predict_latent(z_preds[t])
-                for t in range(seq_length[0])
-            ],
-            dim=1,
-        )
+        z_preds = torch.stack(z_preds, dim=1)
 
-        return x_recon, x_preds, z_preds, latent_pred_differences
+        return x_recon, x_preds, z_preds
