@@ -108,12 +108,20 @@ class KoopmanLoss(nn.Module):
         idx = torch.arange(timesteps, device=device)
 
         if self.weighting_type == "cosine":
-            weights = 0.5 * (1 + torch.cos(torch.pi * idx / (timesteps - 1)))
-            weights = weights / weights.sum()
+            # Prevent division by zero when timesteps is 1
+            if timesteps > 1:
+                weights = 0.5 * (1 + torch.cos(torch.pi * idx / (timesteps - 1)))
+            else:
+                weights = torch.tensor([1.0], device=device)
+
+            weights = weights / torch.max(
+                weights.sum(), torch.tensor(1e-8, device=device)
+            )  # Avoid NaN by clamping the sum
+
         elif self.weighting_type == "uniform":
             weights = torch.ones(timesteps, device=device) / timesteps
         else:
-            raise ValueError(f"Unknown weighting type: {type}")
+            raise ValueError(f"Unknown weighting type: {self.weighting_type}")
 
         return weights
 
