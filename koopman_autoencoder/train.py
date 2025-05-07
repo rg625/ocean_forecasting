@@ -9,6 +9,7 @@ from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
 from models.dataloader import QGDataset, create_dataloaders
 from models.trainer import Trainer
+from models.utils import load_checkpoint
 
 
 def main(config_path):
@@ -73,6 +74,14 @@ def main(config_path):
     # Log model architecture to W&B
     wandb.watch(model, log="all")
 
+    # Load checkpoint if specified
+    start_epoch = 0
+    history = {}
+    if config["ckpt"] is not None:
+        model, optimizer, history, start_epoch = load_checkpoint(
+            checkpoint_path=config["ckpt"], model=model, optimizer=optimizer
+        )
+
     # Initialize Trainer
     trainer = Trainer(
         model=model,
@@ -85,6 +94,8 @@ def main(config_path):
         num_epochs=config["training"]["num_epochs"],
         patience=config["training"]["patience"],
         output_dir=output_dir,
+        start_epoch=start_epoch,
+        log_epoch=config["log_epoch"],
     )
 
     # Run training loop

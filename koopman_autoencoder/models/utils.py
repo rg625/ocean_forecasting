@@ -283,3 +283,19 @@ def average_losses(total_losses, n_batches):
     for key in total_losses.keys():
         total_losses[key] /= n_batches
     return total_losses
+
+
+def load_checkpoint(checkpoint_path, model, optimizer):
+    """
+    Loads training state from a checkpoint.
+
+    Args:
+        checkpoint_path: Path to the checkpoint file.
+    """
+    checkpoint = torch.load(checkpoint_path)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    history = checkpoint.get("history", {})
+    start_epoch = checkpoint.get("epoch", 0) + 1
+    print(f"Resuming training from epoch {start_epoch}.")
+    return model, optimizer, history, start_epoch

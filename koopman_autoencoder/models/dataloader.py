@@ -75,13 +75,13 @@ class QGDataset(Dataset):
         # Compute the means and stds of the raw (unnormalized) data for each variable
         self.means = TensorDict(
             {
-                var: torch.FloatTensor(np.mean(self.data[var].values, axis=(0, 1, 2)))
+                var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
                 for var in variables
             }
         )
         self.stds = TensorDict(
             {
-                var: torch.FloatTensor(np.std(self.data[var].values, axis=(0, 1, 2)))
+                var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
                 for var in variables
             }
         )

@@ -26,6 +26,8 @@ class Trainer:
         num_epochs=100,
         patience=10,
         output_dir=None,
+        start_epoch=0,
+        log_epoch=10,
     ):
         """
         Initializes the Trainer class.
@@ -54,6 +56,8 @@ class Trainer:
         self.patience_counter = 0
         self.history: dict[str, dict[str, list[float]]] = {}
         self.output_dir = Path(output_dir) if output_dir else None
+        self.start_epoch = start_epoch
+        self.log_epoch = log_epoch
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True)
 
@@ -180,14 +184,14 @@ class Trainer:
                 self.output_dir / "best_model.pth",
             )
 
-    def log_metrics(self, step, losses, prefix="train/"):
+    def log_metrics(self, step, losses, mode="train"):
         """
         Logs metrics to W&B.
 
         Args:
             step: Current step (iteration or epoch).
             losses: Losses for the step as a dictionary.
-            prefix: Prefix for logging (e.g., 'train/' or 'val/').
+            mode: Mode for logging (e.g., 'train' or 'val').
         """
         # Prepare the W&B log dictionary
         wandb_log_dict = {"step": step}
@@ -196,28 +200,28 @@ class Trainer:
             if isinstance(value, dict):  # For nested dictionaries
                 for sub_key, sub_value in value.items():
                     if isinstance(sub_value, TensorDict):  # Check if it's a TensorDict
-                        wandb_log_dict[f"loss/{prefix}/{key}_{sub_key}"] = (
+                        wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = (
                             tensor_dict_to_json(sub_value)
                         )
                     elif isinstance(sub_value, torch.Tensor):  # Check if it's a tensor
-                        wandb_log_dict[f"loss/{prefix}/{key}_{sub_key}"] = (
+                        wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = (
                             sub_value.item()
                             if sub_value.numel() == 1
                             else sub_value.cpu().numpy().tolist()
                         )
                     else:  # Handle scalars or other types
-                        wandb_log_dict[f"loss/{prefix}/{key}_{sub_key}"] = sub_value
+                        wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = sub_value
             elif isinstance(value, TensorDict):  # For top-level TensorDicts
                 for sub_key, sub_value in value.items():
-                    wandb_log_dict[f"loss/{prefix}/{key}_{sub_key}"] = (
+                    wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = (
                         tensor_dict_to_json(sub_value)
                     )
             elif isinstance(value, torch.Tensor):  # For top-level tensors
-                wandb_log_dict[f"loss/{prefix}/{key}"] = (
+                wandb_log_dict[f"loss/{mode}/{key}"] = (
                     value.item() if value.numel() == 1 else value.cpu().numpy().tolist()
                 )
             else:  # For other types (e.g., scalars)
-                wandb_log_dict[f"loss/{prefix}/{key}"] = value
+                wandb_log_dict[f"loss/{mode}/{key}"] = value
 
         # Log to W&B
         wandb.log(wandb_log_dict)
@@ -248,24 +252,27 @@ class Trainer:
         Returns:
             Dictionary with training history.
         """
-        progress_bar = tqdm(range(self.num_epochs), desc="Training", unit="epoch")
-        global_step = 0  # Track the global training step
+        progress_bar = tqdm(
+            range(self.start_epoch, self.num_epochs), desc="Training", unit="epoch"
+        )
+        global_step = self.start_epoch * len(self.train_loader)
         for epoch in progress_bar:
             # Training step
             for input, target in self.train_loader:
                 losses = self.train_step(input, target)
-                self.log_metrics(global_step, losses, prefix="train/")
+                self.log_metrics(global_step, losses, mode="train")
                 global_step += 1
 
             self.lr_scheduler.step()
 
             # Evaluate on train and validation sets
-            train_losses = self.evaluate(self.train_loader, mode="train")
-            val_losses = self.evaluate(self.val_loader, mode="val")
+            if epoch % self.log_epoch == 0:
+                train_losses = self.evaluate(self.train_loader, mode="train")
+                val_losses = self.evaluate(self.val_loader, mode="val")
 
             # Log metrics and update progress bar
-            self.log_metrics(epoch, train_losses, prefix="train/")
-            self.log_metrics(epoch, val_losses, prefix="val/")
+            self.log_metrics(epoch, train_losses, mode="train")
+            self.log_metrics(epoch, val_losses, mode="val")
             progress_bar.set_postfix(
                 {
                     "Train Loss": f"{train_losses['total_loss']:.4f}",

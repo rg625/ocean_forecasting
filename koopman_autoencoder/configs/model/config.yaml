@@ -1,11 +1,10 @@
 output_dir: "model_outputs"
 data:
   data_dir: "./data"
-  train_file: "jet/qg_jet_train_data_clean_small.nc"
-  # train_file: "jet/qg_jet_train_data_clean.nc"
+  train_file: "jet/qg_jet_train_data.nc"
   val_file: "jet/qg_jet_val_data.nc"
   test_file: "jet/qg_jet_test_data.nc"
-  max_sequence_length: 5  # Maximum sequence length
+  max_sequence_length: 5
 model:
   height: 256
   width: 256
@@ -34,3 +33,6 @@ lr_scheduler:
 loss:
   alpha: 1.0
   beta: 0.1
+
+ckpt: None
+log_epoch: 10 # logging results every epoch
