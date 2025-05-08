@@ -2,17 +2,18 @@ from itertools import pairwise
 from torch import nn
 from models.checkpoint import checkpoint
 from einops import rearrange
+from torch import Tensor
 
 
 class ConvBlock(nn.Module):
     def __init__(
         self,
-        C_in,
-        C_out,
-        block_size=1,
-        kernel_size=3,
-        decoder_block=False,
-        use_checkpoint=False,  # Add this to toggle checkpointing
+        C_in: int,
+        C_out: int,
+        block_size: int = 1,
+        kernel_size: int = 3,
+        decoder_block: bool = False,
+        use_checkpoint: bool = False,  # Add this to toggle checkpointing
         **conv_kwargs,
     ):
         """
@@ -57,7 +58,7 @@ class ConvBlock(nn.Module):
             ]
             self.stack = nn.ModuleList([*initial_layers, *output_layer])
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         # Use gradient checkpointing if the flag is enabled
         if self.use_checkpoint:
             return checkpoint(
@@ -66,7 +67,7 @@ class ConvBlock(nn.Module):
         else:
             return self._forward(x)
 
-    def _forward(self, x):
+    def _forward(self, x: Tensor):
         for module in self.stack:
             x = module(x)
         return x
@@ -75,15 +76,15 @@ class ConvBlock(nn.Module):
 class BaseEncoderDecoder(nn.Module):
     def __init__(
         self,
-        C,
-        H,
-        W,
-        latent_dim,
-        hiddens,
-        block_size=1,
-        kernel_size=3,
-        is_encoder=True,
-        use_checkpoint=False,  # Add checkpointing flag here
+        C: int,
+        H: int,
+        W: int,
+        latent_dim: int,
+        hiddens: list[int],
+        block_size: int = 1,
+        kernel_size: int = 3,
+        is_encoder: bool = True,
+        use_checkpoint: bool = False,  # Add checkpointing flag here
         **conv_kwargs,
     ):
         """
@@ -138,7 +139,7 @@ class BaseEncoderDecoder(nn.Module):
         # Build convolutional layers
         self.layers = self._build_layers(block_size, kernel_size, conv_kwargs)
 
-    def _build_layers(self, block_size, kernel_size, conv_kwargs):
+    def _build_layers(self, block_size: int, kernel_size: int, conv_kwargs: dict):
         """
         Build the layers for the encoder or decoder.
 
@@ -208,7 +209,7 @@ class BaseEncoderDecoder(nn.Module):
             )
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x: Tensor):
         if self.is_encoder:
             out = self.layers(x)
             # Flatten and apply linear layer
@@ -230,14 +231,14 @@ class BaseEncoderDecoder(nn.Module):
 class ConvEncoder(BaseEncoderDecoder):
     def __init__(
         self,
-        C,
-        H,
-        W,
-        latent_dim,
-        hiddens,
-        block_size=1,
-        kernel_size=3,
-        use_checkpoint=False,
+        C: int,
+        H: int,
+        W: int,
+        latent_dim: int,
+        hiddens: list[int],
+        block_size: int = 1,
+        kernel_size: int = 3,
+        use_checkpoint: bool = False,
         **conv_kwargs,
     ):
         super().__init__(
@@ -257,14 +258,14 @@ class ConvEncoder(BaseEncoderDecoder):
 class ConvDecoder(BaseEncoderDecoder):
     def __init__(
         self,
-        C,
-        H,
-        W,
-        latent_dim,
-        hiddens,
-        block_size=1,
-        kernel_size=3,
-        use_checkpoint=False,
+        C: int,
+        H: int,
+        W: int,
+        latent_dim: int,
+        hiddens: list[int],
+        block_size: int = 1,
+        kernel_size: int = 3,
+        use_checkpoint: bool = False,
         **conv_kwargs,
     ):
         super().__init__(

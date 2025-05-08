@@ -4,9 +4,12 @@ import wandb
 from pathlib import Path
 import torch
 from tensordict import TensorDict
+from torch import Tensor
+from models.autoencoder import KoopmanAutoencoder
+from torch.optim.adam import Adam
 
 
-def tensor_dict_to_json(tensor_dict):
+def tensor_dict_to_json(tensor_dict: TensorDict):
     """
     Convert a TensorDict or Tensor to a JSON-serializable dictionary or list.
 
@@ -33,7 +36,11 @@ def tensor_dict_to_json(tensor_dict):
 
 
 def plot_comparison(
-    x, x_recon, output_dir=None, title="reconstruction_comparison", mode="train"
+    x: TensorDict,
+    x_recon: TensorDict,
+    output_dir: Path | str = "/home/koopman/",
+    title: str = "reconstruction_comparison",
+    mode="train",
 ):
     """
     Plots input vs reconstructed images for each variable across all timesteps in one image.
@@ -103,7 +110,7 @@ def plot_comparison(
     plt.close()
 
 
-def compute_isotropic_energy_spectrum(field):
+def compute_isotropic_energy_spectrum(field: Tensor):
     """
     Compute isotropic energy spectrum from a 2D velocity or vorticity field.
 
@@ -145,7 +152,12 @@ def compute_isotropic_energy_spectrum(field):
     return k_bins, spectrum
 
 
-def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, mode="train"):
+def plot_energy_spectrum(
+    true_fields: Tensor,
+    pred_fields: Tensor,
+    output_dir: Path | str = "/home/koopman/",
+    mode: str = "train",
+):
     """
     Plots the isotropic energy spectrum comparison for each channel and logs to W&B.
 
@@ -185,7 +197,14 @@ def plot_energy_spectrum(true_fields, pred_fields, output_dir=None, mode="train"
     plt.close()
 
 
-def denormalize_and_visualize(input, target, x_recon, x_preds, output_dir, mode):
+def denormalize_and_visualize(
+    input: TensorDict,
+    target: TensorDict,
+    x_recon: TensorDict,
+    x_preds: TensorDict,
+    output_dir: Path,
+    mode: str,
+):
     """
     Handles denormalization and visualization for the first batch.
 
@@ -201,52 +220,56 @@ def denormalize_and_visualize(input, target, x_recon, x_preds, output_dir, mode)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Prepare and save reconstruction comparison plot
+    true_to_recon = TensorDict(
+        {
+            key: value[:, -1].unsqueeze(1) for key, value in input.items()
+        },  # Slice each tensor
+        batch_size=input.batch_size,
+    )
+    est_to_recon = TensorDict(
+        {
+            key: value.unsqueeze(1) for key, value in x_recon.items()
+        },  # Slice each tensor
+        batch_size=input.batch_size,
+    )
     plot_comparison(
-        TensorDict(
-            {
-                key: value[:, -1].unsqueeze(1) for key, value in input.items()
-            },  # Slice each tensor
-            batch_size=input.batch_size,
-        ),
-        TensorDict(
-            {
-                key: value.unsqueeze(1) for key, value in x_recon.items()
-            },  # Slice each tensor
-            batch_size=input.batch_size,
-        ),
-        output_dir,
+        x=true_to_recon,
+        x_recon=est_to_recon,
+        output_dir=output_dir,
         title="Reconstruction",
         mode=mode,
     )
 
     # Prepare and save prediction comparison plot
     plot_comparison(
-        target,
-        x_preds,
-        output_dir,
+        x=target,
+        x_recon=x_preds,
+        output_dir=output_dir,
         title="Prediction",
         mode=mode,
     )
 
     # Prepare and save energy spectrum comparison plot
+    true_fields = TensorDict(
+        {
+            key: value[:, -1] if value.dim() > 1 else None
+            for key, value in target.items()
+        },
+        batch_size=target.batch_size,
+    )
+    pred_fields = TensorDict(
+        {key: value[:, -1] for key, value in x_preds.items()},
+        batch_size=x_preds.batch_size,
+    )
     plot_energy_spectrum(
-        TensorDict(
-            {
-                key: value[:, -1] if value.dim() > 1 else None
-                for key, value in target.items()
-            },
-            batch_size=target.batch_size,
-        ),
-        TensorDict(
-            {key: value[:, -1] for key, value in x_preds.items()},
-            batch_size=x_preds.batch_size,
-        ),
-        output_dir,
+        true_fields=true_fields,
+        pred_fields=pred_fields,
+        output_dir=output_dir,
         mode=mode,
     )
 
 
-def accumulate_losses(total_losses, losses):
+def accumulate_losses(total_losses: dict, losses: dict):
     """
     Accumulates losses over batches.
 
@@ -265,7 +288,7 @@ def accumulate_losses(total_losses, losses):
     return total_losses
 
 
-def average_losses(total_losses, n_batches):
+def average_losses(total_losses: dict, n_batches: int):
     """
     Averages the losses over the number of batches.
 
@@ -281,7 +304,7 @@ def average_losses(total_losses, n_batches):
     return total_losses
 
 
-def load_checkpoint(checkpoint_path, model, optimizer):
+def load_checkpoint(checkpoint_path: str, model: KoopmanAutoencoder, optimizer: Adam):
     """
     Loads training state from a checkpoint.
 

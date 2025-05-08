@@ -1,10 +1,16 @@
 import torch
+from torch import Tensor
+from torch.optim.adam import Adam
 from tensordict import TensorDict
 import matplotlib.pyplot as plt
 from pathlib import Path
 import yaml
 from tqdm import tqdm
 import wandb
+from models.autoencoder import KoopmanAutoencoder
+from models.loss import KoopmanLoss
+from models.lr_schedule import CosineWarmup
+from dataloader import DataLoader
 from models.utils import (
     average_losses,
     accumulate_losses,
@@ -16,18 +22,18 @@ from models.utils import (
 class Trainer:
     def __init__(
         self,
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        criterion,
-        lr_scheduler,
-        device,
-        num_epochs=100,
-        patience=10,
-        output_dir=None,
-        start_epoch=0,
-        log_epoch=10,
+        model: KoopmanAutoencoder,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        optimizer: Adam,
+        criterion: KoopmanLoss,
+        lr_scheduler: CosineWarmup,
+        device: torch.device,
+        num_epochs: int = 100,
+        patience: int = 10,
+        output_dir: Path | str = "/home/koopman/",
+        start_epoch: int = 0,
+        log_epoch: int = 10,
     ):
         """
         Initializes the Trainer class.
@@ -61,13 +67,13 @@ class Trainer:
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True)
 
-    def train_step(self, input, target):
+    def train_step(self, input: TensorDict, target: TensorDict):
         """
         Performs a single training step.
 
         Args:
-            input: Input tensor.
-            target: Target tensor.
+            input: Input TensorDict.
+            target: Target TensorDict.
 
         Returns:
             Losses for the step (including total loss).
@@ -111,7 +117,7 @@ class Trainer:
 
         return losses
 
-    def evaluate(self, dataloader, mode="train"):
+    def evaluate(self, dataloader: DataLoader, mode: str = "train"):
         """
         Evaluates the model on the given dataloader.
 
@@ -153,7 +159,7 @@ class Trainer:
 
         return total_losses
 
-    def save_checkpoint(self, epoch, val_loss):
+    def save_checkpoint(self, epoch: int, val_loss: Tensor):
         """
         Saves the model checkpoint.
 
@@ -173,7 +179,7 @@ class Trainer:
                 self.output_dir / "best_model.pth",
             )
 
-    def log_metrics(self, step, losses, mode="train"):
+    def log_metrics(self, step: int, losses: dict, mode: str = "train"):
         """
         Logs metrics to W&B.
 
@@ -249,19 +255,19 @@ class Trainer:
             # Training step
             for input, target in self.train_loader:
                 losses = self.train_step(input, target)
-                self.log_metrics(global_step, losses, mode="train")
+                self.log_metrics(step=global_step, losses=losses, mode="train")
                 global_step += 1
 
             self.lr_scheduler.step()
 
             # Evaluate on train and validation sets
             if epoch % self.log_epoch == 0:
-                train_losses = self.evaluate(self.train_loader, mode="train")
-                val_losses = self.evaluate(self.val_loader, mode="val")
+                train_losses = self.evaluate(dataloader=self.train_loader, mode="train")
+                val_losses = self.evaluate(dataloader=self.val_loader, mode="val")
 
             # Log metrics and update progress bar
-            self.log_metrics(epoch, train_losses, mode="train")
-            self.log_metrics(epoch, val_losses, mode="val")
+            self.log_metrics(step=epoch, losses=train_losses, mode="train")
+            self.log_metrics(step=epoch, losses=val_losses, mode="val")
             progress_bar.set_postfix(
                 {
                     "Train Loss": f"{train_losses['total_loss']:.4f}",

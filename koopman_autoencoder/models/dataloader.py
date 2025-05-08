@@ -8,7 +8,12 @@ from tensordict import stack as stack_tensordict
 
 
 class QGDataset(Dataset):
-    def __init__(self, data_path, max_sequence_length=2, variables=None):
+    def __init__(
+        self,
+        data_path: str,
+        max_sequence_length: int = 2,
+        variables: list[str] | None = None,
+    ):
         """
         Custom Dataset for QG (Quasi-Geostrophic) data with variable target sequence lengths.
         Parameters:
