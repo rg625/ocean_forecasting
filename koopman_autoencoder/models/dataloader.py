@@ -193,8 +193,11 @@ class QGDataset(Dataset):
 
     def quantile_denormalize(self, tensor_dict):
         # assert (
-        #     self.q_low and self.q_high
-        # ), f"Expected non-empty quantiels but found {self.q_low} and {self.q_high}"
+        #     self.q_low is not None and self.q_high is not None
+        # ), "Quantile dicts must not be None"
+        # assert (
+        #     len(self.q_low) > 0 and len(self.q_high) > 0
+        # ), f"Expected non-empty quantile dicts but found {self.q_low} and {self.q_high}"
         denormalized = {}
         for var, tensor in tensor_dict.items():
             q_low = self.q_lows[var].to(tensor.device)
