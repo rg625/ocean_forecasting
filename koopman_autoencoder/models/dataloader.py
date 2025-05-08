@@ -68,30 +68,35 @@ class QGDataset(Dataset):
         self.variables = variables
 
         # Stack data into a dictionary of tensors with dimensions [time, height, width]
-        self.stacked_data = TensorDict(
-            {var: torch.FloatTensor(self.data[var].values) for var in variables}
-        )
+        # self.stacked_data = TensorDict(
+        #     {var: torch.FloatTensor(self.data[var].values) for var in variables}
+        # )
 
-        # Compute the means and stds of the raw (unnormalized) data for each variable
-        self.means = TensorDict(
-            {
-                var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
-                for var in variables
-            }
-        )
-        self.stds = TensorDict(
-            {
-                var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
-                for var in variables
-            }
-        )
+        # # Compute the means and stds of the raw (unnormalized) data for each variable
+        # self.means = TensorDict(
+        #     {
+        #         var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
+        #         for var in variables
+        #     }
+        # )
+        # self.stds = TensorDict(
+        #     {
+        #         var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
+        #         for var in variables
+        #     }
+        # )
 
-        # Normalize the data to have mean 0 and std 1
-        self.stacked_data = TensorDict(
-            {
-                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
-                for var in variables
-            }
+        # # Normalize the data to have mean 0 and std 1
+        # self.stacked_data = TensorDict(
+        #     {
+        #         var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
+        #         for var in variables
+        #     }
+        # )
+        self.stacked_data, self.q_low, self.q_high = self.quantile_normalize(
+            TensorDict(
+                {var: torch.FloatTensor(self.data[var].values) for var in variables}
+            )
         )
 
     def __len__(self):
@@ -167,6 +172,36 @@ class QGDataset(Dataset):
     #         denormalized[var] = 0.5 * (tensor + 1) * (maxs - mins) + mins
 
     #     return TensorDict(denormalized, batch_size=x.batch_size)
+    @staticmethod
+    def quantile_normalize(tensor_dict, quantile_range=(2.5, 97.5)):
+        q_lows = {}
+        q_highs = {}
+        normalized = {}
+
+        for var, tensor in tensor_dict.items():
+            data = tensor.numpy().flatten()
+            q_low = np.percentile(data, quantile_range[0])
+            q_high = np.percentile(data, quantile_range[1])
+            q_lows[var] = torch.tensor([q_low], dtype=torch.float32)
+            q_highs[var] = torch.tensor([q_high], dtype=torch.float32)
+
+            # Normalize to [-1, 1]
+            norm = 2 * (tensor - q_low) / (q_high - q_low) - 1
+            normalized[var] = norm
+
+        return TensorDict(normalized), TensorDict(q_lows), TensorDict(q_highs)
+
+    def quantile_denormalize(self, tensor_dict):
+        # assert (
+        #     self.q_low and self.q_high
+        # ), f"Expected non-empty quantiels but found {self.q_low} and {self.q_high}"
+        denormalized = {}
+        for var, tensor in tensor_dict.items():
+            q_low = self.q_lows[var].to(tensor.device)
+            q_high = self.q_highs[var].to(tensor.device)
+            denorm = ((tensor + 1) / 2) * (q_high - q_low) + q_low
+            denormalized[var] = denorm
+        return TensorDict(denormalized, batch_size=tensor_dict.batch_size)
 
     def denormalize(self, x):
         """
