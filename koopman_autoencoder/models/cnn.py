@@ -3,6 +3,7 @@ from torch import nn
 from models.checkpoint import checkpoint
 from einops import rearrange
 from torch import Tensor
+from typing import List, Union, Tuple, Any
 
 
 class ConvBlock(nn.Module):
@@ -11,10 +12,10 @@ class ConvBlock(nn.Module):
         C_in: int,
         C_out: int,
         block_size: int = 1,
-        kernel_size: int = 3,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
         decoder_block: bool = False,
         use_checkpoint: bool = False,  # Add this to toggle checkpointing
-        **conv_kwargs,
+        **conv_kwargs: Any,
     ):
         """
         A modular convolutional block consisting of convolutional layers followed by ReLU activations.
@@ -80,9 +81,9 @@ class BaseEncoderDecoder(nn.Module):
         H: int,
         W: int,
         latent_dim: int,
-        hiddens: list[int],
+        hiddens: List[int],
         block_size: int = 1,
-        kernel_size: int = 3,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
         is_encoder: bool = True,
         use_checkpoint: bool = False,  # Add checkpointing flag here
         **conv_kwargs,
@@ -139,7 +140,12 @@ class BaseEncoderDecoder(nn.Module):
         # Build convolutional layers
         self.layers = self._build_layers(block_size, kernel_size, conv_kwargs)
 
-    def _build_layers(self, block_size: int, kernel_size: int, conv_kwargs: dict):
+    def _build_layers(
+        self,
+        block_size: int,
+        kernel_size: Union[int, tuple[int, int]],
+        conv_kwargs: dict,
+    ):
         """
         Build the layers for the encoder or decoder.
 
@@ -235,9 +241,9 @@ class ConvEncoder(BaseEncoderDecoder):
         H: int,
         W: int,
         latent_dim: int,
-        hiddens: list[int],
+        hiddens: List[int],
         block_size: int = 1,
-        kernel_size: int = 3,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
         use_checkpoint: bool = False,
         **conv_kwargs,
     ):
@@ -262,9 +268,9 @@ class ConvDecoder(BaseEncoderDecoder):
         H: int,
         W: int,
         latent_dim: int,
-        hiddens: list[int],
+        hiddens: List[int],
         block_size: int = 1,
-        kernel_size: int = 3,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
         use_checkpoint: bool = False,
         **conv_kwargs,
     ):

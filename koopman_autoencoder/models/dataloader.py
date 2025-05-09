@@ -5,110 +5,55 @@ import xarray as xr
 import random
 import numpy as np
 from tensordict import stack as stack_tensordict
+from typing import Optional, List, Any
 
 
-class QGDataset(Dataset):
+class QGDatasetBase(Dataset):
     def __init__(
         self,
         data_path: str,
         max_sequence_length: int = 2,
-        variables: list[str] | None = None,
+        variables: Optional[List[str]] = None,
     ):
-        """
-        Custom Dataset for QG (Quasi-Geostrophic) data with variable target sequence lengths.
-        Parameters:
-            data_path: str
-                Path to the dataset file.
-            max_sequence_length: int
-                Maximum length of the target sequence.
-            variables: list of str
-                Variables to extract from the dataset. If None, all variables will be used.
-        """
-        # self.data = xr.open_dataset(data_path)
-        # self.max_sequence_length = max_sequence_length
-        # if variables is None:
-        #     variables = list(self.data.data_vars.keys())
-        # self.variables = variables
-
-        # # Stack data into a dictionary of tensors with dimensions [time, height, width]
-        # self.stacked_data = TensorDict(
-        #     {var: torch.FloatTensor(self.data[var].values) for var in variables}
-        # )
-
-        # # Compute the min and max values for normalization for each variable
-        # # self.mins = TensorDict(
-        # #     {var: self.stacked_data[var].amin(dim=(0, 1, 2)) for var in variables}
-        # # )
-        # # self.maxs = TensorDict(
-        # #     {var: self.stacked_data[var].amax(dim=(0, 1, 2)) for var in variables}
-        # # )
-        # self.means = TensorDict(
-        #     {var: self.stacked_data[var].mean(dim=(0, 1, 2)) for var in variables}
-        # )
-        # self.stds = TensorDict(
-        #     {var: self.stacked_data[var].std(dim=(0, 1, 2)) for var in variables}
-        # )
-        # self.stacked_data = TensorDict(
-        #     {
-        #         var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
-        #         for var in variables
-        #     }
-        # )
-
-        # # Normalize data to the range [-1, 1]
-        # self.stacked_data = TensorDict(
-        #     {
-        #         var: 2
-        #         * (self.stacked_data[var] - self.mins[var])
-        #         / (self.maxs[var] - self.mins[var])
-        #         - 1
-        #         for var in variables
-        #     }
-        # )
-
         self.data = xr.open_dataset(data_path)
         self.max_sequence_length = max_sequence_length
         if variables is None:
             variables = list(self.data.data_vars.keys())
         self.variables = variables
 
-        # Stack data into a dictionary of tensors with dimensions [time, height, width]
-        # self.stacked_data = TensorDict(
-        #     {var: torch.FloatTensor(self.data[var].values) for var in variables}
-        # )
+        self._normalize()  # perform normalization
 
-        # # Compute the means and stds of the raw (unnormalized) data for each variable
-        # self.means = TensorDict(
-        #     {
-        #         var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
-        #         for var in variables
-        #     }
-        # )
-        # self.stds = TensorDict(
-        #     {
-        #         var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
-        #         for var in variables
-        #     }
-        # )
+    def _normalize(self):
+        self.stacked_data = TensorDict(
+            {var: torch.FloatTensor(self.data[var].values) for var in self.variables},
+            batch_size=[],
+        )
 
-        # # Normalize the data to have mean 0 and std 1
-        # self.stacked_data = TensorDict(
-        #     {
-        #         var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
-        #         for var in variables
-        #     }
-        # )
-        self.stacked_data, self.q_low, self.q_high = self.quantile_normalize(
-            TensorDict(
-                {var: torch.FloatTensor(self.data[var].values) for var in variables}
-            )
+        self.means = TensorDict(
+            {
+                var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+
+        self.stds = TensorDict(
+            {
+                var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+
+        self.stacked_data = TensorDict(
+            {
+                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
+                for var in self.variables
+            },
+            batch_size=[],
         )
 
     def __len__(self):
-        """
-        Length of the dataset.
-        """
-        # Ensure we can extract an input sequence of length 2 and at least one target step
         return (
             len(next(iter(self.stacked_data.values())))
             - 2
@@ -117,29 +62,18 @@ class QGDataset(Dataset):
         )
 
     def __getitem__(self, idx):
-        """
-        Get a sample with a fixed input sequence length of 2 and a target sequence length
-        determined by the batch.
-
-        Parameters:
-            idx: tuple (start_idx, target_length)
-                Index of the starting point of the sequence and the target sequence length.
-        Returns:
-            tuple: (input_sequence, target_sequence)
-        """
         if isinstance(idx, tuple):
             start_idx, target_length = idx
         else:
-            # For standard indexing (used during initialization)
             start_idx = idx
             target_length = self.max_sequence_length
 
-        # Extract the input sequence (fixed length of 2) and target sequence for each variable
         input_seq = TensorDict(
             {
                 var: self.stacked_data[var][start_idx : start_idx + 2]
                 for var in self.variables
-            }
+            },
+            batch_size=[],
         )
         target_seq = TensorDict(
             {
@@ -147,92 +81,102 @@ class QGDataset(Dataset):
                     start_idx + 2 : start_idx + 2 + target_length
                 ]
                 for var in self.variables
-            }
+            },
+            batch_size=[],
         )
-
-        # Add sequence length to the target sequence
         target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
-
-        # Return the input sequence and target sequence as dictionaries
         return input_seq, target_seq
 
-    # def denormalize(self, x):
-    #     """
-    #     Denormalize the data from [-1, 1] back to the original range.
-    #     Parameters:
-    #         x: dict of torch.Tensor
-    #             Normalized tensor dictionary.
-    #     Returns:
-    #         dict of torch.Tensor: Denormalized tensor dictionary.
-    #     """
-    #     denormalized = {}
-    #     for var, tensor in x.items():
-    #         if var == "seq_length":  # Skip denormalizing sequence length
-    #             # denormalized[var] = tensor
-    #             continue
+    def denormalize(self, x):
+        denormalized = {}
+        for var, tensor in x.items():
+            if var == "seq_length":
+                continue
+            device = tensor.device
+            means = self.means[var].to(device)
+            stds = self.stds[var].to(device)
+            denormalized[var] = tensor * stds + means
+        return TensorDict(denormalized, batch_size=x.batch_size)
 
-    #         device = tensor.device  # Get the device of the input tensor
-    #         mins = self.mins[var].to(device)  # Move mins to the same device as tensor
-    #         maxs = self.maxs[var].to(device)  # Move maxs to the same device as tensor
-    #         denormalized[var] = 0.5 * (tensor + 1) * (maxs - mins) + mins
 
-    #     return TensorDict(denormalized, batch_size=x.batch_size)
+class QGDatasetQuantile(QGDatasetBase):
+    def __init__(
+        self,
+        data_path: str,
+        max_sequence_length: int = 2,
+        variables: Optional[List[str]] = None,
+        quantile_range: tuple = (2.5, 97.5),
+    ):
+        """
+        Dataset that normalizes using specified quantiles instead of mean/std.
+        Normalizes to [-1, 1] using the quantile range.
+        """
+        self.quantile_range = quantile_range
+        self.q_lows: Optional[TensorDict] = None
+        self.q_highs: Optional[TensorDict] = None
+        super().__init__(data_path, max_sequence_length, variables)
+
+    def _normalize(self):
+        raw_data = TensorDict(
+            {var: torch.FloatTensor(self.data[var].values) for var in self.variables},
+            batch_size=[],
+        )
+
+        self.stacked_data, self.q_lows, self.q_highs = self.quantile_normalize(
+            raw_data, quantile_range=self.quantile_range
+        )
+
     @staticmethod
-    def quantile_normalize(tensor_dict, quantile_range=(2.5, 97.5)):
+    def quantile_normalize(tensor_dict: TensorDict, quantile_range=(2.5, 97.5)):
+        """
+        Normalize each variable in the tensor_dict to [-1, 1] using the specified quantile range.
+        """
         q_lows = {}
         q_highs = {}
         normalized = {}
 
         for var, tensor in tensor_dict.items():
-            data = tensor.numpy().flatten()
-            q_low = np.percentile(data, quantile_range[0])
-            q_high = np.percentile(data, quantile_range[1])
+            data_flat = tensor.numpy().flatten()
+            q_low = np.percentile(data_flat, quantile_range[0])
+            q_high = np.percentile(data_flat, quantile_range[1])
+
             q_lows[var] = torch.tensor([q_low], dtype=torch.float32)
             q_highs[var] = torch.tensor([q_high], dtype=torch.float32)
 
-            # Normalize to [-1, 1]
             norm = 2 * (tensor - q_low) / (q_high - q_low) - 1
             normalized[var] = norm
 
-        return TensorDict(normalized), TensorDict(q_lows), TensorDict(q_highs)
+        return (
+            TensorDict(normalized, batch_size=[]),
+            TensorDict(q_lows, batch_size=[]),
+            TensorDict(q_highs, batch_size=[]),
+        )
 
-    def quantile_denormalize(self, tensor_dict):
-        # assert (
-        #     self.q_low is not None and self.q_high is not None
-        # ), "Quantile dicts must not be None"
-        # assert (
-        #     len(self.q_low) > 0 and len(self.q_high) > 0
-        # ), f"Expected non-empty quantile dicts but found {self.q_low} and {self.q_high}"
+    def denormalize(self, tensor_dict: TensorDict):
+        """
+        Denormalize data from [-1, 1] back to the original range using stored quantiles.
+
+        Parameters:
+            tensor_dict: TensorDict
+                Dictionary with normalized tensors.
+
+        Returns:
+            TensorDict: Denormalized version.
+        """
+        assert self.q_lows is not None, "Quantile lows must not be None"
+        assert self.q_highs is not None, "Quantile highs must not be None"
+
         denormalized = {}
         for var, tensor in tensor_dict.items():
+            if var == "seq_length":
+                continue
+
             q_low = self.q_lows[var].to(tensor.device)
             q_high = self.q_highs[var].to(tensor.device)
             denorm = ((tensor + 1) / 2) * (q_high - q_low) + q_low
             denormalized[var] = denorm
+
         return TensorDict(denormalized, batch_size=tensor_dict.batch_size)
-
-    def denormalize(self, x):
-        """
-        Denormalize the data from mean 0, std 1 back to the original range.
-        Parameters:
-            x: dict of torch.Tensor
-                Normalized tensor dictionary.
-        Returns:
-            dict of torch.Tensor: Denormalized tensor dictionary.
-        """
-        denormalized = {}
-        for var, tensor in x.items():
-            if var == "seq_length":  # Skip denormalizing sequence length
-                continue
-
-            device = tensor.device  # Get the device of the input tensor
-            means = self.means[var].to(
-                device
-            )  # Move means to the same device as tensor
-            stds = self.stds[var].to(device)  # Move stds to the same device as tensor
-            denormalized[var] = tensor * stds + means
-
-        return TensorDict(denormalized, batch_size=x.batch_size)
 
 
 class BatchSampler(Sampler):
@@ -254,7 +198,6 @@ class BatchSampler(Sampler):
         indices = list(range(self.dataset_size))
         if self.shuffle:
             np.random.shuffle(indices)
-
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i : i + self.batch_size]
             if len(batch_indices) < self.batch_size and self.drop_last:
@@ -269,36 +212,10 @@ class BatchSampler(Sampler):
 
 
 class DataLoaderWrapper(DataLoader):
-    """
-    Custom DataLoader that wraps the PyTorch DataLoader and exposes the `denormalize`
-    method from the underlying dataset.
-    """
-
     def __init__(self, *args, **kwargs):
-        """
-        Initialize the DataLoaderWrapper.
-        """
         super().__init__(*args, **kwargs)
 
-        print("Dataset means:")
-        for var, mean in self.dataset.means.items():
-            print(f"  {var}: {mean.item():.10f}")
-
-        print("Dataset stds:")
-        for var, std in self.dataset.stds.items():
-            print(f"  {var}: {std.item():.10f}")
-
     def denormalize(self, x):
-        """
-        Expose the `denormalize` method from the underlying dataset.
-
-        Args:
-            x: The tensor or tensordict to denormalize.
-
-        Returns:
-            The denormalized tensor or tensordict.
-        """
-
         if hasattr(self.dataset, "denormalize"):
             return self.dataset.denormalize(x)
         else:
@@ -306,22 +223,18 @@ class DataLoaderWrapper(DataLoader):
 
 
 def custom_collate_fn(batch):
-    """
-    Custom collation function to handle TensorDict objects in batches.
-
-    Args:
-        batch: List of tuples (input_seq, target_seq) from the dataset.
-
-    Returns:
-        Tuple of stacked TensorDicts (inputs, targets).
-    """
-    input_seqs, target_seqs = zip(*batch)  # Unzip the input and target sequences
-    input_tensordict = stack_tensordict(input_seqs)  # Stack TensorDicts for input
-    target_tensordict = stack_tensordict(target_seqs)  # Stack TensorDicts for target
+    input_seqs, target_seqs = zip(*batch)
+    input_tensordict = stack_tensordict(input_seqs)
+    target_tensordict = stack_tensordict(target_seqs)
     return input_tensordict, target_tensordict
 
 
-def create_dataloaders(train_dataset, val_dataset, test_dataset, config):
+def create_dataloaders(
+    train_dataset: QGDatasetBase,
+    val_dataset: QGDatasetBase,
+    test_dataset: QGDatasetBase,
+    config: Any,
+):
     train_batch_sampler = BatchSampler(
         len(train_dataset),
         config["training"]["batch_size"],

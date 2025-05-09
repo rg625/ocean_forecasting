@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-from torch.optim.adam import Adam
+from torch.optim import Optimizer
 from tensordict import TensorDict
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -10,11 +10,11 @@ import wandb
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
-from dataloader import DataLoader
+from torch.utils.data import DataLoader
+from models.visualization import denormalize_and_visualize
 from models.utils import (
     average_losses,
     accumulate_losses,
-    denormalize_and_visualize,
     tensor_dict_to_json,
 )
 
@@ -25,7 +25,7 @@ class Trainer:
         model: KoopmanAutoencoder,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        optimizer: Adam,
+        optimizer: Optimizer,
         criterion: KoopmanLoss,
         lr_scheduler: CosineWarmup,
         device: torch.device,

@@ -5,6 +5,9 @@ data:
   val_file: "jet/qg_jet_val_data.nc"
   test_file: "jet/qg_jet_test_data.nc"
   max_sequence_length: 5
+  normalization:
+    type: "quantile"
+    quantiles: [2.5, 97.5]
 model:
   height: 256
   width: 256
@@ -21,7 +24,7 @@ model:
     padding_mode: "circular"
   latent_dim: 1024 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 30
+  batch_size: 1
   num_epochs: 1000
   patience: 1000
   use_checkpoint: True
@@ -32,7 +35,7 @@ lr_scheduler:
   final_lr: !!float 1e-5
 loss:
   alpha: 1.0
-  beta: 0.0
+  beta: 0.1
   weighting_type: cosine
   sigma_blur: ~
 

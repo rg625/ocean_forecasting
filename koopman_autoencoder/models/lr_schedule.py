@@ -1,13 +1,13 @@
 import math
 
-import torch
+from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 
 
 class CosineWarmup(_LRScheduler):
     def __init__(
         self,
-        optimizer: torch.optim.Optimizer,
+        optimizer: Optimizer,
         warmup: int,
         decay: int,
         final_lr: float,

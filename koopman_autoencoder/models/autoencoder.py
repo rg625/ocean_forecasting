@@ -4,6 +4,7 @@ from models.cnn import ConvEncoder, ConvDecoder, BaseEncoderDecoder
 from tensordict import TensorDict
 from torch import Tensor
 from models.checkpoint import checkpoint
+from typing import Union, Tuple
 
 
 class KoopmanOperator(nn.Module):
@@ -52,7 +53,7 @@ class KoopmanAutoencoder(nn.Module):
         latent_dim=32,
         hidden_dims=[64, 128, 64],
         block_size=2,
-        kernel_size=3,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
         use_checkpoint=False,
         **conv_kwargs,
     ):

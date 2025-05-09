@@ -2,20 +2,23 @@ import torch
 import torch.optim as optim
 from pathlib import Path
 from datetime import datetime
-import wandb  # Import Weights & Biases
-import yaml
+import wandb
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
-from models.dataloader import QGDataset, create_dataloaders
+from models.dataloader import create_dataloaders
 from models.trainer import Trainer
-from models.utils import load_checkpoint
+from models.utils import (
+    load_checkpoint,
+    load_config,
+    get_dataset_class_and_kwargs,
+    load_datasets,
+)
 
 
 def main(config_path):
     # Load configuration
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
+    config = load_config(config_path)
 
     # Initialize W&B
     wandb.init(project="koopman-autoencoder", config=config)
@@ -27,20 +30,9 @@ def main(config_path):
     # Prepare output directory
     output_dir = Path(config["output_dir"]) / datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load datasets
-    data_dir = Path(config["data"]["data_dir"])
-    train_dataset = QGDataset(
-        data_dir / config["data"]["train_file"],
-        max_sequence_length=config["data"]["max_sequence_length"],
-    )
-    val_dataset = QGDataset(
-        data_dir / config["data"]["val_file"],
-        max_sequence_length=config["data"]["max_sequence_length"],
-    )
-    test_dataset = QGDataset(
-        data_dir / config["data"]["test_file"],
-        max_sequence_length=config["data"]["max_sequence_length"],
+    dataset_class, dataset_kwargs = get_dataset_class_and_kwargs(config)
+    train_dataset, val_dataset, test_dataset = load_datasets(
+        config, dataset_class, dataset_kwargs
     )
 
     train_loader, val_loader, test_loader = create_dataloaders(
