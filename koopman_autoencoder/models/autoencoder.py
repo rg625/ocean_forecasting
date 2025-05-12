@@ -127,9 +127,8 @@ class KoopmanAutoencoder(nn.Module):
         # Stack tensors along the channel dimension
         stacked_input = torch.cat(
             [x[var] for var in x.keys()], dim=1
-        )  # Shape: (batch_size, seq_length, channels, height, width)
+        )  # Shape: (batch_size, seq_length * channels, height, width)
         self.vars = list(x.keys())  # Convert keys to a list
-        # stacked_input = rearrange(stacked_input, 'b t var h w -> b (t var) h w')
 
         # Pass stacked input through the encoder
         latent = self.encoder(stacked_input)

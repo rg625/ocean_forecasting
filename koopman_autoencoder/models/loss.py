@@ -1,5 +1,6 @@
 import torch
-from torch import nn
+from torch import nn, Tensor, device
+from tensordict import TensorDict
 from einops import reduce, rearrange
 from torchvision.transforms import GaussianBlur
 
@@ -25,7 +26,7 @@ class KoopmanLoss(nn.Module):
         else:
             self.gaussian_blur = None
 
-    def blur(self, tensor):
+    def blur(self, tensor: Tensor):
         if self.gaussian_blur is None:
             return tensor
 
@@ -41,7 +42,7 @@ class KoopmanLoss(nn.Module):
         else:
             return tensor  # Do nothing for other shapes
 
-    def recon_loss(self, x, y):
+    def recon_loss(self, x: TensorDict, y: TensorDict):
         """
         Compute the reconstruction loss per variable.
 
@@ -60,7 +61,7 @@ class KoopmanLoss(nn.Module):
             loss_dict[key] = reduce(loss_per_sample, "b ->", "mean")
         return loss_dict
 
-    def rollout_loss(self, x, y):
+    def rollout_loss(self, x: TensorDict, y: TensorDict):
         """
         Compute the rollout loss per variable, weighted over sequence steps.
 
@@ -95,7 +96,7 @@ class KoopmanLoss(nn.Module):
 
         return losses
 
-    def weighting(self, timesteps, device):
+    def weighting(self, timesteps: int, device: device):
         """
         Compute weights for rollout loss per step.
 
@@ -105,7 +106,7 @@ class KoopmanLoss(nn.Module):
         Returns:
             Tensor: Weight vector of shape [timesteps].
         """
-        idx = torch.arange(timesteps, device=device)
+        idx = torch.arange(end=timesteps, device=device)
 
         if self.weighting_type == "cosine":
             # Prevent division by zero when timesteps is 1
@@ -126,7 +127,10 @@ class KoopmanLoss(nn.Module):
         return weights
 
     @staticmethod
-    def kl_divergence(latent_pred):
+    def kl(mu: Tensor, var: Tensor):
+        return -0.5 * reduce(1.0 + torch.log(var) - mu**2 - var, "b t -> t", "mean")
+
+    def kl_divergence(self, latent_pred: Tensor):
         """
         Compute KL divergence between a Gaussian N(μ, σ²) (estimated from latent_diff)
         and a standard Gaussian N(0, 1).
@@ -137,11 +141,11 @@ class KoopmanLoss(nn.Module):
         Returns:
             Tensor: Mean KL divergence over the batch.
         """
-        mu = reduce(latent_pred, "b t d -> b d", "mean")
-        var = reduce((latent_pred - mu[:, None, :]) ** 2, "b t d -> b d", "mean") + 1e-6
+        mu = reduce(latent_pred, "b t d -> b t", "mean")
+        var = reduce((latent_pred - mu[:, :, None]) ** 2, "b t d -> b t", "mean") + 1e-6
 
-        kl = 0.5 * reduce(mu**2 + var - torch.log(var) - 1, "b d -> b", "sum")
-        return reduce(kl, "b ->", "mean")
+        kl_loss = self.kl(mu=mu, var=var)
+        return reduce(kl_loss, "b ->", "mean")
 
     def forward(self, x_recon, x_preds, latent_pred, x_true, x_future):
         """

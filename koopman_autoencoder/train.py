@@ -75,6 +75,7 @@ def main(config_path):
     start_epoch = 0
     history = {}
     if config["ckpt"] is not None:
+        print(f"Loading from checkpoint: {config['ckpt']}")
         model, optimizer, history, start_epoch = load_checkpoint(
             checkpoint_path=config["ckpt"], model=model, optimizer=optimizer
         )

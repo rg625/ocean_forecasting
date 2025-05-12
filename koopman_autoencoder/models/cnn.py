@@ -14,7 +14,7 @@ class ConvBlock(nn.Module):
         block_size: int = 1,
         kernel_size: Union[int, Tuple[int, int]] = 3,
         decoder_block: bool = False,
-        use_checkpoint: bool = False,  # Add this to toggle checkpointing
+        use_checkpoint: bool = False,
         **conv_kwargs: Any,
     ):
         """
@@ -85,7 +85,7 @@ class BaseEncoderDecoder(nn.Module):
         block_size: int = 1,
         kernel_size: Union[int, Tuple[int, int]] = 3,
         is_encoder: bool = True,
-        use_checkpoint: bool = False,  # Add checkpointing flag here
+        use_checkpoint: bool = False,
         **conv_kwargs,
     ):
         """
@@ -120,7 +120,7 @@ class BaseEncoderDecoder(nn.Module):
         self.D = latent_dim
         self.hiddens = hiddens
         self.is_encoder = is_encoder
-        self.use_checkpoint = use_checkpoint  # Store the flag
+        self.use_checkpoint = use_checkpoint
 
         # Compute the output dimensions after pooling
         self.n_pools = len(hiddens)
@@ -169,7 +169,7 @@ class BaseEncoderDecoder(nn.Module):
                     block_size,
                     kernel_size,
                     decoder_block=False,
-                    use_checkpoint=self.use_checkpoint,  # Pass the flag
+                    use_checkpoint=self.use_checkpoint,
                     **conv_kwargs,
                 )
             )
@@ -182,7 +182,7 @@ class BaseEncoderDecoder(nn.Module):
                         block_size,
                         kernel_size,
                         decoder_block=False,
-                        use_checkpoint=self.use_checkpoint,  # Pass the flag
+                        use_checkpoint=self.use_checkpoint,
                         **conv_kwargs,
                     )
                 )
@@ -197,7 +197,7 @@ class BaseEncoderDecoder(nn.Module):
                         block_size,
                         kernel_size,
                         decoder_block=True,
-                        use_checkpoint=self.use_checkpoint,  # Pass the flag
+                        use_checkpoint=self.use_checkpoint,
                         **conv_kwargs,
                     )
                 )
@@ -209,7 +209,7 @@ class BaseEncoderDecoder(nn.Module):
                     block_size,
                     kernel_size,
                     decoder_block=True,
-                    use_checkpoint=self.use_checkpoint,  # Pass the flag
+                    use_checkpoint=self.use_checkpoint,
                     **conv_kwargs,
                 )
             )
@@ -256,7 +256,7 @@ class ConvEncoder(BaseEncoderDecoder):
             block_size,
             kernel_size,
             is_encoder=True,
-            use_checkpoint=use_checkpoint,  # Pass the flag
+            use_checkpoint=use_checkpoint,
             **conv_kwargs,
         )
 
@@ -283,6 +283,6 @@ class ConvDecoder(BaseEncoderDecoder):
             block_size,
             kernel_size,
             is_encoder=False,
-            use_checkpoint=use_checkpoint,  # Pass the flag
+            use_checkpoint=use_checkpoint,
             **conv_kwargs,
         )
