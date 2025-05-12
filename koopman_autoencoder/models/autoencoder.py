@@ -173,7 +173,7 @@ class KoopmanAutoencoder(nn.Module):
 
         Parameters:
             x: torch.Tensor
-                Input tensor of shape (batch_size, channels, height, width).
+                Input tensor of shape (batch_size, seq_length, height, width).
             seq_length: int
                 Sequence length for predictions.
 
