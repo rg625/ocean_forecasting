@@ -261,22 +261,21 @@ class Trainer:
             self.lr_scheduler.step()
 
             # Evaluate on train and validation sets
-            if epoch % self.log_epoch == 0:
+            if (epoch % self.log_epoch == 0) or (epoch == self.start_epoch):
                 train_losses = self.evaluate(dataloader=self.train_loader, mode="train")
                 val_losses = self.evaluate(dataloader=self.val_loader, mode="val")
+                self.log_metrics(step=epoch, losses=val_losses, mode="val")
 
-            # Log metrics and update progress bar
-            self.log_metrics(step=epoch, losses=train_losses, mode="train")
-            self.log_metrics(step=epoch, losses=val_losses, mode="val")
             progress_bar.set_postfix(
                 {
                     "Train Loss": f"{train_losses['total_loss']:.4f}",
-                    "Val Loss": f"{val_losses['total_loss']:.4f}",
                 }
             )
 
             # Early stopping and checkpoint saving
-            if val_losses["total_loss"] < self.best_val_loss:
+            if val_losses["total_loss"] and (
+                val_losses["total_loss"] < self.best_val_loss
+            ):
                 self.best_val_loss = val_losses["total_loss"]
                 self.patience_counter = 0
                 self.save_checkpoint(epoch, val_losses["total_loss"])
