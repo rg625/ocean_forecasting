@@ -2,7 +2,7 @@ from tensordict import TensorDict
 import torch
 from torch import Tensor
 from models.autoencoder import KoopmanAutoencoder
-from models.dataloader import QGDatasetBase, QGDatasetQuantile
+from models.dataloader import QGDatasetBase, QGDatasetQuantile, DiffusionReaction
 from pathlib import Path
 from torch.optim import Optimizer
 import yaml
@@ -101,6 +101,8 @@ def get_dataset_class_and_kwargs(config: dict):
         return QGDatasetQuantile, {
             "quantile_range": norm_cfg.get("quantiles", (2.5, 97.5))
         }
+    elif norm_type == "diff":
+        return DiffusionReaction, {"max_samples": norm_cfg.get("max_samples", 90)}
     return QGDatasetBase, {}
 
 

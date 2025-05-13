@@ -167,12 +167,12 @@ class KoopmanAutoencoder(nn.Module):
         """
         return self.koopman_operator(z)
 
-    def forward(self, x: Tensor, seq_length: Tensor):
+    def forward(self, x: TensorDict, seq_length: Tensor):
         """
         Forward pass through the autoencoder with Koopman prediction.
 
         Parameters:
-            x: torch.Tensor
+            x: TensorDict
                 Input tensor of shape (batch_size, channels, height, width).
             seq_length: int
                 Sequence length for predictions.
