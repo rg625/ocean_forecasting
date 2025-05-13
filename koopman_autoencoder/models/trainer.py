@@ -278,7 +278,6 @@ class Trainer:
             ):
                 self.best_val_loss = val_losses["total_loss"]
                 self.patience_counter = 0
-                self.save_checkpoint(epoch, val_losses["total_loss"])
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:
@@ -286,6 +285,7 @@ class Trainer:
                         f"Early stopping triggered after {epoch + 1} epochs"
                     )
                     break
+            self.save_checkpoint(epoch, val_losses["total_loss"])
 
         # Save training history
         self.plot_training_history()
