@@ -179,6 +179,114 @@ class QGDatasetQuantile(QGDatasetBase):
         return TensorDict(denormalized, batch_size=tensor_dict.batch_size)
 
 
+class DiffusionReaction(Dataset):
+    def __init__(
+        self,
+        data_path: str,
+        max_sequence_length: int = 2,
+        variables: Optional[List[str]] = None,
+    ):
+        self.data = xr.open_dataset(data_path)
+        self.max_sequence_length = max_sequence_length
+
+        if variables is None:
+            variables = list(self.data.data_vars.keys())
+        self.variables = variables
+
+        # Perform normalization across all simulations and time steps
+        self._normalize()
+
+        # Track the number of simulations (sim dimension)
+        self.num_sims = self.data.sizes["sim"]
+
+    def _normalize(self):
+        # Stack the data across simulations (sim, t, x, y)
+        self.stacked_data = TensorDict(
+            {var: torch.FloatTensor(self.data[var].values) for var in self.variables},
+            batch_size=[],
+        )
+
+        # Calculate means and stds across simulations, time, height, and width
+        self.means = TensorDict(
+            {
+                var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+
+        self.stds = TensorDict(
+            {
+                var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+
+        # Normalize the stacked data
+        self.stacked_data = TensorDict(
+            {
+                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+
+    def __len__(self):
+        # Each simulation has a different number of time steps (sim, t, x, y)
+        return self.num_sims * (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
+
+    def __getitem__(self, idx):
+        # If idx is a tuple, we extract the first element which is the index we want
+        if isinstance(idx, tuple):
+            idx, target_length = idx
+        else:
+            target_length = (
+                self.max_sequence_length
+            )  # Use default max_sequence_length if not provided
+
+        # Calculate which simulation and index in the simulation to sample from
+        sim_idx = idx // (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
+        start_idx = idx % (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
+
+        # Get the input sequence (fixed length of 2)
+        input_seq = TensorDict(
+            {
+                var: self.stacked_data[var][sim_idx, start_idx : start_idx + 2]
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+
+        # Get the target sequence (variable length)
+        target_length = self.max_sequence_length
+        target_seq = TensorDict(
+            {
+                var: self.stacked_data[var][
+                    sim_idx, start_idx + 2 : start_idx + 2 + target_length
+                ]
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+
+        # Add the sequence length to the target
+        target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
+
+        return input_seq, target_seq
+
+    def denormalize(self, x):
+        denormalized = {}
+        for var, tensor in x.items():
+            if var == "seq_length":
+                continue
+            device = tensor.device
+            means = self.means[var].to(device)
+            stds = self.stds[var].to(device)
+            denormalized[var] = tensor * stds + means
+        return TensorDict(denormalized, batch_size=x.batch_size)
+
+
 class BatchSampler(Sampler):
     def __init__(
         self,
