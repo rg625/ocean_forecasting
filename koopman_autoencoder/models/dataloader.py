@@ -185,7 +185,6 @@ class DiffusionReaction(Dataset):
         data_path: str,
         max_sequence_length: int = 2,
         variables: Optional[List[str]] = None,
-        max_samples: Optional[int] = None,
     ):
         self.data = xr.open_dataset(data_path)
         self.max_sequence_length = max_sequence_length
@@ -194,24 +193,23 @@ class DiffusionReaction(Dataset):
             variables = list(self.data.data_vars.keys())
         self.variables = variables
 
-        self.num_sims = self.data.sizes["sim"]
-        self.t_len = self.data.sizes["t"]
-        self.max_samples = max_samples
+        # Perform normalization across all simulations and time steps
+        self._normalize()
 
-        self._normalize()  # Perform normalization
-        self.sample_index = self._build_sample_index()
+        # Track the number of simulations (sim dimension)
+        self.num_sims = self.data.sizes["sim"]
 
     def _normalize(self):
-        raw_data = {
-            var: self.data[var].values for var in self.variables
-        }  # shape: (sim, t, x, y)
+        # Stack the data across simulations (sim, t, x, y)
+        self.stacked_data = TensorDict(
+            {var: torch.FloatTensor(self.data[var].values) for var in self.variables},
+            batch_size=[],
+        )
 
-        # Normalize over all simulations and time
+        # Calculate means and stds across simulations, time, height, and width
         self.means = TensorDict(
             {
-                var: torch.tensor(
-                    np.mean(raw_data[var], axis=(0, 1)), dtype=torch.float32
-                )
+                var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
                 for var in self.variables
             },
             batch_size=[],
@@ -219,68 +217,60 @@ class DiffusionReaction(Dataset):
 
         self.stds = TensorDict(
             {
-                var: torch.tensor(
-                    np.std(raw_data[var], axis=(0, 1)), dtype=torch.float32
-                )
+                var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
                 for var in self.variables
             },
             batch_size=[],
         )
 
+        # Normalize the stacked data
         self.stacked_data = TensorDict(
             {
-                var: torch.tensor(
-                    (raw_data[var] - self.means[var].numpy()) / self.stds[var].numpy(),
-                    dtype=torch.float32,
-                )
+                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
                 for var in self.variables
             },
             batch_size=[],
         )
-
-    def _build_sample_index(self):
-        index = []
-        for sim_idx in range(self.num_sims):
-            for t_start in range(self.t_len - 2):  # 2 for input
-                max_tgt_len = min(self.max_sequence_length, self.t_len - (t_start + 2))
-                for tgt_len in range(1, max_tgt_len + 1):
-                    index.append((sim_idx, t_start, tgt_len))
-
-        if self.max_samples is not None:
-            random.shuffle(index)
-            index = index[: self.max_samples]
-
-        return index
 
     def __len__(self):
-        return len(self.sample_index)
+        # Each simulation has a different number of time steps (sim, t, x, y)
+        return self.num_sims * (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
 
     def __getitem__(self, idx):
+        # If idx is a tuple, we extract the first element which is the index we want
         if isinstance(idx, tuple):
-            index, target_length = idx
-            sim_idx, t_start, _ = self.sample_index[index]
+            idx, target_length = idx
         else:
-            index = idx
-            sim_idx, t_start, _ = self.sample_index[index]
-            target_length = self.max_sequence_length  # fallback/default
+            target_length = (
+                self.max_sequence_length
+            )  # Use default max_sequence_length if not provided
 
+        # Calculate which simulation and index in the simulation to sample from
+        sim_idx = idx // (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
+        start_idx = idx % (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
+
+        # Get the input sequence (fixed length of 2)
         input_seq = TensorDict(
             {
-                var: self.stacked_data[var][sim_idx, t_start : t_start + 2]
+                var: self.stacked_data[var][sim_idx, start_idx : start_idx + 2]
                 for var in self.variables
             },
             batch_size=[],
         )
 
+        # Get the target sequence (variable length)
+        target_length = self.max_sequence_length
         target_seq = TensorDict(
             {
                 var: self.stacked_data[var][
-                    sim_idx, t_start + 2 : t_start + 2 + target_length
+                    sim_idx, start_idx + 2 : start_idx + 2 + target_length
                 ]
                 for var in self.variables
             },
             batch_size=[],
         )
+
+        # Add the sequence length to the target
         target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
 
         return input_seq, target_seq
