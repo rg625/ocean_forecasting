@@ -178,6 +178,28 @@ def clean_training_data(train_data_path, output_path, drop_samples=2000):
     print(f"Cleaned training data saved to {output_path}")
 
 
+def retain_q1_q2_only(data_path, output_path):
+    """
+    Retain only q1 and q2 variables in a NetCDF dataset.
+
+    Args:
+        data_path: str or Path
+            Path to the original NetCDF dataset (train/val/test).
+        output_path: str or Path
+            Path to save the reduced dataset with only q1 and q2.
+    """
+    ds = xr.open_dataset(data_path)
+    print(f"Original variables: {list(ds.data_vars)}")
+
+    # Drop variables that are not q1 or q2
+    ds_reduced = ds[["q1", "q2"]]
+    print(f"Retaining variables: {list(ds_reduced.data_vars)}")
+
+    # Save the reduced dataset
+    ds_reduced.to_netcdf(output_path)
+    print(f"Reduced dataset saved to {output_path}")
+
+
 def main(config_path):
     """
     Main function to generate the dataset from a config file.
@@ -197,6 +219,7 @@ def main(config_path):
     train_data_path = f"{config['output']['output_dir']}/qg_{config['simulation']['model_type']}_train_data.nc"
     output_path = f"{config['output']['output_dir']}/qg_{config['simulation']['model_type']}_train_data_clean.nc"
     clean_training_data(train_data_path, output_path, drop_samples=2000)
+    retain_q1_q2_only(train_data_path, output_path)
 
 
 if __name__ == "__main__":

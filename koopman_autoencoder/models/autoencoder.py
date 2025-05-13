@@ -1,12 +1,14 @@
 import torch
 from torch import nn
-from models.cnn import ConvEncoder, ConvDecoder
+from models.cnn import ConvEncoder, ConvDecoder, BaseEncoderDecoder
 from tensordict import TensorDict
+from torch import Tensor
 from models.checkpoint import checkpoint
+from typing import Union, Tuple
 
 
 class KoopmanOperator(nn.Module):
-    def __init__(self, latent_dim, use_checkpoint=False):
+    def __init__(self, latent_dim: int = 1024, use_checkpoint: bool = False):
         """
         Koopman operator for linear dynamics in latent space.
 
@@ -31,16 +33,15 @@ class KoopmanOperator(nn.Module):
     def _forward(self, z):
         """
         Apply Koopman operator to predict the next state.
-
         Parameters:
             z: torch.Tensor
-                Latent representation of shape (batch_size, latent_dim).
-
         Returns:
             torch.Tensor:
                 Residual change in latent space.
         """
-        return self.koopman_operator(z)
+        return z + self.koopman_operator(
+            z
+        )  # Residual latent connection z_{t+1} = (A + Id) z_t
 
 
 class KoopmanAutoencoder(nn.Module):
@@ -52,7 +53,7 @@ class KoopmanAutoencoder(nn.Module):
         latent_dim=32,
         hidden_dims=[64, 128, 64],
         block_size=2,
-        kernel_size=3,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
         use_checkpoint=False,
         **conv_kwargs,
     ):
@@ -74,13 +75,15 @@ class KoopmanAutoencoder(nn.Module):
                 Number of convolutional layers in a block.
             kernel_size: int
                 Size of the convolution kernel.
+            use_checkpoint: bool
+                Flag for gradient checkpointing.
             conv_kwargs: dict
                 Additional arguments for convolutional layers.
         """
         super().__init__()
 
         # Initialize Encoder
-        self.encoder = ConvEncoder(
+        self.encoder: BaseEncoderDecoder = ConvEncoder(
             C=2 * input_channels,
             H=height,
             W=width,
@@ -93,7 +96,7 @@ class KoopmanAutoencoder(nn.Module):
         )
 
         # Initialize Decoder
-        self.decoder = ConvDecoder(
+        self.decoder: BaseEncoderDecoder = ConvDecoder(
             C=input_channels,
             H=height,
             W=width,
@@ -110,7 +113,7 @@ class KoopmanAutoencoder(nn.Module):
             latent_dim, use_checkpoint=use_checkpoint
         )
 
-    def encode(self, x):
+    def encode(self, x: TensorDict):
         """
         Encode the input data into the latent space.
 
@@ -124,23 +127,20 @@ class KoopmanAutoencoder(nn.Module):
         # Stack tensors along the channel dimension
         stacked_input = torch.cat(
             [x[var] for var in x.keys()], dim=1
-        )  # Shape: (batch_size, seq_length, channels, height, width)
+        )  # Shape: (batch_size, seq_length * channels, height, width)
         self.vars = list(x.keys())  # Convert keys to a list
-        batch_size, seq_length, height, width = stacked_input.shape
-        stacked_input = stacked_input.view(batch_size, seq_length, height, width)
 
         # Pass stacked input through the encoder
         latent = self.encoder(stacked_input)
         return latent
 
-    def decode(self, x):
+    def decode(self, x: Tensor):
         """
         Decode the latent representation back to the input space.
 
         Parameters:
             x: TensorDict
-                TensorDict with key 'latent' of shape (batch_size, latent_dim).
-
+                TensorDict of shape (batch_size, latent_dim).
         Returns:
             TensorDict: Updated TensorDict with reconstructed variables.
         """
@@ -154,7 +154,7 @@ class KoopmanAutoencoder(nn.Module):
             batch_size=x.size(0),
         )
 
-    def predict_latent(self, z):
+    def predict_latent(self, z: Tensor):
         """
         Predict the next state in latent space.
 
@@ -167,7 +167,7 @@ class KoopmanAutoencoder(nn.Module):
         """
         return self.koopman_operator(z)
 
-    def forward(self, x, seq_length=1):
+    def forward(self, x: Tensor, seq_length: Tensor):
         """
         Forward pass through the autoencoder with Koopman prediction.
 
@@ -205,12 +205,6 @@ class KoopmanAutoencoder(nn.Module):
         )
 
         # Compute latent prediction differences
-        latent_pred_differences = torch.stack(
-            [
-                z_preds[t + 1] - self.predict_latent(z_preds[t])
-                for t in range(seq_length[0])
-            ],
-            dim=1,
-        )
+        z_preds = torch.stack(z_preds, dim=1)
 
-        return x_recon, x_preds, z_preds, latent_pred_differences
+        return x_recon, x_preds, z_preds

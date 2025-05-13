@@ -1,13 +1,13 @@
 import math
 
-import torch
+from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 
 
 class CosineWarmup(_LRScheduler):
     def __init__(
         self,
-        optimizer: torch.optim.Optimizer,
+        optimizer: Optimizer,
         warmup: int,
         decay: int,
         final_lr: float,
@@ -22,7 +22,7 @@ class CosineWarmup(_LRScheduler):
         step = self.last_epoch
         if step < self.warmup:
             return [base_lr * step / self.warmup for base_lr in self.base_lrs]
-        elif step <= self.decay_steps:
+        elif step <= self.decay:
             cosine_decay = 0.5 * (
                 1
                 + math.cos(math.pi * (step - self.warmup) / (self.decay - self.warmup))

@@ -1,14 +1,20 @@
 import torch
+from torch import Tensor
+from torch.optim import Optimizer
 from tensordict import TensorDict
 import matplotlib.pyplot as plt
 from pathlib import Path
 import yaml
 from tqdm import tqdm
 import wandb
+from models.autoencoder import KoopmanAutoencoder
+from models.loss import KoopmanLoss
+from models.lr_schedule import CosineWarmup
+from torch.utils.data import DataLoader
+from models.visualization import denormalize_and_visualize
 from models.utils import (
     average_losses,
     accumulate_losses,
-    denormalize_and_visualize,
     tensor_dict_to_json,
 )
 
@@ -16,18 +22,18 @@ from models.utils import (
 class Trainer:
     def __init__(
         self,
-        model,
-        train_loader,
-        val_loader,
-        optimizer,
-        criterion,
-        lr_scheduler,
-        device,
-        num_epochs=100,
-        patience=10,
-        output_dir=None,
-        start_epoch=0,
-        log_epoch=10,
+        model: KoopmanAutoencoder,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        optimizer: Optimizer,
+        criterion: KoopmanLoss,
+        lr_scheduler: CosineWarmup,
+        device: torch.device,
+        num_epochs: int = 100,
+        patience: int = 10,
+        output_dir: Path | str = "/home/koopman/",
+        start_epoch: int = 0,
+        log_epoch: int = 10,
     ):
         """
         Initializes the Trainer class.
@@ -61,13 +67,13 @@ class Trainer:
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True)
 
-    def train_step(self, input, target):
+    def train_step(self, input: TensorDict, target: TensorDict):
         """
         Performs a single training step.
 
         Args:
-            input: Input tensor.
-            target: Target tensor.
+            input: Input TensorDict.
+            target: Target TensorDict.
 
         Returns:
             Losses for the step (including total loss).
@@ -77,14 +83,10 @@ class Trainer:
         self.optimizer.zero_grad()
 
         # Forward pass
-        x_recon, x_preds, z_preds, latent_pred_differences = self.model(
-            input, seq_length=target["seq_length"]
-        )
+        x_recon, x_preds, z_preds = self.model(input, seq_length=target["seq_length"])
 
         # Compute loss
-        losses = self.criterion(
-            x_recon, x_preds, latent_pred_differences, input[:, -1], target
-        )
+        losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
         loss = losses["total_loss"]
         assert isinstance(loss, torch.Tensor)
 
@@ -115,7 +117,7 @@ class Trainer:
 
         return losses
 
-    def evaluate(self, dataloader, mode="train"):
+    def evaluate(self, dataloader: DataLoader, mode: str = "train"):
         """
         Evaluates the model on the given dataloader.
 
@@ -131,29 +133,22 @@ class Trainer:
         with torch.no_grad():
             for input, target in dataloader:
                 input, target = input.to(self.device), target.to(self.device)
-                x_recon, x_preds, z_preds, latent_pred_differences = self.model(
+                x_recon, x_preds, z_preds = self.model(
                     input, seq_length=target["seq_length"]
                 )
-                losses = self.criterion(
-                    x_recon, x_preds, latent_pred_differences, input[:, -1], target
-                )
+                losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
 
                 # Accumulate losses
                 total_losses = accumulate_losses(total_losses, losses)
 
                 # Visualization for the first batch
                 if self.output_dir:
-                    input_denorm = dataloader.denormalize(input)
-                    target_denorm = dataloader.denormalize(target)
-                    x_preds_denorm = dataloader.denormalize(x_preds)
-                    x_recon_denorm = dataloader.denormalize(x_recon)
-
                     denormalize_and_visualize(
-                        input_denorm,
-                        target_denorm,
-                        x_recon_denorm,
-                        x_preds_denorm,
-                        self.output_dir,
+                        input=dataloader.denormalize(input),
+                        target=dataloader.denormalize(target),
+                        x_recon=dataloader.denormalize(x_recon),
+                        x_preds=dataloader.denormalize(x_preds),
+                        output_dir=self.output_dir,
                         mode=mode,
                     )
                 break  # Break after the first batch for visualization
@@ -164,7 +159,7 @@ class Trainer:
 
         return total_losses
 
-    def save_checkpoint(self, epoch, val_loss):
+    def save_checkpoint(self, epoch: int, val_loss: Tensor):
         """
         Saves the model checkpoint.
 
@@ -184,7 +179,7 @@ class Trainer:
                 self.output_dir / "best_model.pth",
             )
 
-    def log_metrics(self, step, losses, mode="train"):
+    def log_metrics(self, step: int, losses: dict, mode: str = "train"):
         """
         Logs metrics to W&B.
 
@@ -260,31 +255,29 @@ class Trainer:
             # Training step
             for input, target in self.train_loader:
                 losses = self.train_step(input, target)
-                self.log_metrics(global_step, losses, mode="train")
+                self.log_metrics(step=global_step, losses=losses, mode="train")
                 global_step += 1
 
             self.lr_scheduler.step()
 
             # Evaluate on train and validation sets
-            if epoch % self.log_epoch == 0:
-                train_losses = self.evaluate(self.train_loader, mode="train")
-                val_losses = self.evaluate(self.val_loader, mode="val")
+            if (epoch % self.log_epoch == 0) or (epoch == self.start_epoch):
+                train_losses = self.evaluate(dataloader=self.train_loader, mode="train")
+                val_losses = self.evaluate(dataloader=self.val_loader, mode="val")
+                self.log_metrics(step=epoch, losses=val_losses, mode="val")
 
-            # Log metrics and update progress bar
-            self.log_metrics(epoch, train_losses, mode="train")
-            self.log_metrics(epoch, val_losses, mode="val")
             progress_bar.set_postfix(
                 {
                     "Train Loss": f"{train_losses['total_loss']:.4f}",
-                    "Val Loss": f"{val_losses['total_loss']:.4f}",
                 }
             )
 
             # Early stopping and checkpoint saving
-            if val_losses["total_loss"] < self.best_val_loss:
+            if val_losses["total_loss"] and (
+                val_losses["total_loss"] < self.best_val_loss
+            ):
                 self.best_val_loss = val_losses["total_loss"]
                 self.patience_counter = 0
-                self.save_checkpoint(epoch, val_losses["total_loss"])
             else:
                 self.patience_counter += 1
                 if self.patience_counter >= self.patience:
@@ -292,6 +285,7 @@ class Trainer:
                         f"Early stopping triggered after {epoch + 1} epochs"
                     )
                     break
+            self.save_checkpoint(epoch, val_losses["total_loss"])
 
         # Save training history
         self.plot_training_history()
