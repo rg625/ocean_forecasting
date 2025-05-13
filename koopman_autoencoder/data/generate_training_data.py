@@ -217,9 +217,10 @@ def main(config_path):
 
     # Example usage
     train_data_path = f"{config['output']['output_dir']}/qg_{config['simulation']['model_type']}_train_data.nc"
-    output_path = f"{config['output']['output_dir']}/qg_{config['simulation']['model_type']}_train_data_clean.nc"
+    output_path = f"{config['output']['output_dir']}/qg_{config['simulation']['model_type']}_train_data_clean1.nc"
+    final_output_path = f"{config['output']['output_dir']}/qg_{config['simulation']['model_type']}_train_data_clean2.nc"
     clean_training_data(train_data_path, output_path, drop_samples=2000)
-    retain_q1_q2_only(train_data_path, output_path)
+    retain_q1_q2_only(output_path, final_output_path)
 
 
 if __name__ == "__main__":
