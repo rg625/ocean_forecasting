@@ -5,3 +5,4 @@ from .dataloader import QGDatasetQuantile as QGDatasetQuantile
 from .dataloader import DiffusionReaction as DiffusionReaction
 from .loss import KoopmanLoss as KoopmanLoss
 from .lr_schedule import CosineWarmup as CosineWarmup
+from .metrics import Metric as Metric

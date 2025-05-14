@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch import Tensor
 from torch.optim import Optimizer
 from tensordict import TensorDict
@@ -12,6 +13,7 @@ from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
 from torch.utils.data import DataLoader
 from models.visualization import denormalize_and_visualize
+from models.metrics import Metric
 from models.utils import (
     average_losses,
     accumulate_losses,
@@ -27,6 +29,7 @@ class Trainer:
         val_loader: DataLoader,
         optimizer: Optimizer,
         criterion: KoopmanLoss,
+        eval_metrics: Metric,
         lr_scheduler: CosineWarmup,
         device: torch.device,
         num_epochs: int = 100,
@@ -43,6 +46,7 @@ class Trainer:
             train_loader: DataLoader for training data.
             val_loader: DataLoader for validation data.
             optimizer: Optimizer for training.
+            eval_metrics: Evaluation metrics for validation.
             criterion: Loss function.
             device: Device to train on ('cpu' or 'cuda').
             num_epochs: Maximum number of epochs to train.
@@ -54,6 +58,7 @@ class Trainer:
         self.val_loader = val_loader
         self.optimizer = optimizer
         self.criterion = criterion
+        self.eval_metrics = eval_metrics
         self.lr_scheduler = lr_scheduler
         self.device = device
         self.num_epochs = num_epochs
@@ -153,9 +158,20 @@ class Trainer:
                     )
                 break  # Break after the first batch for visualization
 
-        # Average losses over batches
         n_batches = len(dataloader)
         total_losses = average_losses(total_losses, n_batches)
+
+        # Compute metric if available
+        if self.eval_metrics is not None:
+            target_denorm = dataloader.denormalize(target)
+            preds_denorm = dataloader.denormalize(x_preds)
+            metric_value = self.eval_metrics.compute_distance(
+                target_denorm, preds_denorm
+            )
+            metric_mean = float(np.mean(metric_value))
+            total_losses[
+                f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
+            ] = metric_mean
 
         return total_losses
 

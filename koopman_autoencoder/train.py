@@ -8,6 +8,7 @@ from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
 from models.dataloader import create_dataloaders
 from models.trainer import Trainer
+from models.metrics import Metric
 from models.utils import (
     load_checkpoint,
     load_config,
@@ -62,6 +63,10 @@ def main(config_path):
         sigma_blur=config["loss"]["sigma_blur"],
     )
 
+    eval_metrics = Metric(
+        mode=config["metric"]["type"], variable_mode=config["metric"]["variable_mode"]
+    )
+
     lr_scheduler = CosineWarmup(
         optimizer=optimizer,
         warmup=config["lr_scheduler"]["warmup"],
@@ -87,6 +92,7 @@ def main(config_path):
         val_loader=val_loader,
         optimizer=optimizer,
         criterion=criterion,
+        eval_metrics=eval_metrics,
         lr_scheduler=lr_scheduler,
         device=device,
         num_epochs=config["training"]["num_epochs"],

@@ -101,11 +101,13 @@ def get_dataset_class_and_kwargs(config: dict):
         return QGDatasetQuantile, {
             "quantile_range": norm_cfg.get("quantiles", (2.5, 97.5))
         }
+    # elif norm_type == "diff":
+    #     return (
+    #         DiffusionReaction,
+    #         {},
+    #     )  # , {"max_samples": norm_cfg.get("max_samples", 90)}
     elif norm_type == "diff":
-        return (
-            DiffusionReaction,
-            {},
-        )  # , {"max_samples": norm_cfg.get("max_samples", 90)}
+        return (DiffusionReaction, {"sim": norm_cfg.get("sim", "0000")})
     return QGDatasetBase, {}
 
 
