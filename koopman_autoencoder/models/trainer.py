@@ -120,6 +120,18 @@ class Trainer:
         wandb.log(grad_norms)  # Log gradient norms
         wandb.log(param_norms)  # Log parameter norms
 
+        # Compute metric if available
+        if self.eval_metrics is not None:
+            target_denorm = self.train_loader.denormalize(target)
+            preds_denorm = self.train_loader.denormalize(x_preds)
+            metric_value = self.eval_metrics.compute_distance(
+                target_denorm, preds_denorm
+            )
+            metric_mean = float(np.mean(metric_value))
+            losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
+                metric_mean
+            )
+
         return losses
 
     def evaluate(self, dataloader: DataLoader, mode: str = "train"):
