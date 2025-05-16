@@ -4,6 +4,7 @@ data:
   train_file: "diff/train.nc"
   val_file: "diff/val.nc"
   test_file: "diff/test.nc"
+  input_sequence_length: 2
   max_sequence_length: 5
   normalization:
     type: "diff"
@@ -11,7 +12,7 @@ data:
 model:
   height: 128
   width: 128
-  input_channels: 2 # q1 and q2 only
+  input_channels: 2 # u and v only
   hidden_dims:
     - 64
     - 128

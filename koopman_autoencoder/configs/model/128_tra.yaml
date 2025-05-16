@@ -1,22 +1,22 @@
 output_dir: "model_outputs"
 data:
   data_dir: "./data"
-  train_file: "jet/qg_jet_train_data.nc"
-  val_file: "jet/qg_jet_val_data.nc"
-  test_file: "jet/qg_jet_test_data.nc"
-  input_sequence_length: 2
-  max_sequence_length: 5
+  train_file: "acdm/128_tra/train.nc"
+  val_file: "acdm/128_tra/val.nc"
+  test_file: "acdm/128_tra/test.nc"
+  input_sequence_length: 5
+  max_sequence_length: 50
   normalization:
-    type: "quantile"
-    quantiles: [2.5, 97.5]
-  metric:
-    type: "SSIM"          # or "L2", "MI"
-    variable_mode: "all"  # or "single"
-    variable_name: ~      # if variable_mode is single => particular per dataset and variables
+    type: "diff"
+    sim: 0
+metric:
+  type: "SSIM"          # or "L2", "MI"
+  variable_mode: "all"  # or "single"
+  variable_name: ~      # if variable_mode is single => particular per dataset and variables
 model:
-  height: 256
-  width: 256
-  input_channels: 2 # q1 and q2 only
+  height: 64
+  width: 128
+  input_channels: 3 # rho, p, v only
   hidden_dims:
     - 64
     - 128
@@ -29,7 +29,7 @@ model:
     padding_mode: "circular"
   latent_dim: 1024 # sparial_dimˆ2 * koopman latent dim
 training:
-  batch_size: 1
+  batch_size: 40
   num_epochs: 1000
   patience: 1000
   use_checkpoint: True

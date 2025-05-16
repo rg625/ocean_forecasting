@@ -12,11 +12,14 @@ class QGDatasetBase(Dataset):
     def __init__(
         self,
         data_path: str,
+        input_sequence_length: int = 2,
         max_sequence_length: int = 2,
         variables: Optional[List[str]] = None,
     ):
         self.data = xr.open_dataset(data_path)
+        self.input_sequence_length = input_sequence_length
         self.max_sequence_length = max_sequence_length
+
         if variables is None:
             variables = list(self.data.data_vars.keys())
         self.variables = variables
@@ -26,18 +29,14 @@ class QGDatasetBase(Dataset):
     def _normalize(self):
         self.means = TensorDict(
             {
-                var: torch.tensor(
-                    np.mean(self.data[var].values, axis=(0, 1, 2)), dtype=torch.float32
-                )
+                var: torch.tensor(np.mean(self.data[var].values), dtype=torch.float32)
                 for var in self.variables
             },
             batch_size=[],
         )
         self.stds = TensorDict(
             {
-                var: torch.tensor(
-                    np.std(self.data[var].values, axis=(0, 1, 2)), dtype=torch.float32
-                )
+                var: torch.tensor(np.std(self.data[var].values), dtype=torch.float32)
                 for var in self.variables
             },
             batch_size=[],
@@ -57,7 +56,7 @@ class QGDatasetBase(Dataset):
     def __len__(self):
         return (
             len(next(iter(self.stacked_data.values())))
-            - 2
+            - self.input_sequence_length
             - self.max_sequence_length
             + 1
         )
@@ -71,7 +70,9 @@ class QGDatasetBase(Dataset):
 
         input_seq = TensorDict(
             {
-                var: self.stacked_data[var][start_idx : start_idx + 2]
+                var: self.stacked_data[var][
+                    start_idx : start_idx + self.input_sequence_length
+                ]
                 for var in self.variables
             },
             batch_size=[],
@@ -79,7 +80,10 @@ class QGDatasetBase(Dataset):
         target_seq = TensorDict(
             {
                 var: self.stacked_data[var][
-                    start_idx + 2 : start_idx + 2 + target_length
+                    start_idx
+                    + self.input_sequence_length : start_idx
+                    + self.input_sequence_length
+                    + target_length
                 ]
                 for var in self.variables
             },
@@ -104,6 +108,7 @@ class QGDatasetQuantile(QGDatasetBase):
     def __init__(
         self,
         data_path: str,
+        input_sequence_length: int = 2,
         max_sequence_length: int = 2,
         variables: Optional[List[str]] = None,
         quantile_range: tuple = (2.5, 97.5),
@@ -115,7 +120,9 @@ class QGDatasetQuantile(QGDatasetBase):
         self.quantile_range = quantile_range
         self.q_lows: Optional[TensorDict] = None
         self.q_highs: Optional[TensorDict] = None
-        super().__init__(data_path, max_sequence_length, variables)
+        super().__init__(
+            data_path, input_sequence_length, max_sequence_length, variables
+        )
 
     def _normalize(self):
         raw_data = TensorDict(
@@ -180,62 +187,30 @@ class QGDatasetQuantile(QGDatasetBase):
         return TensorDict(denormalized, batch_size=tensor_dict.batch_size)
 
 
-class DiffusionReaction(Dataset):
+class MultipleSims(QGDatasetBase):
     def __init__(
         self,
         data_path: str,
+        input_sequence_length: int = 2,
         max_sequence_length: int = 2,
         variables: Optional[List[str]] = None,
     ):
-        self.data = xr.open_dataset(data_path)
-        self.max_sequence_length = max_sequence_length
-
-        if variables is None:
-            variables = list(self.data.data_vars.keys())
-        self.variables = variables
-
-        # Perform normalization across all simulations and time steps
-        self._normalize()
-
         # Track the number of simulations (sim dimension)
+        super().__init__(
+            data_path, input_sequence_length, max_sequence_length, variables
+        )
         self.num_sims = self.data.sizes["sim"]
-
-    def _normalize(self):
-        # Stack the data across simulations (sim, t, x, y)
-        self.stacked_data = TensorDict(
-            {var: torch.FloatTensor(self.data[var].values) for var in self.variables},
-            batch_size=[],
-        )
-
-        # Calculate means and stds across simulations, time, height, and width
-        self.means = TensorDict(
-            {
-                var: torch.FloatTensor([np.mean(self.data[var].values, axis=(0, 1, 2))])
-                for var in self.variables
-            },
-            batch_size=[],
-        )
-
-        self.stds = TensorDict(
-            {
-                var: torch.FloatTensor([np.std(self.data[var].values, axis=(0, 1, 2))])
-                for var in self.variables
-            },
-            batch_size=[],
-        )
-
-        # Normalize the stacked data
-        self.stacked_data = TensorDict(
-            {
-                var: (self.stacked_data[var] - self.means[var]) / self.stds[var]
-                for var in self.variables
-            },
-            batch_size=[],
-        )
+        print(f"self.means.items(): {self.means.items()}")
+        print(f"self.stds.items(): {self.stds.items()}")
 
     def __len__(self):
         # Each simulation has a different number of time steps (sim, t, x, y)
-        return self.num_sims * (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
+        return self.num_sims * (
+            len(self.data["t"])
+            - self.input_sequence_length
+            - self.max_sequence_length
+            + 1
+        )
 
     def __getitem__(self, idx):
         # If idx is a tuple, we extract the first element which is the index we want
@@ -247,13 +222,25 @@ class DiffusionReaction(Dataset):
             )  # Use default max_sequence_length if not provided
 
         # Calculate which simulation and index in the simulation to sample from
-        sim_idx = idx // (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
-        start_idx = idx % (len(self.data["t"]) - 2 - self.max_sequence_length + 1)
+        sim_idx = idx // (
+            len(self.data["t"])
+            - self.input_sequence_length
+            - self.max_sequence_length
+            + 1
+        )
+        start_idx = idx % (
+            len(self.data["t"])
+            - self.input_sequence_length
+            - self.max_sequence_length
+            + 1
+        )
 
         # Get the input sequence (fixed length of 2)
         input_seq = TensorDict(
             {
-                var: self.stacked_data[var][sim_idx, start_idx : start_idx + 2]
+                var: self.stacked_data[var][
+                    sim_idx, start_idx : start_idx + self.input_sequence_length
+                ]
                 for var in self.variables
             },
             batch_size=[],
@@ -264,7 +251,11 @@ class DiffusionReaction(Dataset):
         target_seq = TensorDict(
             {
                 var: self.stacked_data[var][
-                    sim_idx, start_idx + 2 : start_idx + 2 + target_length
+                    sim_idx,
+                    start_idx
+                    + self.input_sequence_length : start_idx
+                    + self.input_sequence_length
+                    + target_length,
                 ]
                 for var in self.variables
             },
@@ -289,15 +280,16 @@ class DiffusionReaction(Dataset):
 
 
 # OVERFIT EXPERIMENTS ONLY
-# class DiffusionReaction(QGDatasetBase):
+# class MultipleSims(QGDatasetBase):
 #     def __init__(
 #         self,
 #         data_path: str,
+#         input_sequence_length: int = 2,
 #         max_sequence_length: int = 2,
 #         variables: Optional[List[str]] = None,
 #         sim: int = 0,
 #     ):
-#         super().__init__(data_path, max_sequence_length, variables)
+#         super().__init__(data_path, max_sequence_length, max_sequence_length, variables)
 
 #         # Override self.data to only keep the selected simulation
 #         self.data = self.data.isel(sim=sim)

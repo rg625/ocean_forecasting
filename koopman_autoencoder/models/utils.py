@@ -2,7 +2,7 @@ from tensordict import TensorDict
 import torch
 from torch import Tensor
 from models.autoencoder import KoopmanAutoencoder
-from models.dataloader import QGDatasetBase, QGDatasetQuantile, DiffusionReaction
+from models.dataloader import QGDatasetBase, QGDatasetQuantile, MultipleSims
 from pathlib import Path
 from torch.optim import Optimizer
 import yaml
@@ -103,12 +103,12 @@ def get_dataset_class_and_kwargs(config: dict):
         }
     elif norm_type == "diff":
         return (
-            DiffusionReaction,
+            MultipleSims,
             {},
         )
     # OVERFIT EXPERIMENTS ONLY
     # elif norm_type == "diff":
-    #     return (DiffusionReaction, {"sim": norm_cfg.get("sim", "0000")})
+    #     return (MultipleSims, {"sim": norm_cfg.get("sim", "0000")})
     return QGDatasetBase, {}
 
 
@@ -117,6 +117,7 @@ def load_datasets(config: dict, dataset_class, kwargs: dict):
     return [
         dataset_class(
             data_dir / config["data"][split + "_file"],
+            input_sequence_length=config["data"]["input_sequence_length"],
             max_sequence_length=config["data"]["max_sequence_length"],
             **kwargs,
         )

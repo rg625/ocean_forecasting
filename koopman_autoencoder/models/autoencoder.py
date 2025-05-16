@@ -47,14 +47,15 @@ class KoopmanOperator(nn.Module):
 class KoopmanAutoencoder(nn.Module):
     def __init__(
         self,
-        input_channels=6,
-        height=64,
-        width=64,
-        latent_dim=32,
-        hidden_dims=[64, 128, 64],
-        block_size=2,
+        input_frames: int = 2,
+        input_channels: int = 6,
+        height: int = 64,
+        width: int = 64,
+        latent_dim: int = 32,
+        hidden_dims: list[int] = [64, 128, 64],
+        block_size: int = 2,
         kernel_size: Union[int, Tuple[int, int]] = 3,
-        use_checkpoint=False,
+        use_checkpoint: bool = False,
         **conv_kwargs,
     ):
         """
@@ -83,8 +84,21 @@ class KoopmanAutoencoder(nn.Module):
         super().__init__()
 
         # Initialize Encoder
+        self.history_encoder: BaseEncoderDecoder = ConvEncoder(
+            C=(input_frames - 1) * input_channels,
+            H=height,
+            W=width,
+            latent_dim=latent_dim,
+            hiddens=hidden_dims,
+            block_size=block_size,
+            kernel_size=kernel_size,
+            use_checkpoint=use_checkpoint,
+            **conv_kwargs,
+        )
+
+        # Initialize Encoder
         self.encoder: BaseEncoderDecoder = ConvEncoder(
-            C=2 * input_channels,
+            C=input_channels,
             H=height,
             W=width,
             latent_dim=latent_dim,
@@ -122,17 +136,21 @@ class KoopmanAutoencoder(nn.Module):
                 Input TensorDict with tensors of shape (batch_size, seq_length, height, width).
 
         Returns:
-            TensorDict: Updated TensorDict with key 'latent'.
+            Tensor: Updated Tensor for latent space.
         """
         # Stack tensors along the channel dimension
-        stacked_input = torch.cat(
-            [x[var] for var in x.keys()], dim=1
+        stacked_history = torch.cat(
+            [x[var][:, :-1] for var in x.keys()], dim=1
+        )  # Shape: (batch_size, seq_length * channels, height, width)
+        stacked_present = torch.cat(
+            [x[var][:, -1].unsqueeze(1) for var in x.keys()], dim=1
         )  # Shape: (batch_size, seq_length * channels, height, width)
         self.vars = list(x.keys())  # Convert keys to a list
 
         # Pass stacked input through the encoder
-        latent = self.encoder(stacked_input)
-        return latent
+        latent_history = self.history_encoder(stacked_history)
+        latent_present = self.encoder(stacked_present)
+        return latent_history + latent_present
 
     def decode(self, x: Tensor):
         """

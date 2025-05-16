@@ -45,6 +45,7 @@ def main(config_path):
 
     # Initialize model
     model = KoopmanAutoencoder(
+        input_frames=config["data"]["input_sequence_length"],
         input_channels=config["model"]["input_channels"],
         height=config["model"]["height"],
         width=config["model"]["width"],
