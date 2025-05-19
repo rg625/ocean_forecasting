@@ -247,7 +247,7 @@ class MultipleSims(QGDatasetBase):
         )
 
         # Get the target sequence (variable length)
-        target_length = self.max_sequence_length
+        # target_length = self.max_sequence_length
         target_seq = TensorDict(
             {
                 var: self.stacked_data[var][
