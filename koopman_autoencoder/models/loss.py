@@ -147,7 +147,16 @@ class KoopmanLoss(nn.Module):
         kl_loss = self.kl(mu=mu, var=var)
         return reduce(kl_loss, "b ->", "mean")
 
-    def forward(self, x_recon, x_preds, latent_pred, x_true, x_future):
+    @staticmethod
+    def re(input: Tensor, predicted: Tensor):
+        diff = (input - predicted).squeeze(-1)  # now shape: [b, t]
+        return reduce(diff**2, "b t -> b", "mean")
+
+    def re_loss(self, input: Tensor, predicted: Tensor):
+        re_loss = self.re(input=input, predicted=predicted)
+        return reduce(re_loss, "b ->", "mean")
+
+    def forward(self, x_recon, x_preds, latent_pred, x_true, x_future, reynolds):
         """
         Compute the Koopman loss.
 
@@ -157,6 +166,7 @@ class KoopmanLoss(nn.Module):
             latent_pred (torch.Tensor): Latent space predictions.
             x_true (TensorDict): Ground truth input TensorDict.
             x_future (TensorDict): Ground truth future states TensorDict.
+            reynolds (torch.Tensor): Reynold's Number estimates.
 
         Returns:
             dict: Combined total loss, reconstruction loss (per variable), prediction loss (per variable), and latent loss.
@@ -167,6 +177,8 @@ class KoopmanLoss(nn.Module):
         pred_loss_per_variable = self.rollout_loss(x_preds, x_future)
         # KL loss for latent space
         latent_loss = self.kl_divergence(latent_pred)
+        # Reynolds Number estimation
+        re_loss = self.re_loss(reynolds, x_future["Re"])
 
         # Combine total losses (only total_loss will backpropagate)
         total_loss = (
@@ -178,6 +190,7 @@ class KoopmanLoss(nn.Module):
         return {
             "total_loss": total_loss,  # This will backpropagate
             "latent_loss": latent_loss.detach().item(),
+            "re_loss": re_loss,
             "recon_loss": {
                 key: value.detach().item()
                 for key, value in recon_loss_per_variable.items()

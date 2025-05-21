@@ -88,16 +88,29 @@ class Trainer:
         self.optimizer.zero_grad()
 
         # Forward pass
-        x_recon, x_preds, z_preds = self.model(input, seq_length=target["seq_length"])
+        x_recon, x_preds, z_preds, reynolds = self.model(
+            input, seq_length=target["seq_length"]
+        )
 
         # Compute loss
-        losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
+        losses = self.criterion(
+            x_recon, x_preds, z_preds, input[:, -1], target, reynolds
+        )
         loss = losses["total_loss"]
+        re_loss = losses["re_loss"]
         assert isinstance(loss, torch.Tensor)
+        assert isinstance(re_loss, torch.Tensor)
 
-        # Backward pass
-        loss.backward()
+        # Backward for main loss (excluding Reynolds)
+        loss.backward(retain_graph=True)
 
+        # Zero gradients for all params except 're' network before re_loss backward
+        for name, param in self.model.named_parameters():
+            if not name.startswith("re."):
+                param.grad = None
+
+        # Backward for Reynolds loss only on 're' parameters
+        re_loss.backward()
         # Compute gradient norms
         grad_norms = {}
         for name, param in self.model.named_parameters():
@@ -150,10 +163,12 @@ class Trainer:
         with torch.no_grad():
             for input, target in dataloader:
                 input, target = input.to(self.device), target.to(self.device)
-                x_recon, x_preds, z_preds = self.model(
+                x_recon, x_preds, z_preds, reynolds = self.model(
                     input, seq_length=target["seq_length"]
                 )
-                losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
+                losses = self.criterion(
+                    x_recon, x_preds, z_preds, input[:, -1], target, reynolds
+                )
 
                 # Accumulate losses
                 total_losses = accumulate_losses(total_losses, losses)

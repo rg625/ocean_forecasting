@@ -3,6 +3,7 @@ import torch.optim as optim
 from pathlib import Path
 from datetime import datetime
 import wandb
+from models.cnn import TransformerConfig
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
@@ -42,7 +43,6 @@ def main(config_path):
         test_dataset=test_dataset,
         config=config,
     )
-
     # Initialize model
     model = KoopmanAutoencoder(
         input_frames=config["data"]["input_sequence_length"],
@@ -52,6 +52,7 @@ def main(config_path):
         latent_dim=config["model"]["latent_dim"],
         hidden_dims=config["model"]["hidden_dims"],
         use_checkpoint=config["training"]["use_checkpoint"],
+        transformer_config=TransformerConfig(**config["model"]["transformer"]),
         **config["model"]["conv_kwargs"],
     ).to(device)
 

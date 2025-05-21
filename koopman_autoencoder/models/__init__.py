@@ -6,3 +6,4 @@ from .dataloader import MultipleSims as MultipleSims
 from .loss import KoopmanLoss as KoopmanLoss
 from .lr_schedule import CosineWarmup as CosineWarmup
 from .metrics import Metric as Metric
+from .cnn import TransformerConfig as TransformerConfig
