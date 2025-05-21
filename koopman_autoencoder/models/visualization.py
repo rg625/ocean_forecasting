@@ -179,9 +179,13 @@ def compute_re(
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        Re_logs[f"figures/{mode}/true_Re"] = true_Re
-        Re_logs[f"figures/{mode}/pred_Re"] = pred_Re
-        Re_logs[f"figures/{mode}/diff_Re"] = true_Re - pred_Re
+        Re_logs[f"figures/{mode}/true_Re"] = true_Re[
+            0
+        ]  # indexed to ony show one sample per batch
+        Re_logs[f"figures/{mode}/pred_Re"] = pred_Re[
+            0
+        ]  # indexed to ony show one sample per batch
+        Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re - pred_Re)
         # Log to W&B
         wandb.log(Re_logs)
 
