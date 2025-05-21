@@ -5,7 +5,7 @@ import xarray as xr
 import random
 import numpy as np
 from tensordict import stack as stack_tensordict
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Union
 
 
 class QGDatasetBase(Dataset):
@@ -200,6 +200,9 @@ class MultipleSims(QGDatasetBase):
             data_path, input_sequence_length, max_sequence_length, variables
         )
         self.num_sims = self.data.sizes["sim"]
+        self.Re: Union[list[float], np.ndarray, torch.Tensor] = (
+            self.data["Re"] if "Re" in self.data.variables else None
+        )
         print(f"self.means.items(): {self.means.items()}")
         print(f"self.stds.items(): {self.stds.items()}")
 
@@ -264,13 +267,15 @@ class MultipleSims(QGDatasetBase):
 
         # Add the sequence length to the target
         target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
+        target_seq["Re"] = torch.tensor(self.Re[sim_idx].item(), dtype=torch.float32)
 
         return input_seq, target_seq
 
     def denormalize(self, x):
         denormalized = {}
         for var, tensor in x.items():
-            if var == "seq_length":
+            if var in ["seq_length", "Re"]:
+                denormalized[var] = tensor  # passthrough
                 continue
             device = tensor.device
             means = self.means[var].to(device)

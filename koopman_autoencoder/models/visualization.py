@@ -4,6 +4,7 @@ import wandb
 from pathlib import Path
 from tensordict import TensorDict
 from torch import Tensor
+import torch
 
 
 def plot_comparison(
@@ -23,6 +24,8 @@ def plot_comparison(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for var in x.keys():
+        if var in ["seq_length", "Re"]:
+            continue
         x_var = x[var][0]  # shape: (T, H, W)
         x_recon_var = x_recon[var][0]  # shape: (T, H, W)
 
@@ -126,6 +129,8 @@ def plot_energy_spectrum(
     plt.figure(figsize=(12, 6))  # Adjusted size for better readability in W&B
 
     for var in variables:
+        if var in ["seq_length", "Re"]:
+            continue
         # Compute isotropic energy spectrum for each variable
         k_bins, true_spec = compute_isotropic_energy_spectrum(true_fields[var])
         _, pred_spec = compute_isotropic_energy_spectrum(pred_fields[var])
@@ -151,6 +156,34 @@ def plot_energy_spectrum(
         wandb.log({f"figures/{mode}/energy_spectrum": wandb.Image(str(filename))})
 
     plt.close()
+
+
+def compute_re(
+    true_fields: TensorDict,
+    pred_fields: TensorDict,
+    output_dir: Path | str = "/home/koopman/",
+    mode: str = "train",
+    nu: float = 0.0003061224489795918,
+    L: float = 0.6,
+):
+    """
+    Compute Reynolds number and log in W&B
+    """
+    Re_logs = {}
+    true_Re = true_fields["Re"].detach().cpu().numpy()
+    v_x = pred_fields["v_x"]
+    v_y = pred_fields["v_y"]
+    v = torch.sqrt(v_x**2 + v_y**2).mean(dim=(1, 2, 3))
+    pred_Re = v.detach().cpu().numpy() * L / nu
+
+    if output_dir:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        Re_logs[f"figures/{mode}/true_Re"] = true_Re
+        Re_logs[f"figures/{mode}/pred_Re"] = pred_Re
+        Re_logs[f"figures/{mode}/diff_Re"] = true_Re - pred_Re
+        # Log to W&B
+        wandb.log(Re_logs)
 
 
 def denormalize_and_visualize(
@@ -220,6 +253,13 @@ def denormalize_and_visualize(
     plot_energy_spectrum(
         true_fields=true_fields,
         pred_fields=pred_fields,
+        output_dir=output_dir,
+        mode=mode,
+    )
+
+    compute_re(
+        true_fields=target,
+        pred_fields=x_preds,
         output_dir=output_dir,
         mode=mode,
     )

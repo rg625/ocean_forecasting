@@ -4,7 +4,7 @@ data:
   train_file: "acdm/128_tra/train.nc"
   val_file: "acdm/128_tra/val.nc"
   test_file: "acdm/128_tra/test.nc"
-  input_sequence_length: 5
+  input_sequence_length: 20
   max_sequence_length: 50
   normalization:
     type: "diff"
@@ -45,4 +45,4 @@ loss:
   sigma_blur: ~
 
 ckpt: ~
-log_epoch: 10 # logging results every epoch
+log_epoch: 100 # logging results every epoch

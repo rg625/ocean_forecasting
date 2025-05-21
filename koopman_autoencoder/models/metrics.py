@@ -88,7 +88,7 @@ class Metric(nn.Module):
         elif self.variable_mode == "all":
             per_var_results = []
             for var in reference.keys():
-                if var == "seq_length":
+                if var in ["seq_length", "Re"]:
                     continue
                 dist = self._compute_pairwise_distance(reference[var], other[var])
                 per_var_results.append(dist)
