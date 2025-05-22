@@ -11,6 +11,15 @@ from tensordict import TensorDict
 from torch import Tensor
 from models.checkpoint import checkpoint
 from typing import Union, Tuple, Optional
+from dataclasses import dataclass
+
+
+@dataclass
+class KoopmanOutput:
+    x_recon: Tensor
+    x_preds: TensorDict
+    z_preds: Tensor
+    reynolds: Optional[Tensor]
 
 
 class KoopmanOperator(nn.Module):
@@ -102,6 +111,7 @@ class KoopmanAutoencoder(nn.Module):
         kernel_size: Union[int, Tuple[int, int]] = 3,
         use_checkpoint: bool = False,
         transformer_config: Optional[TransformerConfig] = None,
+        predict_re: bool = False,
         **conv_kwargs,
     ):
         """
@@ -126,11 +136,14 @@ class KoopmanAutoencoder(nn.Module):
                 Flag for gradient checkpointing.
             transformer_config: dict,
                 Additional arguments for transformer layers.
+            predict_re: bool
+                Flag for predicting Reynolds Number.
             conv_kwargs: dict
                 Additional arguments for convolutional layers.
         """
         super().__init__()
         assert transformer_config is not None, "transformer_config must be provided"
+        self.predict_re = predict_re
         # Initialize Encoder
         self.history_encoder = HistoryEncoder(
             C=input_channels,
@@ -175,7 +188,11 @@ class KoopmanAutoencoder(nn.Module):
         self.koopman_operator = KoopmanOperator(
             latent_dim=latent_dim, use_checkpoint=use_checkpoint
         )
-        self.re = Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
+        self.re = (
+            Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
+            if predict_re
+            else None
+        )
 
     def encode(self, x: TensorDict):
         """
@@ -241,7 +258,7 @@ class KoopmanAutoencoder(nn.Module):
         """
         return self.koopman_operator(z)
 
-    def forward(self, x: TensorDict, seq_length: Tensor):
+    def forward(self, x: TensorDict, seq_length: Tensor) -> KoopmanOutput:
         """
         Forward pass through the autoencoder with Koopman prediction.
 
@@ -281,6 +298,11 @@ class KoopmanAutoencoder(nn.Module):
         # Compute latent prediction differences
         z_preds = torch.stack(z_preds, dim=1)
 
-        reynolds = self.re(z_preds.detach())
+        reynolds = self.re(z_preds.detach()) if callable(self.re) else None
 
-        return x_recon, x_preds, z_preds, reynolds
+        return KoopmanOutput(
+            x_recon=x_recon,
+            x_preds=x_preds,
+            z_preds=z_preds,
+            reynolds=reynolds,
+        )

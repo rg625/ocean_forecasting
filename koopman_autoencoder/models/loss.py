@@ -178,7 +178,9 @@ class KoopmanLoss(nn.Module):
         # KL loss for latent space
         latent_loss = self.kl_divergence(latent_pred)
         # Reynolds Number estimation
-        re_loss = self.re_loss(reynolds, x_future["Re"])
+        re_loss = (
+            self.re_loss(reynolds, x_future["Re"]) if reynolds is not None else None
+        )
 
         # Combine total losses (only total_loss will backpropagate)
         total_loss = (

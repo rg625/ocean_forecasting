@@ -53,6 +53,7 @@ def main(config_path):
         hidden_dims=config["model"]["hidden_dims"],
         use_checkpoint=config["training"]["use_checkpoint"],
         transformer_config=TransformerConfig(**config["model"]["transformer"]),
+        predict_re=config["model"]["predict_re"],
         **config["model"]["conv_kwargs"],
     ).to(device)
 

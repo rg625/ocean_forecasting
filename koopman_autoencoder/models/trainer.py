@@ -88,61 +88,53 @@ class Trainer:
         self.optimizer.zero_grad()
 
         # Forward pass
-        x_recon, x_preds, z_preds, reynolds = self.model(
-            input, seq_length=target["seq_length"]
-        )
+        out = self.model(input, seq_length=target["seq_length"])
 
         # Compute loss
         losses = self.criterion(
-            x_recon, x_preds, z_preds, input[:, -1], target, reynolds
+            out.x_recon, out.x_preds, out.z_preds, input[:, -1], target, out.reynolds
         )
         loss = losses["total_loss"]
-        re_loss = losses["re_loss"]
-        assert isinstance(loss, torch.Tensor)
-        assert isinstance(re_loss, torch.Tensor)
+        re_loss = losses.get("re_loss", None)
 
-        # Backward for main loss (excluding Reynolds)
-        loss.backward(retain_graph=True)
+        # Backward pass
+        if re_loss is not None:
+            loss.backward(retain_graph=True)
 
-        # Zero gradients for all params except 're' network before re_loss backward
-        for name, param in self.model.named_parameters():
-            if not name.startswith("re."):
-                param.grad = None
+            # Zero gradients for all except 're' parameters
+            for name, param in self.model.named_parameters():
+                if not name.startswith("re."):
+                    param.grad = None
 
-        # Backward for Reynolds loss only on 're' parameters
-        re_loss.backward()
-        # Compute gradient norms
-        grad_norms = {}
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                grad_norms[f"gradient_norms/{name}"] = param.grad.norm(
-                    2
-                ).item()  # L2 norm of gradients
+            re_loss.backward()
+        else:
+            loss.backward()
 
-        # Compute parameter norms
-        param_norms = {}
-        for name, param in self.model.named_parameters():
-            param_norms[f"parameter_norms/{name}"] = param.norm(
-                2
-            ).item()  # L2 norm of parameters
-
-        # Optimizer step
         self.optimizer.step()
 
-        # Log gradients and parameters independently to W&B
-        wandb.log(grad_norms)  # Log gradient norms
-        wandb.log(param_norms)  # Log parameter norms
+        # Log gradient and parameter norms
+        grad_norms = {
+            f"gradient_norms/{name}": param.grad.norm(2).item()
+            for name, param in self.model.named_parameters()
+            if param.grad is not None
+        }
+        param_norms = {
+            f"parameter_norms/{name}": param.norm(2).item()
+            for name, param in self.model.named_parameters()
+        }
 
-        # Compute metric if available
-        if self.eval_metrics is not None:
+        wandb.log(grad_norms)
+        wandb.log(param_norms)
+
+        # Compute evaluation metric if available
+        if self.eval_metrics:
             target_denorm = self.train_loader.denormalize(target)
-            preds_denorm = self.train_loader.denormalize(x_preds)
+            preds_denorm = self.train_loader.denormalize(out.x_preds)
             metric_value = self.eval_metrics.compute_distance(
                 target_denorm, preds_denorm
             )
-            metric_mean = float(np.mean(metric_value))
             losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
-                metric_mean
+                float(np.mean(metric_value))
             )
 
         return losses
