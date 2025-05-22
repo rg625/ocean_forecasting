@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch import Tensor
 from torch.optim import Optimizer
 from tensordict import TensorDict
@@ -12,6 +13,7 @@ from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
 from torch.utils.data import DataLoader
 from models.visualization import denormalize_and_visualize
+from models.metrics import Metric
 from models.utils import (
     average_losses,
     accumulate_losses,
@@ -27,6 +29,7 @@ class Trainer:
         val_loader: DataLoader,
         optimizer: Optimizer,
         criterion: KoopmanLoss,
+        eval_metrics: Metric,
         lr_scheduler: CosineWarmup,
         device: torch.device,
         num_epochs: int = 100,
@@ -43,6 +46,7 @@ class Trainer:
             train_loader: DataLoader for training data.
             val_loader: DataLoader for validation data.
             optimizer: Optimizer for training.
+            eval_metrics: Evaluation metrics for validation.
             criterion: Loss function.
             device: Device to train on ('cpu' or 'cuda').
             num_epochs: Maximum number of epochs to train.
@@ -54,6 +58,7 @@ class Trainer:
         self.val_loader = val_loader
         self.optimizer = optimizer
         self.criterion = criterion
+        self.eval_metrics = eval_metrics
         self.lr_scheduler = lr_scheduler
         self.device = device
         self.num_epochs = num_epochs
@@ -83,37 +88,54 @@ class Trainer:
         self.optimizer.zero_grad()
 
         # Forward pass
-        x_recon, x_preds, z_preds = self.model(input, seq_length=target["seq_length"])
+        out = self.model(input, seq_length=target["seq_length"])
 
         # Compute loss
-        losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
+        losses = self.criterion(
+            out.x_recon, out.x_preds, out.z_preds, input[:, -1], target, out.reynolds
+        )
         loss = losses["total_loss"]
-        assert isinstance(loss, torch.Tensor)
+        re_loss = losses.get("re_loss", None)
 
         # Backward pass
-        loss.backward()
+        if re_loss is not None:
+            loss.backward(retain_graph=True)
 
-        # Compute gradient norms
-        grad_norms = {}
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                grad_norms[f"gradient_norms/{name}"] = param.grad.norm(
-                    2
-                ).item()  # L2 norm of gradients
+            # Zero gradients for all except 're' parameters
+            for name, param in self.model.named_parameters():
+                if not name.startswith("re."):
+                    param.grad = None
 
-        # Compute parameter norms
-        param_norms = {}
-        for name, param in self.model.named_parameters():
-            param_norms[f"parameter_norms/{name}"] = param.norm(
-                2
-            ).item()  # L2 norm of parameters
+            re_loss.backward()
+        else:
+            loss.backward()
 
-        # Optimizer step
         self.optimizer.step()
 
-        # Log gradients and parameters independently to W&B
-        wandb.log(grad_norms)  # Log gradient norms
-        wandb.log(param_norms)  # Log parameter norms
+        # Log gradient and parameter norms
+        grad_norms = {
+            f"gradient_norms/{name}": param.grad.norm(2).item()
+            for name, param in self.model.named_parameters()
+            if param.grad is not None
+        }
+        param_norms = {
+            f"parameter_norms/{name}": param.norm(2).item()
+            for name, param in self.model.named_parameters()
+        }
+
+        wandb.log(grad_norms)
+        wandb.log(param_norms)
+
+        # Compute evaluation metric if available
+        if self.eval_metrics:
+            target_denorm = self.train_loader.denormalize(target)
+            preds_denorm = self.train_loader.denormalize(out.x_preds)
+            metric_value = self.eval_metrics.compute_distance(
+                target_denorm, preds_denorm
+            )
+            losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
+                float(np.mean(metric_value))
+            )
 
         return losses
 
@@ -133,10 +155,12 @@ class Trainer:
         with torch.no_grad():
             for input, target in dataloader:
                 input, target = input.to(self.device), target.to(self.device)
-                x_recon, x_preds, z_preds = self.model(
+                x_recon, x_preds, z_preds, reynolds = self.model(
                     input, seq_length=target["seq_length"]
                 )
-                losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
+                losses = self.criterion(
+                    x_recon, x_preds, z_preds, input[:, -1], target, reynolds
+                )
 
                 # Accumulate losses
                 total_losses = accumulate_losses(total_losses, losses)
@@ -153,9 +177,20 @@ class Trainer:
                     )
                 break  # Break after the first batch for visualization
 
-        # Average losses over batches
         n_batches = len(dataloader)
         total_losses = average_losses(total_losses, n_batches)
+
+        # Compute metric if available
+        if self.eval_metrics is not None:
+            target_denorm = dataloader.denormalize(target)
+            preds_denorm = dataloader.denormalize(x_preds)
+            metric_value = self.eval_metrics.compute_distance(
+                target_denorm, preds_denorm
+            )
+            metric_mean = float(np.mean(metric_value))
+            total_losses[
+                f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
+            ] = metric_mean
 
         return total_losses
 
