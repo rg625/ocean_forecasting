@@ -149,7 +149,7 @@ class KoopmanLoss(nn.Module):
 
     @staticmethod
     def re(input: Tensor, predicted: Tensor):
-        diff = (input - predicted).squeeze(-1)  # now shape: [b, t]
+        diff = (input.view(-1, 1, 1) - predicted).squeeze(-1)  # now shape: [b, t]
         return reduce(diff**2, "b t -> b", "mean")
 
     def re_loss(self, input: Tensor, predicted: Tensor):
@@ -179,7 +179,7 @@ class KoopmanLoss(nn.Module):
         latent_loss = self.kl_divergence(latent_pred)
         # Reynolds Number estimation
         re_loss = (
-            self.re_loss(reynolds, x_future["Re"]) if reynolds is not None else None
+            self.re_loss(x_future["Re"], reynolds) if reynolds is not None else None
         )
 
         # Combine total losses (only total_loss will backpropagate)

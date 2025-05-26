@@ -95,20 +95,11 @@ class Trainer:
             out.x_recon, out.x_preds, out.z_preds, input[:, -1], target, out.reynolds
         )
         loss = losses["total_loss"]
-        re_loss = losses.get("re_loss", None)
+        re_loss = losses["re_loss"]
 
         # Backward pass
-        if re_loss is not None:
-            loss.backward(retain_graph=True)
-
-            # Zero gradients for all except 're' parameters
-            for name, param in self.model.named_parameters():
-                if not name.startswith("re."):
-                    param.grad = None
-
-            re_loss.backward()
-        else:
-            loss.backward()
+        total_loss = loss + re_loss if re_loss is not None else loss
+        total_loss.backward()
 
         self.optimizer.step()
 
