@@ -146,11 +146,14 @@ class Trainer:
         with torch.no_grad():
             for input, target in dataloader:
                 input, target = input.to(self.device), target.to(self.device)
-                x_recon, x_preds, z_preds, reynolds = self.model(
-                    input, seq_length=target["seq_length"]
-                )
+                out = self.model(input, seq_length=target["seq_length"])
                 losses = self.criterion(
-                    x_recon, x_preds, z_preds, input[:, -1], target, reynolds
+                    out.x_recon,
+                    out.x_preds,
+                    out.z_preds,
+                    input[:, -1],
+                    target,
+                    out.reynolds,
                 )
 
                 # Accumulate losses
@@ -161,8 +164,8 @@ class Trainer:
                     denormalize_and_visualize(
                         input=dataloader.denormalize(input),
                         target=dataloader.denormalize(target),
-                        x_recon=dataloader.denormalize(x_recon),
-                        x_preds=dataloader.denormalize(x_preds),
+                        x_recon=dataloader.denormalize(out.x_recon),
+                        x_preds=dataloader.denormalize(out.x_preds),
                         output_dir=self.output_dir,
                         mode=mode,
                     )
@@ -174,7 +177,7 @@ class Trainer:
         # Compute metric if available
         if self.eval_metrics is not None:
             target_denorm = dataloader.denormalize(target)
-            preds_denorm = dataloader.denormalize(x_preds)
+            preds_denorm = dataloader.denormalize(out.x_preds)
             metric_value = self.eval_metrics.compute_distance(
                 target_denorm, preds_denorm
             )
