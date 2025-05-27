@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 from tqdm import tqdm
 import wandb
+from typing import Optional, Union
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
@@ -34,7 +35,7 @@ class Trainer:
         device: torch.device,
         num_epochs: int = 100,
         patience: int = 10,
-        output_dir: Path | None | str = "/home/koopman/",
+        output_dir: Optional[Union[Path, str]] = "/home/koopman/",
         start_epoch: int = 0,
         log_epoch: int = 10,
     ):
