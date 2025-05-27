@@ -1,6 +1,7 @@
 import torch
 from tensordict import TensorDict
 from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data.distributed import DistributedSampler
 import xarray as xr
 import random
 import numpy as np
@@ -389,6 +390,51 @@ def create_dataloaders(
     )
     test_loader = DataLoaderWrapper(
         test_dataset, batch_sampler=test_batch_sampler, collate_fn=custom_collate_fn
+    )
+
+    return train_loader, val_loader, test_loader
+
+
+def create_ddp_dataloaders(
+    train_dataset: QGDatasetBase,
+    val_dataset: QGDatasetBase,
+    test_dataset: QGDatasetBase,
+    config: Any,
+    rank: int = 0,
+    world_size: int = 1,
+):
+    batch_size = config["training"]["batch_size"]
+
+    train_sampler = DistributedSampler(
+        train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+    )
+    val_sampler = DistributedSampler(
+        val_dataset, num_replicas=world_size, rank=rank, shuffle=False
+    )
+    test_sampler = DistributedSampler(
+        test_dataset, num_replicas=world_size, rank=rank, shuffle=False
+    )
+
+    train_loader = DataLoaderWrapper(
+        train_dataset,
+        sampler=train_sampler,
+        batch_size=batch_size,
+        collate_fn=custom_collate_fn,
+        drop_last=True,
+    )
+    val_loader = DataLoaderWrapper(
+        val_dataset,
+        sampler=val_sampler,
+        batch_size=batch_size,
+        collate_fn=custom_collate_fn,
+        drop_last=False,
+    )
+    test_loader = DataLoaderWrapper(
+        test_dataset,
+        sampler=test_sampler,
+        batch_size=batch_size,
+        collate_fn=custom_collate_fn,
+        drop_last=False,
     )
 
     return train_loader, val_loader, test_loader

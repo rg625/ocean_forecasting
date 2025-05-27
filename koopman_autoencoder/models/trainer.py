@@ -34,7 +34,7 @@ class Trainer:
         device: torch.device,
         num_epochs: int = 100,
         patience: int = 10,
-        output_dir: Path | str = "/home/koopman/",
+        output_dir: Path | None | str = "/home/koopman/",
         start_epoch: int = 0,
         log_epoch: int = 10,
     ):
