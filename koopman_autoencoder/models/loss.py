@@ -149,7 +149,9 @@ class KoopmanLoss(nn.Module):
 
     @staticmethod
     def re(input: Tensor, predicted: Tensor):
-        diff = (input.view(-1, 1, 1) - predicted).squeeze(-1)  # now shape: [b, t]
+        diff = (input.view(-1, 1, 1) - predicted).squeeze(
+            -1
+        ) / 1000  # now shape: [b, t]
         return reduce(diff**2, "b t -> b", "mean")
 
     def re_loss(self, input: Tensor, predicted: Tensor):
