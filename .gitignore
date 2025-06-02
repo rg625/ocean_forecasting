@@ -15,7 +15,28 @@
 *.ipynb_checkpoints
 *.ipynb
 *.yaml
+*.h5
+*.zip
+*.npz
+*.dat
+*.json
+*.sh
+*.cfg
+*.mp4
+*.csv
+*.out
+*.err
 
 
+wget-log
 **/koopman_autoencoder/wandb/latest-run
 **/koopman_autoencoder/wandb/settings
+**/koopman_autoencoder/data/acdm/
+**/koopman_autoencoder/data/diff/
+**/koopman_autoencoder/data/jet/
+**/koopman_autoencoder/data/128_inc/
+**/koopman_autoencoder/data/128_iso/
+**/koopman_autoencoder/data/128_reyVar/
+**/koopman_autoencoder/data/128_tra/
+**/koopman_autoencoder/data/acdm/128_tra/
+**/wandb/

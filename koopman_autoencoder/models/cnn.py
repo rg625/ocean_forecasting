@@ -1,9 +1,11 @@
 from itertools import pairwise
+import torch
 from torch import nn
 from models.checkpoint import checkpoint
 from einops import rearrange
 from torch import Tensor
 from typing import List, Union, Tuple, Any
+from dataclasses import dataclass
 
 
 class ConvBlock(nn.Module):
@@ -286,3 +288,90 @@ class ConvDecoder(BaseEncoderDecoder):
             use_checkpoint=use_checkpoint,
             **conv_kwargs,
         )
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 1000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        pos = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * (-torch.log(torch.tensor(10000.0)) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(pos * div_term)
+        pe[:, 1::2] = torch.cos(pos * div_term)
+        self.pe = pe.unsqueeze(0)  # Shape: (1, max_len, d_model)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.pe[:, : x.size(1)].to(x.device)
+
+
+@dataclass
+class TransformerConfig:
+    num_layers: int = 4
+    nhead: int = 8
+    ff_mult: int = 4
+    max_len: int = 1000
+    dropout: float = 0.1
+
+
+class HistoryEncoder(ConvEncoder):
+    def __init__(
+        self,
+        C: int,
+        H: int,
+        W: int,
+        latent_dim: int,
+        hiddens: List[int],
+        block_size: int = 1,
+        kernel_size: Union[int, Tuple[int, int]] = 3,
+        use_checkpoint: bool = False,
+        use_positional_encoding: bool = True,
+        transformer_config: TransformerConfig = TransformerConfig(),
+        **conv_kwargs,
+    ):
+        super().__init__(
+            C=C,
+            H=H,
+            W=W,
+            latent_dim=latent_dim,
+            hiddens=hiddens,
+            block_size=block_size,
+            kernel_size=kernel_size,
+            use_checkpoint=use_checkpoint,
+            **conv_kwargs,
+        )
+
+        self.pos_enc = (
+            PositionalEncoding(latent_dim, max_len=transformer_config.max_len)
+            if use_positional_encoding
+            else nn.Identity()
+        )
+
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=latent_dim,
+                nhead=transformer_config.nhead,
+                dim_feedforward=latent_dim * transformer_config.ff_mult,
+                dropout=transformer_config.dropout,
+                batch_first=True,
+            ),
+            num_layers=transformer_config.num_layers,
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        x: Tensor of shape (B, T, C, H, W)
+        returns: Tensor of shape (B, latent_dim)
+        """
+        # Encode each frame
+        t = x.shape[1]
+        x = rearrange(x, "b t c h w -> (b t) c h w")
+        features = super().forward(x)  # (B*T, latent_dim)
+
+        # Reshape and apply transformer
+        features = rearrange(features, "(b t) d -> b t d", t=t)  # (B, T, latent_dim)
+        features = self.pos_enc(features)
+        out = self.transformer(features)
+
+        return out.mean(dim=1)  # (B, latent_dim)

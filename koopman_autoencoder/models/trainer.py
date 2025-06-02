@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 from torch import Tensor
 from torch.optim import Optimizer
 from tensordict import TensorDict
@@ -7,11 +8,13 @@ from pathlib import Path
 import yaml
 from tqdm import tqdm
 import wandb
+from typing import Optional, Union
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
 from torch.utils.data import DataLoader
 from models.visualization import denormalize_and_visualize
+from models.metrics import Metric
 from models.utils import (
     average_losses,
     accumulate_losses,
@@ -27,11 +30,12 @@ class Trainer:
         val_loader: DataLoader,
         optimizer: Optimizer,
         criterion: KoopmanLoss,
+        eval_metrics: Metric,
         lr_scheduler: CosineWarmup,
         device: torch.device,
         num_epochs: int = 100,
         patience: int = 10,
-        output_dir: Path | str = "/home/koopman/",
+        output_dir: Optional[Union[Path, str]] = "/home/koopman/",
         start_epoch: int = 0,
         log_epoch: int = 10,
     ):
@@ -43,6 +47,7 @@ class Trainer:
             train_loader: DataLoader for training data.
             val_loader: DataLoader for validation data.
             optimizer: Optimizer for training.
+            eval_metrics: Evaluation metrics for validation.
             criterion: Loss function.
             device: Device to train on ('cpu' or 'cuda').
             num_epochs: Maximum number of epochs to train.
@@ -54,6 +59,7 @@ class Trainer:
         self.val_loader = val_loader
         self.optimizer = optimizer
         self.criterion = criterion
+        self.eval_metrics = eval_metrics
         self.lr_scheduler = lr_scheduler
         self.device = device
         self.num_epochs = num_epochs
@@ -83,37 +89,43 @@ class Trainer:
         self.optimizer.zero_grad()
 
         # Forward pass
-        x_recon, x_preds, z_preds = self.model(input, seq_length=target["seq_length"])
+        out = self.model(input, seq_length=target["seq_length"])
 
         # Compute loss
-        losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
-        loss = losses["total_loss"]
-        assert isinstance(loss, torch.Tensor)
+        losses = self.criterion(
+            out.x_recon, out.x_preds, out.z_preds, input[:, -1], target, out.reynolds
+        )
+        losses["total_loss"].backward()
 
-        # Backward pass
-        loss.backward()
-
-        # Compute gradient norms
-        grad_norms = {}
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                grad_norms[f"gradient_norms/{name}"] = param.grad.norm(
-                    2
-                ).item()  # L2 norm of gradients
-
-        # Compute parameter norms
-        param_norms = {}
-        for name, param in self.model.named_parameters():
-            param_norms[f"parameter_norms/{name}"] = param.norm(
-                2
-            ).item()  # L2 norm of parameters
-
-        # Optimizer step
         self.optimizer.step()
 
-        # Log gradients and parameters independently to W&B
-        wandb.log(grad_norms)  # Log gradient norms
-        wandb.log(param_norms)  # Log parameter norms
+        # Log gradient and parameter norms
+        grad_norms = {
+            f"gradient_norms/{name}": param.grad.norm(2).item()
+            for name, param in self.model.named_parameters()
+            if param.grad is not None
+        }
+        param_norms = {
+            f"parameter_norms/{name}": param.norm(2).item()
+            for name, param in self.model.named_parameters()
+        }
+
+        wandb.log(grad_norms)
+        wandb.log(param_norms)
+
+        # Compute evaluation metric if available
+        if self.eval_metrics:
+            target_denorm = self.train_loader.denormalize(target)
+            preds_denorm = self.train_loader.denormalize(out.x_preds)
+
+            # Map both to [0, 1] using dataset min/max
+            target_unit = self.train_loader.dataset.to_unit_range(target_denorm)
+            preds_unit = self.train_loader.dataset.to_unit_range(preds_denorm)
+
+            metric_value = self.eval_metrics.compute_distance(target_unit, preds_unit)
+            losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
+                float(np.mean(metric_value))
+            )
 
         return losses
 
@@ -133,10 +145,15 @@ class Trainer:
         with torch.no_grad():
             for input, target in dataloader:
                 input, target = input.to(self.device), target.to(self.device)
-                x_recon, x_preds, z_preds = self.model(
-                    input, seq_length=target["seq_length"]
+                out = self.model(input, seq_length=target["seq_length"])
+                losses = self.criterion(
+                    out.x_recon,
+                    out.x_preds,
+                    out.z_preds,
+                    input[:, -1],
+                    target,
+                    out.reynolds,
                 )
-                losses = self.criterion(x_recon, x_preds, z_preds, input[:, -1], target)
 
                 # Accumulate losses
                 total_losses = accumulate_losses(total_losses, losses)
@@ -146,16 +163,27 @@ class Trainer:
                     denormalize_and_visualize(
                         input=dataloader.denormalize(input),
                         target=dataloader.denormalize(target),
-                        x_recon=dataloader.denormalize(x_recon),
-                        x_preds=dataloader.denormalize(x_preds),
+                        x_recon=dataloader.denormalize(out.x_recon),
+                        x_preds=dataloader.denormalize(out.x_preds),
                         output_dir=self.output_dir,
                         mode=mode,
                     )
                 break  # Break after the first batch for visualization
 
-        # Average losses over batches
         n_batches = len(dataloader)
         total_losses = average_losses(total_losses, n_batches)
+
+        # Compute metric if available
+        if self.eval_metrics is not None:
+            target_denorm = dataloader.denormalize(target)
+            preds_denorm = dataloader.denormalize(out.x_preds)
+            metric_value = self.eval_metrics.compute_distance(
+                target_denorm, preds_denorm
+            )
+            metric_mean = float(np.mean(metric_value))
+            total_losses[
+                f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
+            ] = metric_mean
 
         return total_losses
 

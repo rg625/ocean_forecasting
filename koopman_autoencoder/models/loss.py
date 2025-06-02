@@ -14,10 +14,18 @@ class KoopmanLoss(nn.Module):
         beta (float): Weight for the latent loss term.
     """
 
-    def __init__(self, alpha=1.0, beta=0.1, weighting_type="cosine", sigma_blur=None):
+    def __init__(
+        self,
+        alpha=1.0,
+        beta=0.1,
+        re_weight=0.1,
+        weighting_type="cosine",
+        sigma_blur=None,
+    ):
         super(KoopmanLoss, self).__init__()
         self.alpha = alpha  # weight for prediction loss
         self.beta = beta  # weight for latent loss
+        self.re_weight = re_weight  # weight for latent loss
         self.weighting_type = weighting_type  # weighting schedule for rollout loss
 
         if sigma_blur is not None:
@@ -147,7 +155,25 @@ class KoopmanLoss(nn.Module):
         kl_loss = self.kl(mu=mu, var=var)
         return reduce(kl_loss, "b ->", "mean")
 
-    def forward(self, x_recon, x_preds, latent_pred, x_true, x_future):
+    @staticmethod
+    def re(input: Tensor, predicted: Tensor):
+
+        input_expanded = rearrange(input, "b -> b 1 1")
+
+        # Assert shapes are compatible
+        assert (
+            input_expanded.shape == predicted.shape
+        ), f"Shape mismatch: input_expanded {input_expanded.shape}, predicted {predicted.shape}"
+
+        # Compute difference, squeeze last dim to get [b, t]
+        diff = (input_expanded - predicted).squeeze(-1) / 1000  # now shape: [b, t]
+        return reduce(diff**2, "b t -> b", "mean")
+
+    def re_loss(self, input: Tensor, predicted: Tensor):
+        re_loss = self.re(input=input, predicted=predicted)
+        return reduce(re_loss, "b ->", "mean")
+
+    def forward(self, x_recon, x_preds, latent_pred, x_true, x_future, reynolds):
         """
         Compute the Koopman loss.
 
@@ -157,6 +183,7 @@ class KoopmanLoss(nn.Module):
             latent_pred (torch.Tensor): Latent space predictions.
             x_true (TensorDict): Ground truth input TensorDict.
             x_future (TensorDict): Ground truth future states TensorDict.
+            reynolds (torch.Tensor): Reynold's Number estimates.
 
         Returns:
             dict: Combined total loss, reconstruction loss (per variable), prediction loss (per variable), and latent loss.
@@ -167,17 +194,25 @@ class KoopmanLoss(nn.Module):
         pred_loss_per_variable = self.rollout_loss(x_preds, x_future)
         # KL loss for latent space
         latent_loss = self.kl_divergence(latent_pred)
+        # Reynolds Number estimation
+        re_loss = (
+            self.re_loss(x_future["Re"], reynolds)
+            if reynolds is not None
+            else torch.tensor(0)
+        )
 
         # Combine total losses (only total_loss will backpropagate)
         total_loss = (
             sum(recon_loss_per_variable.values())  # Tensors sum to a tensor
             + self.alpha * sum(pred_loss_per_variable.values())
             + self.beta * latent_loss
+            + +self.re_weight * re_loss
         )
 
         return {
             "total_loss": total_loss,  # This will backpropagate
             "latent_loss": latent_loss.detach().item(),
+            "re_loss": re_loss.detach().item(),
             "recon_loss": {
                 key: value.detach().item()
                 for key, value in recon_loss_per_variable.items()
