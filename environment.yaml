@@ -251,3 +251,4 @@ dependencies:
       - overrides==7.7.0
       - pyasn1_modules==0.4.1
       - pre-commit==4.2.0
+      - torchtyping==0.1.5

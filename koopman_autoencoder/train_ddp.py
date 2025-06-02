@@ -77,6 +77,7 @@ def main_worker(rank, world_size, cfg):
     criterion = KoopmanLoss(
         alpha=cfg.loss.alpha,
         beta=cfg.loss.beta,
+        re_weight=cfg.loss.re_weight,
         weighting_type=cfg.loss.weighting_type,
         sigma_blur=cfg.loss.sigma_blur,
     )

@@ -62,6 +62,7 @@ def main(config_path):
     criterion = KoopmanLoss(
         alpha=config["loss"]["alpha"],
         beta=config["loss"]["beta"],
+        re_weight=config["loss"]["re_weight"],
         weighting_type=config["loss"]["weighting_type"],
         sigma_blur=config["loss"]["sigma_blur"],
     )

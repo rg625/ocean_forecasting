@@ -95,12 +95,7 @@ class Trainer:
         losses = self.criterion(
             out.x_recon, out.x_preds, out.z_preds, input[:, -1], target, out.reynolds
         )
-        loss = losses["total_loss"]
-        re_loss = losses["re_loss"]
-
-        # Backward pass
-        total_loss = loss + re_loss if re_loss is not None else loss
-        total_loss.backward()
+        losses["total_loss"].backward()
 
         self.optimizer.step()
 
