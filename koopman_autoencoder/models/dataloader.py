@@ -53,6 +53,20 @@ class QGDatasetBase(Dataset):
             },
             batch_size=[],
         )
+        self.mins = TensorDict(
+            {
+                var: torch.tensor(np.min(self.data[var].values), dtype=torch.float32)
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+        self.maxs = TensorDict(
+            {
+                var: torch.tensor(np.max(self.data[var].values), dtype=torch.float32)
+                for var in self.variables
+            },
+            batch_size=[],
+        )
 
     def __len__(self):
         return (
@@ -133,6 +147,20 @@ class QGDatasetQuantile(QGDatasetBase):
 
         self.stacked_data, self.q_lows, self.q_highs = self.quantile_normalize(
             raw_data, quantile_range=self.quantile_range
+        )
+        self.mins = TensorDict(
+            {
+                var: torch.tensor(np.min(self.data[var].values), dtype=torch.float32)
+                for var in self.variables
+            },
+            batch_size=[],
+        )
+        self.maxs = TensorDict(
+            {
+                var: torch.tensor(np.max(self.data[var].values), dtype=torch.float32)
+                for var in self.variables
+            },
+            batch_size=[],
         )
 
     @staticmethod
@@ -345,6 +373,23 @@ class DataLoaderWrapper(DataLoader):
             return self.dataset.denormalize(x)
         else:
             raise AttributeError("The dataset does not have a `denormalize` method.")
+
+    def to_unit_range(self, x: TensorDict) -> TensorDict:
+        """
+        Maps variables in the given TensorDict to the [0, 1] range using dataset-wide min/max values.
+        """
+        if not hasattr(self.dataset, "mins") or not hasattr(self.dataset, "maxs"):
+            raise AttributeError("Dataset does not have `mins` or `maxs` attributes.")
+
+        scaled = {}
+        for var, tensor in x.items():
+            if var in ["seq_length", "Re"]:
+                scaled[var] = tensor  # passthrough
+                continue
+            min_val = self.dataset.mins[var].to(tensor.device)
+            max_val = self.dataset.maxs[var].to(tensor.device)
+            scaled[var] = (tensor - min_val) / (max_val - min_val + 1e-8)
+        return TensorDict(scaled, batch_size=x.batch_size)
 
 
 def custom_collate_fn(batch):

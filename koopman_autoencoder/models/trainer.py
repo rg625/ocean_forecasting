@@ -117,9 +117,12 @@ class Trainer:
         if self.eval_metrics:
             target_denorm = self.train_loader.denormalize(target)
             preds_denorm = self.train_loader.denormalize(out.x_preds)
-            metric_value = self.eval_metrics.compute_distance(
-                target_denorm, preds_denorm
-            )
+
+            # Map both to [0, 1] using dataset min/max
+            target_unit = self.train_loader.dataset.to_unit_range(target_denorm)
+            preds_unit = self.train_loader.dataset.to_unit_range(preds_denorm)
+
+            metric_value = self.eval_metrics.compute_distance(target_unit, preds_unit)
             losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
                 float(np.mean(metric_value))
             )
