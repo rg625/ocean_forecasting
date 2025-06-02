@@ -24,6 +24,8 @@
 *.cfg
 *.mp4
 *.csv
+*.out
+*.err
 
 
 wget-log
