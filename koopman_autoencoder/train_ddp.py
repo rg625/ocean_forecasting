@@ -31,6 +31,9 @@ def main_worker(rank, world_size, cfg):
 
     # Initialize W&B only on rank 0
     if rank == 0:
+        import os
+        if "WANDB_API_KEY" not in os.environ:
+            wandb.login(key="your_api_key_here")  # or raise an error explicitly
         wandb.init(
             project="koopman-autoencoder",
             config=OmegaConf.to_container(cfg, resolve=True),

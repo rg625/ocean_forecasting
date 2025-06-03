@@ -109,9 +109,10 @@ class Trainer:
             f"parameter_norms/{name}": param.norm(2).item()
             for name, param in self.model.named_parameters()
         }
-
-        wandb.log(grad_norms)
-        wandb.log(param_norms)
+        
+        if torch.distributed.get_rank() == 0:
+            wandb.log(grad_norms)
+            wandb.log(param_norms)
 
         # Compute evaluation metric if available
         if self.eval_metrics:
@@ -119,8 +120,8 @@ class Trainer:
             preds_denorm = self.train_loader.denormalize(out.x_preds)
 
             # Map both to [0, 1] using dataset min/max
-            target_unit = self.train_loader.dataset.to_unit_range(target_denorm)
-            preds_unit = self.train_loader.dataset.to_unit_range(preds_denorm)
+            target_unit = self.train_loader.to_unit_range(target_denorm)
+            preds_unit = self.train_loader.to_unit_range(preds_denorm)
 
             metric_value = self.eval_metrics.compute_distance(target_unit, preds_unit)
             losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
@@ -247,7 +248,8 @@ class Trainer:
                 wandb_log_dict[f"loss/{mode}/{key}"] = value
 
         # Log to W&B
-        wandb.log(wandb_log_dict)
+        if torch.distributed.get_rank() == 0:
+            wandb.log(wandb_log_dict)
 
     def plot_training_history(self):
         """

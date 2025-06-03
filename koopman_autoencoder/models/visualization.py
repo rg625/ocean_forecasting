@@ -65,7 +65,8 @@ def plot_comparison(
 
         filename = output_dir / f"{title}_{var}.png"
         plt.savefig(filename, dpi=150)
-        wandb.log({f"figures/{mode}/{title}_{var}": wandb.Image(str(filename))})
+        if torch.distributed.get_rank() == 0:
+            wandb.log({f"figures/{mode}/{title}_{var}": wandb.Image(str(filename))})
         plt.close()
 
 
@@ -153,7 +154,8 @@ def plot_energy_spectrum(
         plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
 
         # Log to W&B
-        wandb.log({f"figures/{mode}/energy_spectrum": wandb.Image(str(filename))})
+        if torch.distributed.get_rank() == 0:
+            wandb.log({f"figures/{mode}/energy_spectrum": wandb.Image(str(filename))})
 
     plt.close()
 
@@ -187,7 +189,8 @@ def compute_re(
         ]  # indexed to ony show one sample per batch
         Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re - pred_Re)
         # Log to W&B
-        wandb.log(Re_logs)
+        if torch.distributed.get_rank() == 0:
+            wandb.log(Re_logs)
 
 
 def denormalize_and_visualize(
