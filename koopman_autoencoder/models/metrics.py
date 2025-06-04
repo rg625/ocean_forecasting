@@ -46,7 +46,7 @@ class Metric(nn.Module):
             Tensor of shape [B, T] with per-frame distances
         """
         assert ref.shape == other.shape
-        B, T, H, W = ref.shape
+        B, T, H, W = ref.shape if ref.ndim == 4 else [1, *ref.shape]
 
         ref_np = (ref * 255).clamp(0, 255).byte().cpu().numpy()
         other_np = (other * 255).clamp(0, 255).byte().cpu().numpy()

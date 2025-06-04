@@ -275,9 +275,10 @@ class KoopmanAutoencoder(nn.Module):
         z = self.encode(x)
         z_pred = z
         z_preds = [z]
+        seq_length = seq_length[0] if isinstance(seq_length, Tensor) else seq_length
 
         # Roll out predictions for the given sequence length
-        for _ in range(seq_length[0]):
+        for _ in range(seq_length):
             z_pred = self.predict_latent(z_pred)
             z_preds.append(z_pred)
 
