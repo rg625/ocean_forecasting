@@ -5,6 +5,11 @@ from pathlib import Path
 from tensordict import TensorDict
 from torch import Tensor
 import torch
+import torch.distributed as dist
+
+
+def is_main_process() -> bool:
+    return not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
 
 
 def plot_comparison(
@@ -65,7 +70,7 @@ def plot_comparison(
 
         filename = output_dir / f"{title}_{var}.png"
         plt.savefig(filename, dpi=150)
-        if torch.distributed.get_rank() == 0:
+        if is_main_process():
             wandb.log({f"figures/{mode}/{title}_{var}": wandb.Image(str(filename))})
         plt.close()
 
@@ -154,7 +159,7 @@ def plot_energy_spectrum(
         plt.savefig(filename, dpi=150)  # High DPI for better quality in W&B
 
         # Log to W&B
-        if torch.distributed.get_rank() == 0:
+        if is_main_process():
             wandb.log({f"figures/{mode}/energy_spectrum": wandb.Image(str(filename))})
 
     plt.close()
@@ -189,7 +194,7 @@ def compute_re(
         ]  # indexed to ony show one sample per batch
         Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re - pred_Re)
         # Log to W&B
-        if torch.distributed.get_rank() == 0:
+        if is_main_process():
             wandb.log(Re_logs)
 
 

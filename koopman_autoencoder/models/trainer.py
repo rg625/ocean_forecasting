@@ -3,6 +3,7 @@ import numpy as np
 from torch import Tensor
 from torch.optim import Optimizer
 from tensordict import TensorDict
+import torch.distributed as dist
 import matplotlib.pyplot as plt
 from pathlib import Path
 import yaml
@@ -73,6 +74,12 @@ class Trainer:
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True)
 
+    @staticmethod
+    def is_main_process() -> bool:
+        return (
+            not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+        )
+
     def train_step(self, input: TensorDict, target: TensorDict):
         """
         Performs a single training step.
@@ -109,8 +116,8 @@ class Trainer:
             f"parameter_norms/{name}": param.norm(2).item()
             for name, param in self.model.named_parameters()
         }
-        
-        if torch.distributed.get_rank() == 0:
+
+        if self.is_main_process():
             wandb.log(grad_norms)
             wandb.log(param_norms)
 
@@ -248,7 +255,7 @@ class Trainer:
                 wandb_log_dict[f"loss/{mode}/{key}"] = value
 
         # Log to W&B
-        if torch.distributed.get_rank() == 0:
+        if self.is_main_process():
             wandb.log(wandb_log_dict)
 
     def plot_training_history(self):
