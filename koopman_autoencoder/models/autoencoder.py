@@ -205,8 +205,6 @@ class KoopmanAutoencoder(nn.Module):
         Returns:
             Tensor: Latent representation.
         """
-        self.vars = list(x.keys())  # Save the variable names
-
         # Stack variables along the channel dimension for history
         history_list = [
             x[var][:, :-1].unsqueeze(2) for var in self.vars
@@ -225,23 +223,40 @@ class KoopmanAutoencoder(nn.Module):
 
         return latent_history + latent_present
 
-    def decode(self, x: Tensor):
+    def decode(self, x: Tensor, obstacle_mask: Optional[torch.Tensor] = None):
         """
         Decode the latent representation back to the input space.
 
         Parameters:
-            x: TensorDict
-                TensorDict of shape (batch_size, latent_dim).
-        Returns:
-            TensorDict: Updated TensorDict with reconstructed variables.
-        """
-        # Decode the latent representation
-        reconstructed = self.decoder(
-            x
-        )  # Shape: (batch_size, channels * seq_length, height, width)
+            x: Tensor
+                Latent representation of shape (batch_size, latent_dim).
+            obstacle_mask: Optional[Tensor]
+                Mask tensor of shape (1, H, W) or (B, H, W) to zero out obstacle regions.
 
+        Returns:
+            TensorDict: Decoded output per variable, masked if obstacle_mask is provided.
+        """
+        reconstructed = self.decoder(x)  # (B, C, H, W)
+
+        if obstacle_mask is not None:
+            # Ensure shape is (B, 1, H, W) for broadcasting
+            if obstacle_mask.ndim == 3:  # (B, H, W)
+                obstacle_mask = obstacle_mask.unsqueeze(1)
+            elif obstacle_mask.ndim == 2:  # (H, W)
+                obstacle_mask = obstacle_mask.unsqueeze(0).unsqueeze(0)
+            elif obstacle_mask.ndim == 4:  # already (B, 1, H, W)
+                pass
+            else:
+                raise ValueError(
+                    f"Unexpected obstacle_mask shape: {obstacle_mask.shape}"
+                )
+
+            reconstructed = reconstructed * obstacle_mask
+
+        # Split into per-variable tensors
+        var_count = len(self.vars)
         return TensorDict(
-            {self.vars[i]: reconstructed[:, i] for i in range(len(self.vars))},
+            {self.vars[i]: reconstructed[:, i] for i in range(var_count)},
             batch_size=x.size(0),
         )
 
@@ -272,6 +287,8 @@ class KoopmanAutoencoder(nn.Module):
             tuple: (reconstructed input, predictions, latent predictions, reynolds estimate)
         """
         # Encode the input
+        self.vars = [k for k in x.keys() if k != "obstacle_mask"]
+        obstacle_mask = x.get("obstacle_mask", None)
         z = self.encode(x)
         z_pred = z
         z_preds = [z]
@@ -283,17 +300,20 @@ class KoopmanAutoencoder(nn.Module):
             z_preds.append(z_pred)
 
         # Decode predictions
-        x_recon = self.decode(z_preds[0])  # Reconstruction from initial z
-        # Construct x_preds as a TensorDict, stacking along the seq_length dimension
+        x_recon = self.decode(z_preds[0], obstacle_mask=obstacle_mask)
+
         x_preds = TensorDict(
             {
                 key: torch.stack(
-                    [self.decode(z_step)[key] for z_step in z_preds[1:]],
-                    dim=1,  # Stack along the seq_length dimension
+                    [
+                        self.decode(z_step, obstacle_mask=obstacle_mask)[key]
+                        for z_step in z_preds[1:]
+                    ],
+                    dim=1,
                 )
                 for key in self.vars
             },
-            batch_size=[x.shape[0]],  # Maintain batch size consistency
+            batch_size=[x.shape[0]],
         )
 
         # Compute latent prediction differences

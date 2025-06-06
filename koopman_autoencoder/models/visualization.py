@@ -6,6 +6,9 @@ from tensordict import TensorDict
 from torch import Tensor
 import torch
 import torch.distributed as dist
+import seaborn as sns
+
+cmap = sns.color_palette("icefire", as_cmap=True)
 
 
 def is_main_process() -> bool:
@@ -29,7 +32,7 @@ def plot_comparison(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for var in x.keys():
-        if var in ["seq_length", "Re"]:
+        if var in ["seq_length", "Re", "obstacle_mask"]:
             continue
         x_var = x[var][0]  # shape: (T, H, W)
         x_recon_var = x_recon[var][0]  # shape: (T, H, W)
@@ -47,13 +50,13 @@ def plot_comparison(
             error = true_img - recon_img
 
             ax = axes[t, 0]
-            mat = ax.matshow(true_img, cmap="RdBu_r")
+            mat = ax.matshow(true_img, cmap=cmap)
             ax.set_title(f"True {var}, t={t}")
             ax.axis("off")
             plt.colorbar(mat, ax=ax, fraction=0.046, pad=0.04).set_label("Intensity")
 
             ax = axes[t, 1]
-            mat = ax.matshow(recon_img, cmap="RdBu_r")
+            mat = ax.matshow(recon_img, cmap=cmap)
             ax.set_title(f"Recon {var}, t={t}")
             ax.axis("off")
             plt.colorbar(mat, ax=ax, fraction=0.046, pad=0.04).set_label("Intensity")
@@ -135,7 +138,7 @@ def plot_energy_spectrum(
     plt.figure(figsize=(12, 6))  # Adjusted size for better readability in W&B
 
     for var in variables:
-        if var in ["seq_length", "Re"]:
+        if var in ["seq_length", "Re", "obstacle_mask"]:
             continue
         # Compute isotropic energy spectrum for each variable
         k_bins, true_spec = compute_isotropic_energy_spectrum(true_fields[var])
