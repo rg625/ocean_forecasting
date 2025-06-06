@@ -1,7 +1,7 @@
 import torch
 from torch import nn, Tensor, device
 from tensordict import TensorDict
-from einops import reduce, rearrange
+from einops import reduce, rearrange, repeat
 from torchvision.transforms import GaussianBlur
 
 
@@ -157,8 +157,7 @@ class KoopmanLoss(nn.Module):
 
     @staticmethod
     def re(input: Tensor, predicted: Tensor):
-
-        input_expanded = rearrange(input, "b -> b 1 1")
+        input_expanded = repeat(input, 'b -> b t 1', t=predicted.shape[1])
 
         # Assert shapes are compatible
         assert (
