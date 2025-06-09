@@ -8,3 +8,4 @@ from .loss import KoopmanLoss as KoopmanLoss
 from .lr_schedule import CosineWarmup as CosineWarmup
 from .metrics import Metric as Metric
 from .cnn import TransformerConfig as TransformerConfig
+from .config_classes import Config as Config

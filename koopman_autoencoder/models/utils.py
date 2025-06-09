@@ -1,12 +1,19 @@
 from tensordict import TensorDict
 import torch
+from torch import nn
 from torch import Tensor
-from models.autoencoder import KoopmanAutoencoder
 from models.dataloader import QGDatasetBase, QGDatasetQuantile, MultipleSims
 from pathlib import Path
-from torch.optim import Optimizer
+import torch.optim as optim
 import yaml
-from typing import Any
+from typing import Dict, Any, Type, Tuple
+import logging
+from models.config_classes import Config
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 def tensor_dict_to_json(tensor_dict: TensorDict):
@@ -35,7 +42,7 @@ def tensor_dict_to_json(tensor_dict: TensorDict):
         )
 
 
-def accumulate_losses(total_losses: dict, losses: dict):
+def accumulate_losses(total_losses: dict, losses: dict) -> dict:
     """
     Accumulates losses over batches.
 
@@ -54,7 +61,7 @@ def accumulate_losses(total_losses: dict, losses: dict):
     return total_losses
 
 
-def average_losses(total_losses: dict, n_batches: int):
+def average_losses(total_losses: dict, n_batches: int) -> dict:
     """
     Averages the losses over the number of batches.
 
