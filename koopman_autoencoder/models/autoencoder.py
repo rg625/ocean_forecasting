@@ -75,6 +75,7 @@ class Re(nn.Module):
             nn.Linear(latent_dim, latent_dim),
             nn.SiLU(),
             nn.Linear(latent_dim, 1),
+            nn.ReLU(),
         )
 
     def forward(self, z):
