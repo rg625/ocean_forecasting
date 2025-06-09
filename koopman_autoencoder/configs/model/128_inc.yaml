@@ -1,0 +1,64 @@
+output_dir: "model_outputs/random"
+ckpt: null
+log_epoch: 20
+
+data:
+  data_dir: "./data"
+  train_file: "acdm/128_inc/train.nc"
+  val_file: "acdm/128_inc/val.nc"
+  test_file: "acdm/128_inc/test.nc"
+  input_sequence_length: 2
+  max_sequence_length: 10
+  # Add this line:
+  dataset_type: "MultipleSims" # Or "QGDatasetBase", "QGDatasetQuantile" depending on your data
+  normalization:
+    type: "diff"
+    sim: 0
+  # quantile_range will use its default value if not specified
+
+metric:
+  type: "SSIM"
+  variable_mode: "all"
+  variable_name: null
+
+model:
+  height: 64
+  width: 128
+  input_channels: 3
+  hidden_dims:
+    - 64
+    - 128
+    - 64
+  block_size: 2
+  kernel_size: 3
+  conv_kwargs:
+    padding: 1
+    padding_mode: "circular"
+  latent_dim: 1024
+  transformer:
+    num_layers: 4
+    nhead: 8
+    ff_mult: 4
+    max_len: 1000
+    dropout: 0.1
+  predict_re: True
+
+training:
+  batch_size: 20
+  random_sequence_length: False
+  num_epochs: 1000
+  patience: 1000
+  use_checkpoint: True
+
+lr_scheduler:
+  lr: 1.0e-4
+  warmup: 500
+  decay: 10000
+  final_lr: 1.0e-5
+
+loss:
+  alpha: 1.0
+  beta: 1.0
+  re_weight: 1.0
+  weighting_type: cosine
+  sigma_blur: null
