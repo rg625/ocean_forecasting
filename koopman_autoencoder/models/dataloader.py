@@ -55,28 +55,47 @@ class QGDatasetBase(Dataset):
             raise ValueError("input_sequence_length must be a positive integer.")
         if not isinstance(max_sequence_length, int) or max_sequence_length <= 0:
             raise ValueError("max_sequence_length must be a positive integer.")
-        if input_sequence_length + max_sequence_length > len(
-            self.data.sizes.get("t", [])
-        ):
+
+        # Check for time dimension length validity
+        time_dim_length = self.data.sizes.get(
+            "t", 0
+        )  # Get 't' dimension size, default to 0 if not found
+        if input_sequence_length + max_sequence_length > time_dim_length:
             logger.warning(
                 f"Combined sequence length ({input_sequence_length + max_sequence_length}) "
-                f"exceeds available time steps ({len(self.data.sizes.get('t', []))}). "
+                f"exceeds available time steps ({time_dim_length}). "
                 "This might lead to an empty dataset or errors."
             )
 
         self.input_sequence_length = input_sequence_length
         self.max_sequence_length = max_sequence_length
 
+        # Determine the variables to use for normalization and model input
         if variables is None:
-            self.variables = list(self.data.data_vars.keys())
+            # If no specific variables are provided, use all data variables initially
+            all_dataset_vars = list(self.data.data_vars.keys())
         else:
+            # If variables are provided, ensure they exist in the dataset
             invalid_vars = [var for var in variables if var not in self.data.data_vars]
             if invalid_vars:
                 raise ValueError(f"Variables not found in dataset: {invalid_vars}")
-            self.variables = variables
+            all_dataset_vars = variables
+
+        # --- CRITICAL FIX HERE: Filter out 'obstacle_mask' from variables for normalization ---
+        # The 'self.variables' attribute should only contain variables that are
+        # part of the model's input_channels (i.e., 'p', 'v_x', 'v_y').
+        # 'obstacle_mask' is handled separately as a mask, not a data channel.
+        self.variables = [var for var in all_dataset_vars if var != "obstacle_mask"]
+
+        # Check if 'obstacle_mask' is present in the dataset at all, regardless of 'self.variables'
+        # This is for potential later access (e.g., in MultipleSims or by the model)
+        self.obstacle_mask_present_in_dataset = "obstacle_mask" in self.data.data_vars
 
         if not self.variables:
-            raise ValueError("No variables selected or found in the dataset.")
+            raise ValueError(
+                "No data variables selected or found after filtering. "
+                "Ensure at least one non-'obstacle_mask' variable is present or specified."
+            )
 
         self._normalize()  # perform normalization
 
@@ -89,14 +108,14 @@ class QGDatasetBase(Dataset):
         self.means = TensorDict(
             {
                 var: torch.tensor(np.mean(self.data[var].values), dtype=torch.float32)
-                for var in self.variables
+                for var in self.variables  # Only normalize the actual data variables
             },
             batch_size=[],
         )
         self.stds = TensorDict(
             {
                 var: torch.tensor(np.std(self.data[var].values), dtype=torch.float32)
-                for var in self.variables
+                for var in self.variables  # Only normalize the actual data variables
             },
             batch_size=[],
         )
@@ -118,14 +137,14 @@ class QGDatasetBase(Dataset):
         self.mins = TensorDict(
             {
                 var: torch.tensor(np.min(self.data[var].values), dtype=torch.float32)
-                for var in self.variables
+                for var in self.variables  # Only mins/maxs for data variables
             },
             batch_size=[],
         )
         self.maxs = TensorDict(
             {
                 var: torch.tensor(np.max(self.data[var].values), dtype=torch.float32)
-                for var in self.variables
+                for var in self.variables  # Only mins/maxs for data variables
             },
             batch_size=[],
         )
@@ -134,10 +153,11 @@ class QGDatasetBase(Dataset):
         """
         Returns the total number of possible input-target sequence pairs.
         """
-        if not self.stacked_data:
+        if not self.stacked_data or not self.variables:
             return 0
 
-        # Assume all variables have the same time dimension length
+        # Assume all variables have the same time dimension length, use the first one
+        # to determine dataset length for sequence sampling.
         time_dim_length = next(iter(self.stacked_data.values())).shape[0]
 
         # Ensure there's enough data for at least one sequence
@@ -167,13 +187,11 @@ class QGDatasetBase(Dataset):
             start_idx = idx
             target_length = self.max_sequence_length
 
-        # Basic bounds checking for start_idx and target_length
         if not (0 <= start_idx < len(self)):
             raise IndexError(
                 f"Index {start_idx} out of bounds for dataset length {len(self)}."
             )
 
-        # Calculate available time steps for target sequence
         current_time_dim_length = next(iter(self.stacked_data.values())).shape[0]
         max_possible_target_length = (
             current_time_dim_length - start_idx - self.input_sequence_length
@@ -193,15 +211,18 @@ class QGDatasetBase(Dataset):
                 "Check input/max sequence lengths relative to data."
             )
 
+        # Get input sequence for the defined data variables
         input_seq = TensorDict(
             {
                 var: self.stacked_data[var][
                     start_idx : start_idx + self.input_sequence_length
                 ]
-                for var in self.variables
+                for var in self.variables  # Use self.variables which now excludes 'obstacle_mask'
             },
             batch_size=[],
         )
+
+        # Get target sequence for the defined data variables
         target_seq = TensorDict(
             {
                 var: self.stacked_data[var][
@@ -210,11 +231,24 @@ class QGDatasetBase(Dataset):
                     + self.input_sequence_length
                     + target_length
                 ]
-                for var in self.variables
+                for var in self.variables  # Use self.variables which now excludes 'obstacle_mask'
             },
             batch_size=[],
         )
         target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
+
+        # If 'obstacle_mask' is present in the dataset, add it to input_seq as a separate entry.
+        # This ensures it's available to the model (e.g., for the decoder).
+        if self.obstacle_mask_present_in_dataset:
+            # In QGDatasetBase, obstacle_mask is assumed to be static across time.
+            # So, we take the entire mask if it's found in the original self.data.
+            # Make sure it's converted to a tensor.
+            input_seq["obstacle_mask"] = torch.tensor(
+                self.data["obstacle_mask"].values, dtype=torch.float32
+            )
+            # You might want to add obstacle_mask to target_seq too, depending on usage.
+            # For KoopmanAutoencoder, it's typically only needed with the input.
+
         return input_seq, target_seq
 
     def denormalize(self, x: TensorDict) -> TensorDict:
@@ -229,11 +263,20 @@ class QGDatasetBase(Dataset):
         """
         denormalized_data = {}
         for var, tensor in x.items():
-            if var == "seq_length":
-                denormalized_data[var] = tensor  # Pass through non-data variables
+            if var in [
+                "seq_length",
+                "Re",
+                "obstacle_mask",
+            ]:  # Pass through non-data variables
+                denormalized_data[var] = tensor
                 continue
 
-            if var not in self.means or var not in self.stds:
+            # Check against self.variables for means/stds, as those are the variables normalized
+            if (
+                var not in self.variables
+                or var not in self.means
+                or var not in self.stds
+            ):
                 logger.warning(
                     f"Denormalization: Variable '{var}' not found in stored means/stds. Passing through."
                 )
@@ -244,10 +287,8 @@ class QGDatasetBase(Dataset):
             means = self.means[var].to(device)
             stds = self.stds[var].to(device)
 
-            if stds.item() < EPS:  # Handle constant data during denormalization
-                denormalized_data[var] = means.expand_as(
-                    tensor
-                )  # All values become the mean
+            if stds.item() < EPS:
+                denormalized_data[var] = means.expand_as(tensor)
             else:
                 denormalized_data[var] = tensor * stds + means
         return TensorDict(denormalized_data, batch_size=x.batch_size)
@@ -301,6 +342,7 @@ class QGDatasetQuantile(QGDatasetBase):
         Normalizes each variable to the range [-1, 1] based on its specified quantile range.
         Handles constant data to prevent division by zero.
         """
+        # Ensure raw_data_td only contains the variables meant for normalization
         raw_data_td = TensorDict(
             {var: torch.FloatTensor(self.data[var].values) for var in self.variables},
             batch_size=[],
@@ -378,7 +420,7 @@ class QGDatasetQuantile(QGDatasetBase):
 
         denormalized_data = {}
         for var, tensor in tensor_dict.items():
-            if var == "seq_length":
+            if var in ["seq_length", "Re", "obstacle_mask"]:
                 denormalized_data[var] = tensor  # Pass through non-data variables
                 continue
 
@@ -417,6 +459,9 @@ class MultipleSims(QGDatasetBase):
         input_sequence_length: int = 2,
         max_sequence_length: int = 2,
         variables: Optional[List[str]] = None,
+        sim: Optional[
+            int
+        ] = None,  # Added 'sim' parameter for specific sim loading (e.g. for overfit)
     ):
         """
         Initializes the MultipleSims dataset.
@@ -427,7 +472,10 @@ class MultipleSims(QGDatasetBase):
             max_sequence_length (int): The maximum length of the target sequence to predict.
             variables (Optional[List[str]]): List of variables to load from the dataset.
                                              If None, all data variables will be used.
+            sim (Optional[int]): If provided, loads data only for this specific simulation index.
+                                 Useful for overfitting a single simulation.
         """
+        # Call super().__init__ first, which handles data loading and initial variable filtering
         super().__init__(
             data_path, input_sequence_length, max_sequence_length, variables
         )
@@ -436,7 +484,20 @@ class MultipleSims(QGDatasetBase):
             raise ValueError(
                 f"Dataset at {data_path} must have a 'sim' dimension for MultipleSims dataset."
             )
-        self.num_sims = self.data.sizes["sim"]
+
+        # If 'sim' is provided, override self.data to only keep the selected simulation
+        if sim is not None:
+            if not isinstance(sim, int) or sim < 0 or sim >= self.data.sizes["sim"]:
+                raise ValueError(
+                    f"Invalid 'sim' index provided: {sim}. Must be a non-negative integer within dataset bounds."
+                )
+            self.data = self.data.isel(sim=sim)
+            # Re-normalize with the filtered data if a specific sim is selected
+            # This is crucial because means/stds were computed over all sims initially
+            self._normalize()  # Re-run normalization for the single selected sim
+            self.num_sims = 1  # Only one simulation now
+        else:
+            self.num_sims = self.data.sizes["sim"]  # All simulations
 
         self.Re: Optional[torch.Tensor] = None
         if "Re" in self.data.variables:
@@ -447,22 +508,24 @@ class MultipleSims(QGDatasetBase):
                 logger.warning(
                     "Found 'Re' variable but no 'sim' dimension. It will be treated as a single value."
                 )
-                self.Re = torch.tensor(
-                    [self.data["Re"].values], dtype=torch.float32
-                )  # Wrap in a list for consistency
+                self.Re = torch.tensor([self.data["Re"].values], dtype=torch.float32)
         else:
             logger.info("Variable 'Re' not found in dataset.")
 
-        self.obstacle: Optional[torch.Tensor] = None
-        if "obstacle_mask" in self.data.variables:
-            # Obstacle mask is typically static across time and simulations
-            self.obstacle = torch.tensor(
-                self.data["obstacle_mask"].values, dtype=torch.float32
-            )
-        else:
-            logger.info(
-                "Variable 'obstacle_mask' not found in dataset. It will not be included."
-            )
+        # self.obstacle: Optional[torch.Tensor] = None
+        # if "obstacle_mask" in self.data.variables:
+        #    # Obstacle mask is typically static across time and simulations
+        #    self.obstacle = torch.tensor(
+        #        self.data["obstacle_mask"].values, dtype=torch.float32
+        #    )
+        # else:
+        #    logger.info(
+        #        "Variable 'obstacle_mask' not found in dataset. It will not be included."
+        #    )
+        # Note: obstacle_mask is now directly managed via self.obstacle_mask_present_in_dataset
+        # and accessed from self.data in __getitem__ of QGDatasetBase.
+        # This explicit self.obstacle attribute might be redundant or could be used to cache the tensor.
+        # Keeping it for now but noting the change in logic from QGDatasetBase.
 
         logger.info(f"Initialized MultipleSims with {self.num_sims} simulations.")
 
@@ -473,7 +536,7 @@ class MultipleSims(QGDatasetBase):
     def __len__(self):
         """
         Returns the total number of possible input-target sequence pairs across all simulations.
-        Assumes all simulations have the same number of time steps (len(self.data['t'])).
+        Assumes all simulations (or the single selected one) have the same number of time steps (len(self.data['t'])).
         If simulations have varying time steps, this method would need a more complex
         calculation (e.g., iterating through each sim's length).
         """
@@ -485,13 +548,17 @@ class MultipleSims(QGDatasetBase):
 
         time_dim_length = self.data.sizes["t"]
 
-        # Ensure there's enough data for at least one sequence
         if time_dim_length < self.input_sequence_length + self.max_sequence_length:
             return 0
 
-        return self.num_sims * (
+        # Number of possible starting points per simulation
+        possible_starts_per_sim = (
             time_dim_length - self.input_sequence_length - self.max_sequence_length + 1
         )
+        if possible_starts_per_sim <= 0:
+            return 0  # No valid sequences can be formed
+
+        return self.num_sims * possible_starts_per_sim
 
     def __getitem__(self, idx: Union[int, tuple]):
         """
@@ -518,112 +585,125 @@ class MultipleSims(QGDatasetBase):
             )
 
         # Calculate which simulation and index in the simulation to sample from
-        # Ensure 't' dimension exists for this calculation
-        if "t" not in self.data.sizes:
-            raise KeyError(
-                "Dataset missing 't' (time) dimension. Cannot index into simulations."
-            )
-
+        # Note: If self.num_sims is 1 (due to 'sim' parameter in __init__),
+        # sim_idx will always be 0.
         time_dim_length = self.data.sizes["t"]
-
-        # Number of possible starting points per simulation
         possible_starts_per_sim = (
             time_dim_length - self.input_sequence_length - self.max_sequence_length + 1
         )
+
+        # Avoid division by zero if no sequences can be formed in a sim
         if possible_starts_per_sim <= 0:
             raise ValueError(
-                f"Not enough time steps ({time_dim_length}) to form a sequence "
-                f"(input: {self.input_sequence_length}, max_target: {self.max_sequence_length})."
+                f"No valid sequences can be formed in a simulation of length {time_dim_length}."
             )
 
         sim_idx = global_idx // possible_starts_per_sim
         start_idx = global_idx % possible_starts_per_sim
 
-        # Basic bounds checking for start_idx and target_length for this specific simulation
+        # Ensure target_length fits within available data
         max_possible_target_length = (
             time_dim_length - start_idx - self.input_sequence_length
         )
-        if target_length > max_possible_target_length:
-            logger.warning(
-                f"Requested target_length ({target_length}) at sim {sim_idx}, start_idx {start_idx} "
-                f"exceeds available data ({max_possible_target_length}). "
-                "Adjusting target_length to maximum possible."
-            )
-            target_length = max_possible_target_length
+        target_length = min(
+            target_length, max_possible_target_length
+        )  # Cap target_length
 
         if target_length <= 0:
             raise ValueError(
                 f"Calculated target_length is {target_length} for sim {sim_idx}, start_idx {start_idx}. "
-                "Cannot create empty target sequence. Check input/max sequence lengths relative to data."
+                "Cannot create empty target sequence. Adjust input/max sequence lengths or data."
             )
 
-        # Get the input sequence
+        # Get input sequence (data variables only)
         input_data_dict = {}
-        for var in self.variables:
-            # Assuming 'obstacle_mask' is handled separately and not part of the standard variables for normalization
-            if var != "obstacle_mask":
-                if (
-                    "sim" in self.stacked_data[var].dims()
-                ):  # Check if it has a sim dimension at first axis
-                    input_data_dict[var] = self.stacked_data[var][
-                        sim_idx, start_idx : start_idx + self.input_sequence_length
-                    ]
-                else:  # Data that does not have a sim dimension (e.g. constant fields not in variables list or misconfigured)
-                    logger.warning(
-                        f"Variable '{var}' does not have a 'sim' dimension. Taking entire slice."
-                    )
-                    input_data_dict[var] = self.stacked_data[var][
-                        start_idx : start_idx + self.input_sequence_length
-                    ]
+        for (
+            var
+        ) in self.variables:  # self.variables now correctly excludes 'obstacle_mask'
+            tensor_for_var = self.stacked_data[var]  # Get the tensor from stacked_data
+
+            # Check if the tensor has enough dimensions AND if its first dimension
+            # (which would correspond to 'sim' if it's a per-sim variable)
+            # matches the expected number of simulations (self.num_sims) from the dataset.
+            # This is a more robust check for a 'sim' dimension in a Tensor.
+            if tensor_for_var.ndim > 0 and tensor_for_var.shape[0] == self.num_sims:
+                # Assume first dimension is 'sim', slice by sim_idx
+                input_data_dict[var] = tensor_for_var[
+                    sim_idx, start_idx : start_idx + self.input_sequence_length
+                ]
+            else:
+                # This branch handles variables that are NOT per-simulation (e.g., static fields without 'sim' dim)
+                # or variables that might have gotten incorrectly processed.
+                # In this case, we just slice along the time dimension (expected to be the first remaining dim).
+                logger.warning(
+                    f"Variable '{var}' does not appear to be per-simulation (shape {tensor_for_var.shape}). "
+                    "Slicing along the first dimension only."
+                )
+                input_data_dict[var] = tensor_for_var[
+                    start_idx : start_idx + self.input_sequence_length
+                ]
 
         input_seq = TensorDict(input_data_dict, batch_size=[])
 
-        if self.obstacle is not None:
-            input_seq["obstacle_mask"] = (
-                self.obstacle.clone()
-            )  # Ensure it's a clone if it's mutable and might be changed downstream
+        # Add obstacle_mask if it exists and is relevant to the dataset
+        if self.obstacle_mask_present_in_dataset:
+            # obstacle_mask is assumed to be static across time and simulations in its original form.
+            # If a specific 'sim' was selected in __init__, self.data would already be filtered.
+            input_seq["obstacle_mask"] = torch.tensor(
+                self.data["obstacle_mask"].values, dtype=torch.float32
+            )
 
-        # Get the target sequence (variable length)
+        # Get target sequence (data variables only)
         target_data_dict = {}
-        for var in self.variables:
-            if var != "obstacle_mask":
-                if "sim" in self.stacked_data[var].dims():
-                    target_data_dict[var] = self.stacked_data[var][
-                        sim_idx,
-                        start_idx
-                        + self.input_sequence_length : start_idx
-                        + self.input_sequence_length
-                        + target_length,
-                    ]
-                else:
-                    logger.warning(
-                        f"Variable '{var}' does not have a 'sim' dimension. Taking entire slice."
-                    )
-                    target_data_dict[var] = self.stacked_data[var][
-                        start_idx
-                        + self.input_sequence_length : start_idx
-                        + self.input_sequence_length
-                        + target_length,
-                    ]
+        for (
+            var
+        ) in self.variables:  # self.variables now correctly excludes 'obstacle_mask'
+            tensor_for_var = self.stacked_data[var]  # Get the tensor from stacked_data
 
+            # Apply the same logic as for input_seq
+            if tensor_for_var.ndim > 0 and tensor_for_var.shape[0] == self.num_sims:
+                target_data_dict[var] = tensor_for_var[
+                    sim_idx,
+                    start_idx
+                    + self.input_sequence_length : start_idx
+                    + self.input_sequence_length
+                    + target_length,
+                ]
+            else:
+                logger.warning(
+                    f"Variable '{var}' does not appear to be per-simulation (shape {tensor_for_var.shape}). "
+                    "Slicing along the first dimension only."
+                )
+                target_data_dict[var] = tensor_for_var[
+                    start_idx
+                    + self.input_sequence_length : start_idx
+                    + self.input_sequence_length
+                    + target_length,
+                ]
         target_seq = TensorDict(target_data_dict, batch_size=[])
 
         # Add metadata to the target TensorDict
         target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
+
+        # Add Reynolds number if present and relevant to the simulation
         if self.Re is not None:
             if sim_idx < len(self.Re):
-                target_seq["Re"] = self.Re[sim_idx].item()
+                # Ensure Re value is a scalar tensor. Using .item() then torch.tensor()
+                # makes it a 0-dim tensor, which is good.
+                target_seq["Re"] = torch.tensor(
+                    self.Re[sim_idx].item(), dtype=torch.float32
+                )
             else:
                 logger.warning(
                     f"Re index {sim_idx} out of bounds for self.Re. Skipping Re for this item."
                 )
                 target_seq["Re"] = torch.tensor(
                     0.0, dtype=torch.float32
-                )  # Default value if Re is missing for sim_idx
+                )  # Default value
         else:
             target_seq["Re"] = torch.tensor(
                 0.0, dtype=torch.float32
-            )  # Default value if Re is globally missing
+            )  # Default if Re not in dataset
 
         return input_seq, target_seq
 
@@ -641,10 +721,15 @@ class MultipleSims(QGDatasetBase):
         denormalized_data = {}
         for var, tensor in x.items():
             if var in ["seq_length", "Re", "obstacle_mask"]:
-                denormalized_data[var] = tensor  # Passthrough
+                denormalized_data[var] = tensor  # Passthrough non-data variables
                 continue
 
-            if var not in self.means or var not in self.stds:
+            # Check if variable was among the normalized ones
+            if (
+                var not in self.variables
+                or var not in self.means
+                or var not in self.stds
+            ):
                 logger.warning(
                     f"Denormalization: Variable '{var}' not found in stored means/stds. Passing through."
                 )
@@ -655,7 +740,7 @@ class MultipleSims(QGDatasetBase):
             means = self.means[var].to(device)
             stds = self.stds[var].to(device)
 
-            if stds.item() < EPS:  # Handle constant data during denormalization
+            if stds.item() < EPS:
                 denormalized_data[var] = means.expand_as(tensor)
             else:
                 denormalized_data[var] = tensor * stds + means
@@ -716,7 +801,6 @@ class BatchSampler(Sampler):
             if len(batch_indices) < self.batch_size and self.drop_last:
                 continue
 
-            # All samples in a batch will have the same target_length
             target_length = (
                 random.randint(1, self.max_sequence_length)
                 if self.random_sequence_length
@@ -834,7 +918,7 @@ def create_dataloaders(
     train_dataset: QGDatasetBase,
     val_dataset: QGDatasetBase,
     test_dataset: QGDatasetBase,
-    config: Any,
+    config: Any,  # This should be the Omegaconf Config object now
 ) -> tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]:
     """
     Creates standard PyTorch DataLoaders with custom BatchSampler and collate function.
@@ -843,14 +927,15 @@ def create_dataloaders(
         train_dataset (QGDatasetBase): Training dataset.
         val_dataset (QGDatasetBase): Validation dataset.
         test_dataset (QGDatasetBase): Test dataset.
-        config (Any): Configuration object containing training parameters like batch_size.
+        config (Any): Omegaconf Config object containing training parameters.
 
     Returns:
         tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]: Train, validation, and test DataLoaders.
     """
     try:
-        batch_size = config["training"]["batch_size"]
-        random_sequence_length = config["training"]["random_sequence_length"]
+        # Access config using dot notation since it's an Omegaconf object
+        batch_size = config.training.batch_size
+        random_sequence_length = config.training.random_sequence_length
     except KeyError as e:
         raise KeyError(f"Missing required key in config for dataloaders: {e}")
 
@@ -867,16 +952,16 @@ def create_dataloaders(
         batch_size=batch_size,
         max_sequence_length=val_dataset.max_sequence_length,
         random_sequence_length=random_sequence_length,
-        shuffle=True,  # Shuffle validation batches for consistency in reporting across runs if using partial validation
-        drop_last=True,  # Drop last for consistent batch sizes in validation too
+        shuffle=True,
+        drop_last=True,
     )
     test_batch_sampler = BatchSampler(
         dataset_size=len(test_dataset),
         batch_size=batch_size,
         max_sequence_length=test_dataset.max_sequence_length,
         random_sequence_length=random_sequence_length,
-        shuffle=False,  # Typically no shuffle for test set
-        drop_last=False,  # Don't drop last for test set to ensure all samples are evaluated
+        shuffle=False,
+        drop_last=False,
     )
 
     train_loader = DataLoaderWrapper(
@@ -896,7 +981,7 @@ def create_ddp_dataloaders(
     train_dataset: QGDatasetBase,
     val_dataset: QGDatasetBase,
     test_dataset: QGDatasetBase,
-    config: Any,
+    config: Any,  # This should be the Omegaconf Config object now
     rank: int = 0,
     world_size: int = 1,
 ) -> tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]:
@@ -907,7 +992,7 @@ def create_ddp_dataloaders(
         train_dataset (QGDatasetBase): Training dataset.
         val_dataset (QGDatasetBase): Validation dataset.
         test_dataset (QGDatasetBase): Test dataset.
-        config (Any): Configuration object containing training parameters like batch_size.
+        config (Any): Omegaconf Config object containing training parameters.
         rank (int): Current process rank (for DDP).
         world_size (int): Total number of processes (for DDP).
 
@@ -915,15 +1000,9 @@ def create_ddp_dataloaders(
         tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]: Train, validation, and test DDP DataLoaders.
     """
     try:
-        batch_size = config["training"]["batch_size"]
+        batch_size = config.training.batch_size  # Access using dot notation
     except KeyError as e:
         raise KeyError(f"Missing required key in config for DDP dataloaders: {e}")
-
-    # Note: DistributedSampler is mutually exclusive with batch_sampler.
-    # We pass the batch_size directly to DataLoader and let DistributedSampler handle indexing.
-    # Random sequence length per batch is not directly supported by DistributedSampler.
-    # If varying sequence length per sample within a batch is needed, logic must be in dataset's __getitem__
-    # with padding handled by collate_fn. For constant length per batch, it can be passed via __getitem__ if needed.
 
     train_sampler = DistributedSampler(
         train_dataset, num_replicas=world_size, rank=rank, shuffle=True
@@ -940,21 +1019,21 @@ def create_ddp_dataloaders(
         sampler=train_sampler,
         batch_size=batch_size,
         collate_fn=custom_collate_fn,
-        drop_last=True,  # Recommended for DDP to ensure uniform batch sizes
+        drop_last=True,
     )
     val_loader = DataLoaderWrapper(
         val_dataset,
         sampler=val_sampler,
         batch_size=batch_size,
         collate_fn=custom_collate_fn,
-        drop_last=False,  # Typically don't drop last for evaluation
+        drop_last=False,
     )
     test_loader = DataLoaderWrapper(
         test_dataset,
         sampler=test_sampler,
         batch_size=batch_size,
         collate_fn=custom_collate_fn,
-        drop_last=False,  # Typically don't drop last for evaluation
+        drop_last=False,
     )
 
     return train_loader, val_loader, test_loader

@@ -8,6 +8,8 @@ from datetime import datetime
 from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
 from omegaconf import OmegaConf
+from typing import Dict, List
+
 
 from models.cnn import TransformerConfig
 from models.autoencoder import KoopmanAutoencoder
@@ -32,6 +34,7 @@ def main_worker(rank, world_size, cfg):
     # Initialize W&B only on rank 0
     if rank == 0:
         import os
+
         if "WANDB_API_KEY" not in os.environ:
             wandb.login(key="your_api_key_here")  # or raise an error explicitly
         wandb.init(
@@ -98,7 +101,23 @@ def main_worker(rank, world_size, cfg):
         wandb.watch(model.module, log="all")
 
     start_epoch = 0
-    history = {}
+    history: Dict[str, Dict[str, List[float]]] = {
+        "total_loss": {"train": [], "val": []},
+        "latent_loss": {"train": [], "val": []},
+        "re_loss": {"train": [], "val": []},
+        "recon_loss_sum": {"train": [], "val": []},
+        "pred_loss_sum": {"train": [], "val": []},
+        # Assuming eval_metrics mode/variable_mode is constant or handled.
+        # This part assumes Metric is available and its mode/variable_mode are known.
+        # This requires the Metric object to be initialized *before* history is fully defined.
+        # A safer approach for initial history definition might be to define it simpler,
+        # and then build it up. Or pass the Metric object to the init function.
+        # For simplicity for now, let's assume the exact metric key.
+        "metric_key": {
+            "train": [],
+            "val": [],
+        },  # Replace "metric_key" with actual key, e.g., "SSIM_all"
+    }
 
     if cfg.ckpt is not None:
         if rank == 0:
