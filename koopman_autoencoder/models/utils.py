@@ -1,80 +1,55 @@
+# models/utils.py
 from tensordict import TensorDict
 import torch
-from torch import nn
-from torch import Tensor
-from models.dataloader import QGDatasetBase, QGDatasetQuantile, MultipleSims
+from torch import nn, Tensor
+from torch.optim import Optimizer
 from pathlib import Path
-import torch.optim as optim
 import yaml
-from typing import Dict, Any, Type, Tuple
+from typing import Dict, Any, Type, Tuple, Union
 import logging
-from models.config_classes import Config
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+# Re-importing locally to make this file self-contained and reflect fix
+from .config_classes import Config
+from .dataloader import (
+    QGDatasetBase,
+    QGDatasetMultiSim,
+    SingleSimOverfit,
+    AbstractNormalizer,
+    MeanStdNormalizer,
+    QuantileNormalizer,
 )
+
 logger = logging.getLogger(__name__)
 
 
-def tensor_dict_to_json(tensor_dict: TensorDict):
-    """
-    Convert a TensorDict or Tensor to a JSON-serializable dictionary or list.
-
-    Args:
-        tensor_dict (TensorDict or torch.Tensor): Input TensorDict or tensor.
-
-    Returns:
-        dict or list or scalar: JSON-serializable dictionary, list, or scalar.
-    """
-    if isinstance(tensor_dict, Tensor):
-        # Handle tensors: return as a Python scalar if it's a single value, otherwise convert to a list
-        return (
-            tensor_dict.item()
-            if tensor_dict.numel() == 1
-            else tensor_dict.cpu().numpy().tolist()
-        )
-    elif isinstance(tensor_dict, TensorDict):
-        # Handle TensorDict: recursively convert each item to JSON-serializable format
-        return {key: tensor_dict_to_json(value) for key, value in tensor_dict.items()}
-    else:
-        raise TypeError(
-            f"Unsupported type for tensor_dict_to_json: {type(tensor_dict)}"
-        )
+def tensor_dict_to_json(data: Union[TensorDict, Tensor]):
+    """Recursively converts a TensorDict or Tensor to JSON-serializable types."""
+    if isinstance(data, Tensor):
+        return data.item() if data.numel() == 1 else data.cpu().numpy().tolist()
+    if isinstance(data, TensorDict):
+        return {key: tensor_dict_to_json(value) for key, value in data.items()}
+    raise TypeError(f"Unsupported type for JSON conversion: {type(data)}")
 
 
-def accumulate_losses(total_losses: dict, losses: dict) -> dict:
-    """
-    Accumulates losses over batches.
-
-    Args:
-        total_losses: TensorDict to store accumulated losses.
-        losses: Current batch losses as a TensorDict.
-
-    Returns:
-        Updated total_losses TensorDict.
-    """
+def accumulate_losses(
+    total_losses: Dict[str, Tensor], losses: Dict[str, Tensor]
+) -> Dict[str, Tensor]:
+    """Accumulates loss values from a dictionary into a running total."""
     for key, value in losses.items():
+        if not isinstance(value, Tensor):
+            continue
         if key not in total_losses:
-            total_losses[key] = value
+            total_losses[key] = value.clone()
         else:
             total_losses[key] += value
     return total_losses
 
 
-def average_losses(total_losses: dict, n_batches: int) -> dict:
-    """
-    Averages the losses over the number of batches.
-
-    Args:
-        total_losses: TensorDict with accumulated losses.
-        n_batches: Total number of batches.
-
-    Returns:
-        TensorDict with averaged losses.
-    """
-    for key in total_losses.keys():
-        total_losses[key] /= n_batches
-    return total_losses
+def average_losses(total_losses: Dict[str, Tensor], n_batches: int) -> Dict[str, float]:
+    """Averages accumulated losses and converts to floats."""
+    if n_batches == 0:
+        return {k: 0.0 for k in total_losses}
+    return {key: (value / n_batches).item() for key, value in total_losses.items()}
 
 
 def load_config(config_path: str) -> Any:
@@ -82,92 +57,96 @@ def load_config(config_path: str) -> Any:
         return yaml.safe_load(f)
 
 
-def get_dataset_class_and_kwargs(
-    cfg: Config,
-) -> Tuple[Type[QGDatasetBase], Dict[str, Any]]:
-    """
-    Determines the dataset class and its specific kwargs based on Omegaconf config.
-    """
-    dataset_type = cfg.data.dataset_type
-    dataset_kwargs: Dict[str, Any] = {
-        "input_sequence_length": cfg.data.input_sequence_length,
-        "max_sequence_length": cfg.data.max_sequence_length,
-        "variables": cfg.data.variables,
+def get_dataset_class(dataset_type_str: str) -> Type[QGDatasetBase]:
+    """Maps a string from the config to an actual dataset class."""
+    class_map = {
+        "QGDatasetBase": QGDatasetBase,
+        "QGDatasetMultiSim": QGDatasetMultiSim,
+        "SingleSimOverfit": SingleSimOverfit,
     }
+    dataset_class = class_map.get(dataset_type_str)
+    if dataset_class is None:
+        raise ValueError(f"Unknown dataset_type: '{dataset_type_str}'")
+    return dataset_class
 
-    if dataset_type == "QGDatasetBase":
-        return QGDatasetBase, dataset_kwargs
-    elif dataset_type == "QGDatasetQuantile":
-        dataset_kwargs["quantile_range"] = cfg.data.quantile_range
-        return QGDatasetQuantile, dataset_kwargs
-    elif dataset_type == "MultipleSims":
-        return MultipleSims, dataset_kwargs
+
+def get_normalizer(cfg: Config) -> AbstractNormalizer:
+    """Instantiates a normalizer based on the config."""
+    norm_type = cfg.data.normalization.type
+    if norm_type == "MeanStdNormalizer":
+        return MeanStdNormalizer()
+    elif norm_type == "QuantileNormalizer":
+        return QuantileNormalizer(quantile_range=cfg.data.quantile_range)
     else:
-        raise ValueError(f"Unknown dataset_type: {dataset_type}")
+        raise ValueError(f"Unknown normalization type: '{norm_type}'")
 
 
-# In models/utils.py, inside the load_datasets function
-
-
-def load_datasets(
-    cfg: Config, dataset_class: Type[QGDatasetBase], dataset_kwargs: Dict[str, Any]
-) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
+def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
+    """
+    Loads the training, validation, and test datasets based on the provided config.
+    """
     base_data_dir = Path(cfg.data.data_dir)
-
-    train_data_path = base_data_dir / cfg.data.train_file
-    val_data_path = base_data_dir / cfg.data.val_file
-    test_data_path = base_data_dir / cfg.data.test_file
-
-    if not train_data_path.is_file():
-        raise FileNotFoundError(f"Train data file not found: {train_data_path}")
-    if not val_data_path.is_file():
-        raise FileNotFoundError(f"Validation data file not found: {val_data_path}")
-    if not test_data_path.is_file():
-        raise FileNotFoundError(f"Test data file not found: {test_data_path}")
-
     try:
-        # Change this line: Pass data_path as the first positional argument
-        train_dataset = dataset_class(str(train_data_path), **dataset_kwargs)
-        val_dataset = dataset_class(str(val_data_path), **dataset_kwargs)
-        test_dataset = dataset_class(str(test_data_path), **dataset_kwargs)
+        DatasetClass = get_dataset_class(cfg.data.dataset_type)
 
-        logger.info(f"Train dataset loaded from: {train_data_path}")
-        logger.info(f"Validation dataset loaded from: {val_data_path}")
-        logger.info(f"Test dataset loaded from: {test_data_path}")
+        # CORRECTED: Instead of using a helper dictionary, we pass all arguments
+        # as explicit keywords. This is unambiguous to the mypy type checker.
+        train_dataset = DatasetClass(
+            data_path=base_data_dir / cfg.data.train_file,
+            normalizer=get_normalizer(cfg),
+            input_sequence_length=cfg.data.input_sequence_length,
+            max_sequence_length=cfg.data.max_sequence_length,
+            variables=cfg.data.variables,
+        )
+        val_dataset = DatasetClass(
+            data_path=base_data_dir / cfg.data.val_file,
+            normalizer=get_normalizer(cfg),
+            input_sequence_length=cfg.data.input_sequence_length,
+            max_sequence_length=cfg.data.max_sequence_length,
+            variables=cfg.data.variables,
+        )
+        test_dataset = DatasetClass(
+            data_path=base_data_dir / cfg.data.test_file,
+            normalizer=get_normalizer(cfg),
+            input_sequence_length=cfg.data.input_sequence_length,
+            max_sequence_length=cfg.data.max_sequence_length,
+            variables=cfg.data.variables,
+        )
 
+        logger.info(
+            f"Successfully loaded datasets with type '{cfg.data.dataset_type}'."
+        )
         return train_dataset, val_dataset, test_dataset
-    except Exception as e:
-        logger.error(f"Failed to instantiate datasets. Error: {e}", exc_info=True)
-        raise RuntimeError(f"Dataset instantiation failed: {e}")
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        logger.error(f"Failed to load datasets: {e}", exc_info=True)
+        raise
 
 
 def load_checkpoint(
-    checkpoint_path: str, model: nn.Module, optimizer: optim.Optimizer
-) -> Tuple[nn.Module, optim.Optimizer, Dict[str, Any], int]:
+    checkpoint_path: str, model: nn.Module, optimizer: Optimizer
+) -> Tuple[nn.Module, Optimizer, Dict[str, Any], int]:
     """
-    Loads a model and optimizer state from a checkpoint.
-    Returns model, optimizer, history, and start_epoch.
+    Loads a model, optimizer, history, and start epoch from a checkpoint.
+    Returns the initial state if the checkpoint is not found.
     """
-    if not Path(checkpoint_path).is_file():
-        logger.warning(
-            f"Checkpoint file not found at: {checkpoint_path}. Starting training from scratch."
-        )
-        return model, optimizer, {}, 0  # Return initial state if checkpoint not found
+    cp_path = Path(checkpoint_path)
+    if not cp_path.is_file():
+        logger.warning(f"Checkpoint file not found: {cp_path}. Starting from scratch.")
+        return model, optimizer, {}, 0
 
     try:
-        # Load to CPU first to prevent CUDA memory issues if loading on different GPU setups
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(cp_path, map_location="cpu")
         model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        start_epoch = checkpoint.get("epoch", 0) + 1  # Start from the next epoch
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        start_epoch = checkpoint.get("epoch", -1) + 1
         history = checkpoint.get("history", {})
 
         logger.info(
-            f"Checkpoint loaded successfully from {checkpoint_path}. Resuming from epoch {start_epoch}."
+            f"Checkpoint loaded from {cp_path}. Resuming from epoch {start_epoch}."
         )
         return model, optimizer, history, start_epoch
     except Exception as e:
-        logger.error(f"Failed to load checkpoint from {checkpoint_path}: {e}")
-        # Decide if this should be a fatal error or fallback to training from scratch
-        # For critical checkpoint loading failures, it's safer to raise
-        raise RuntimeError(f"Critical error loading checkpoint: {e}")
+        logger.error(f"Failed to load checkpoint from {cp_path}: {e}", exc_info=True)
+        raise RuntimeError("Critical error loading checkpoint.") from e

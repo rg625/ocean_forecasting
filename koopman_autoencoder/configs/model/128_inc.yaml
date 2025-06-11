@@ -1,34 +1,39 @@
-output_dir: "model_outputs/random"
+# Top-level run configuration
+output_dir: "model_outputs/production_run"
 ckpt: null
 log_epoch: 20
 
+# Data configuration
 data:
+  dataset_type: "SingleSimOverfit" #  "QGDatasetMultiSim" # CORRECTED: Matches the actual class name.
   data_dir: "./data"
   train_file: "acdm/128_inc/train.nc"
   val_file: "acdm/128_inc/val.nc"
   test_file: "acdm/128_inc/test.nc"
   input_sequence_length: 2
   max_sequence_length: 10
-  # Add this line:
-  dataset_type: "MultipleSims" # Or "QGDatasetBase", "QGDatasetQuantile" depending on your data
+  # ADDED: This is now a required field for the model and dataloader.
+  # It maps variable names to their number of channels.
+  variables:
+    v_x: 1
+    v_y: 1
+    p: 1 # Example: assuming 3 single-channel variables.
   normalization:
-    type: "diff"
+    type: "MeanStdNormalizer" # CORRECTED: Must be a valid normalizer type.
     sim: 0
-  # quantile_range will use its default value if not specified
+  quantile_range: [2.5, 97.5]
 
+# Metric configuration
 metric:
-  type: "SSIM"
+  mode: "SSIM"
   variable_mode: "all"
-  variable_name: null
+  variable_name: null # Correctly null for 'all' mode.
 
+# Model architecture configuration
 model:
   height: 64
   width: 128
-  input_channels: 3
-  hidden_dims:
-    - 64
-    - 128
-    - 64
+  hidden_dims: [64, 128, 64]
   block_size: 2
   kernel_size: 3
   conv_kwargs:
@@ -42,23 +47,29 @@ model:
     max_len: 1000
     dropout: 0.1
   predict_re: True
+  re_grad_enabled: False # ADDED: Explicitly control regularization.
 
+# Training loop configuration
 training:
-  batch_size: 20
+  batch_size: 1
   random_sequence_length: False
   num_epochs: 1000
   patience: 1000
   use_checkpoint: True
+  save_latest_every: 1
+  num_visual_batches: 1
 
+# Learning rate scheduler configuration
 lr_scheduler:
   lr: 1.0e-4
   warmup: 500
   decay: 10000
   final_lr: 1.0e-5
 
+# Loss function configuration
 loss:
   alpha: 1.0
   beta: 1.0
   re_weight: 1.0
-  weighting_type: cosine
+  weighting_type: "cosine" # Enclosed in quotes for YAML consistency.
   sigma_blur: null

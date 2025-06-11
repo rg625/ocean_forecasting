@@ -1,12 +1,16 @@
+# models/config_classes.py
 from omegaconf import MISSING
 from typing import Dict, Any, Tuple, Optional, List
-from dataclasses import dataclass, field  # Import field for default_factory
+from dataclasses import dataclass, field
+from .cnn import (
+    TransformerConfig as ModelTransformerConfig,
+)  # Alias to avoid naming conflict
 
 
 @dataclass
 class NormalizationConfig:
-    type: str = MISSING
-    sim: int = 0  # Default to 0, or MISSING if always required
+    type: str = "MeanStdNormalizer"  # Default to a sensible choice
+    sim: int = 0
 
 
 @dataclass
@@ -18,8 +22,9 @@ class DataConfig:
     test_file: str = MISSING
     input_sequence_length: int = MISSING
     max_sequence_length: int = MISSING
-    variables: Optional[List[str]] = None
-    quantile_range: Tuple[float, float] = (2.5, 97.5)  # Default value
+    # A dictionary mapping variable names to their channel counts is crucial.
+    variables: Dict[str, int] = field(default_factory=dict)
+    quantile_range: Tuple[float, float] = (2.5, 97.5)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
 
 
@@ -33,8 +38,11 @@ class ModelConfig:
     kernel_size: int = MISSING
     conv_kwargs: Dict[str, Any] = field(default_factory=dict)
     latent_dim: int = MISSING
-    transformer: Dict[str, Any] = field(default_factory=dict)
+    # Use the specific TransformerConfig dataclass for type safety
+    transformer: ModelTransformerConfig = field(default_factory=ModelTransformerConfig)
     predict_re: bool = False
+    # Explicitly control if the Reynolds loss regularizes the main model.
+    re_grad_enabled: bool = False
 
 
 @dataclass
@@ -42,8 +50,10 @@ class TrainingConfig:
     batch_size: int = MISSING
     use_checkpoint: bool = False
     num_epochs: int = MISSING
-    patience: int = 10  # Default patience
+    patience: int = 10
     random_sequence_length: bool = True
+    save_latest_every: int = 1
+    num_visual_batches: int = 1
 
 
 @dataclass
@@ -52,7 +62,7 @@ class LossConfig:
     beta: float = MISSING
     re_weight: float = MISSING
     weighting_type: str = MISSING
-    sigma_blur: Optional[float] = None  # Changed from ~ to None directly
+    sigma_blur: Optional[float] = None
 
 
 @dataclass
@@ -65,7 +75,7 @@ class LRSchedulerConfig:
 
 @dataclass
 class MetricConfig:
-    type: str = MISSING
+    mode: str = MISSING
     variable_mode: str = MISSING
     variable_name: Optional[str] = None
 
@@ -73,12 +83,12 @@ class MetricConfig:
 @dataclass
 class Config:
     output_dir: str = MISSING
-    ckpt: Optional[str] = None  # Checkpoint path is optional
-    log_epoch: int = 1  # Default logging frequency
+    ckpt: Optional[str] = None
+    log_epoch: int = 1
 
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     loss: LossConfig = field(default_factory=LossConfig)
     lr_scheduler: LRSchedulerConfig = field(default_factory=LRSchedulerConfig)
-    metric: MetricConfig = field(default_factory=MetricConfig)
+    metric: Optional[MetricConfig] = None
