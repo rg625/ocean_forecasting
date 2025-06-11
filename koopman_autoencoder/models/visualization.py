@@ -195,7 +195,7 @@ def compute_re(
         Re_logs[f"figures/{mode}/pred_Re"] = pred_Re[
             0
         ]  # indexed to ony show one sample per batch
-        Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re - pred_Re)
+        Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re[:, 0] - pred_Re)
         # Log to W&B
         if is_main_process():
             wandb.log(Re_logs)
@@ -228,13 +228,13 @@ def denormalize_and_visualize(
         {
             key: value[:, -1].unsqueeze(1) for key, value in input.items()
         },  # Slice each tensor
-        batch_size=input.batch_size,
+        batch_size=input.batch_size[0],
     )
     est_to_recon = TensorDict(
         {
             key: value.unsqueeze(1) for key, value in x_recon.items()
         },  # Slice each tensor
-        batch_size=input.batch_size,
+        batch_size=input.batch_size[0],
     )
     plot_comparison(
         x=true_to_recon,
@@ -259,11 +259,11 @@ def denormalize_and_visualize(
             key: value[:, -1] if value.dim() > 1 else None
             for key, value in target.items()
         },
-        batch_size=target.batch_size,
+        batch_size=target.batch_size[0],
     )
     pred_fields = TensorDict(
         {key: value[:, -1] for key, value in x_preds.items()},
-        batch_size=x_preds.batch_size,
+        batch_size=x_preds.batch_size[0],
     )
     plot_energy_spectrum(
         true_fields=true_fields,

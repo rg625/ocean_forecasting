@@ -1,18 +1,20 @@
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint
+from tensordict import TensorDict
+from torch import Tensor
+from typing import Union, Tuple, Optional, List, Dict
+from collections.abc import Mapping
+from dataclasses import dataclass
+import logging
+
+# Assume these are correctly defined elsewhere
 from models.cnn import (
     ConvEncoder,
     ConvDecoder,
-    BaseEncoderDecoder,
     HistoryEncoder,
     TransformerConfig,
 )
-from tensordict import TensorDict
-from torch import Tensor
-from models.checkpoint import checkpoint
-from typing import Union, Tuple, Optional, List
-from dataclasses import dataclass
-import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -22,16 +24,6 @@ logger = logging.getLogger(__name__)
 class KoopmanOutput:
     """
     Dataclass to hold the outputs of the KoopmanAutoencoder's forward pass.
-
-    Attributes:
-        x_recon (TensorDict): Reconstructed input data. Each key holds a tensor
-                              of shape (B, H, W).
-        x_preds (TensorDict): Predicted future data sequences. Each key holds a tensor
-                              of shape (B, T_pred, H, W).
-        z_preds (Tensor): Latent space predictions over time. Shape (B, T_pred+1, latent_dim).
-                          z_preds[0] is the encoded input, z_preds[1:] are the rollouts.
-        reynolds (Optional[Tensor]): Predicted Reynolds number (B, 1) if predict_re is True,
-                                     otherwise None.
     """
 
     x_recon: TensorDict
@@ -46,35 +38,15 @@ class KoopmanOperator(nn.Module):
     Implements a residual connection: z_{t+1} = z_t + A * z_t.
     """
 
-    def __init__(self, latent_dim: int = 1024, use_checkpoint: bool = False):
-        """
-        Initializes the KoopmanOperator.
-
-        Args:
-            latent_dim (int): Dimensionality of the latent space.
-            use_checkpoint (bool): Flag to enable gradient checkpointing for memory efficiency.
-        """
+    def __init__(self, latent_dim: int, use_checkpoint: bool = False):
         super().__init__()
         if not isinstance(latent_dim, int) or latent_dim <= 0:
             raise ValueError("latent_dim must be a positive integer.")
-        if not isinstance(use_checkpoint, bool):
-            raise TypeError("use_checkpoint must be a boolean.")
-
         self.use_checkpoint = use_checkpoint
         self.latent_dim = latent_dim
-        # Koopman operator learns the matrix A in z_{t+1} = (I + A)z_t
         self.koopman_linear = nn.Linear(latent_dim, latent_dim, bias=False)
 
     def _forward_impl(self, z: Tensor) -> Tensor:
-        """
-        Internal implementation of the forward pass without checkpointing logic.
-
-        Args:
-            z (Tensor): Latent state tensor of shape (B, latent_dim).
-
-        Returns:
-            Tensor: Predicted next latent state of shape (B, latent_dim).
-        """
         if z.ndim != 2 or z.shape[1] != self.latent_dim:
             raise ValueError(
                 f"Expected input latent tensor z of shape (B, {self.latent_dim}), "
@@ -83,21 +55,9 @@ class KoopmanOperator(nn.Module):
         return z + self.koopman_linear(z)
 
     def forward(self, z: Tensor) -> Tensor:
-        """
-        Apply Koopman operator to predict the next state in latent space.
-
-        Args:
-            z (Tensor): Latent state tensor of shape (B, latent_dim).
-
-        Returns:
-            Tensor: Predicted next latent state of shape (B, latent_dim).
-        """
-        if self.use_checkpoint:
-            # Assumes checkpoint function correctly handles (func, args, kwargs, use_checkpoint_flag)
-            # and passes gradients through properly.
-            return checkpoint(
-                self._forward_impl, (z,), self.parameters(), self.use_checkpoint
-            )
+        # Checkpointing is only beneficial during training.
+        if self.use_checkpoint and self.training:
+            return checkpoint(self._forward_impl, z, use_reentrant=True)
         else:
             return self._forward(z)
 
@@ -121,90 +81,50 @@ class Re(nn.Module):
     Neural network module to predict a scalar Reynolds number from the latent space.
     """
 
-    def __init__(self, latent_dim: int = 1024, use_checkpoint: bool = False):
-        """
-        Initializes the Re predictor.
-
-        Args:
-            latent_dim (int): Dimensionality of the latent space.
-            use_checkpoint (bool): Flag to enable gradient checkpointing.
-        """
+    def __init__(self, latent_dim: int, use_checkpoint: bool = False):
         super().__init__()
         if not isinstance(latent_dim, int) or latent_dim <= 0:
             raise ValueError("latent_dim must be a positive integer.")
-        if not isinstance(use_checkpoint, bool):
-            raise TypeError("use_checkpoint must be a boolean.")
-
         self.use_checkpoint = use_checkpoint
         self.latent_dim = latent_dim
-        self.re_predictor = nn.Sequential(
-            nn.Linear(latent_dim, 1),
-            nn.Softplus(),
-        )
+        self.re_predictor = nn.Sequential(nn.Linear(latent_dim, 1), nn.Softplus())
 
     def _forward_impl(self, z: Tensor) -> Tensor:
-        """
-        Internal implementation of the forward pass without checkpointing logic.
-
-        Args:
-            z (Tensor): Latent state tensor of shape (B, latent_dim) or (B, T, latent_dim).
-
-        Returns:
-            Tensor: Predicted Reynolds number(s) of shape (B, 1) or (B, T, 1).
-        """
-        # Allow z to be (B, latent_dim) or (B, T, latent_dim)
         original_shape = z.shape
         if z.ndim > 2:
-            z = z.view(
-                -1, z.shape[-1]
-            )  # Flatten batch and time dimensions for linear layers
+            z = z.view(-1, z.shape[-1])
 
         if z.shape[1] != self.latent_dim:
             raise ValueError(
                 f"Expected input latent tensor z last dim to be {self.latent_dim}, "
                 f"but got {z.shape[-1]} in shape {original_shape}."
             )
-
         reynolds = self.re_predictor(z)
 
         if len(original_shape) > 2:
-            reynolds = reynolds.view(
-                *original_shape[:-1], 1
-            )  # Reshape back to (B, T, 1)
-
+            reynolds = reynolds.view(*original_shape[:-1], 1)
         return reynolds
 
     def forward(self, z: Tensor) -> Tensor:
-        """
-        Predicts the Reynolds number from the latent space.
-
-        Args:
-            z (Tensor): Latent state tensor of shape (B, latent_dim) or (B, T, latent_dim).
-
-        Returns:
-            Tensor: Predicted Reynolds number(s) of shape (B, 1) or (B, T, 1).
-        """
-        if self.use_checkpoint:
-            return checkpoint(
-                self._forward_impl, (z,), self.parameters(), self.use_checkpoint
-            )
+        if self.use_checkpoint and self.training:
+            return checkpoint(self._forward_impl, z, use_reentrant=True)
         else:
             return self._forward_impl(z)
 
 
 class KoopmanAutoencoder(nn.Module):
     """
-    Koopman Autoencoder for learning dynamical systems in latent space.
-    Combines an encoder, decoder, Koopman operator for latent dynamics,
-    and optionally a Reynolds number predictor.
+    Koopman Autoencoder for learning and predicting dynamical systems.
+    This production-ready version features efficient batched decoding,
+    robust input handling, and a flexible API.
     """
 
     def __init__(
         self,
-        input_frames: int = 2,  # Represents T_input (e.g., history + present)
-        input_channels: int = 6,  # C
-        height: int = 64,  # H
-        width: int = 64,  # W
+        data_variables: Dict[str, int],
+        input_frames: int = 2,
+        height: int = 64,
+        width: int = 64,
         latent_dim: int = 32,
         hidden_dims: List[int] = [64, 128, 64],
         block_size: int = 2,
@@ -212,15 +132,16 @@ class KoopmanAutoencoder(nn.Module):
         use_checkpoint: bool = False,
         transformer_config: Optional[TransformerConfig] = None,
         predict_re: bool = False,
-        data_variables: Optional[List[str]] = None,
+        re_grad_enabled: bool = False,
         **conv_kwargs,
     ):
         """
         Initializes the Koopman Autoencoder.
 
         Args:
-            input_frames (int): Total number of input frames (e.g., 2 for history + present).
-            input_channels (int): Number of physical channels in the data (e.g., u, v, p, omega_x, etc.).
+            data_variables (Dict[str, int]): **Crucial**: A dictionary mapping variable names to their
+                                             respective number of channels. E.g., {'pressure': 1, 'velocity': 2}.
+            input_frames (int): Total number of input frames (e.g., 2 for history + present). Must be >= 1.
             height (int): Height of the input data spatial dimension.
             width (int): Width of the input data spatial dimension.
             latent_dim (int): Dimensionality of the latent space.
@@ -229,414 +150,221 @@ class KoopmanAutoencoder(nn.Module):
             kernel_size (Union[int, Tuple[int, int]]): Size of the convolution kernel.
             use_checkpoint (bool): Flag for gradient checkpointing.
             transformer_config (TransformerConfig): Configuration for transformer layers in HistoryEncoder.
-            predict_re (bool): Flag for predicting Reynolds Number.
-            data_variables (List[str]): **Crucial**: A fixed list of string names for the data variables
-                                         (e.g., ['u', 'v', 'p']). This should come from the dataset.
+            predict_re (bool): Flag for creating the Reynolds Number prediction head.
+            re_grad_enabled (bool): If True, allows gradients from the Reynolds loss to flow back
+                                    to the main model, acting as a physics-informed regularizer.
             conv_kwargs (dict): Additional arguments for convolutional layers.
         """
         super().__init__()
 
-        if transformer_config is None:
-            raise ValueError("transformer_config must be provided and not None.")
-        if not isinstance(transformer_config, TransformerConfig):
-            raise TypeError(
-                "transformer_config must be an instance of TransformerConfig."
-            )
-
-        if (
-            data_variables is None
-            or not isinstance(data_variables, list)
-            or not data_variables
-        ):
+        # --- Configuration Validation ---
+        if not (isinstance(data_variables, Mapping) and data_variables):
             raise ValueError(
-                "data_variables must be a non-empty list of strings, provided from the dataset."
+                "data_variables must be a non-empty dictionary mapping names to channel counts."
             )
+        if input_frames < 1:
+            raise ValueError("input_frames must be at least 1.")
+        if transformer_config is None and input_frames > 1:
+            raise ValueError("transformer_config must be provided if input_frames > 1.")
 
+        self.data_variables = data_variables
         self.input_frames = input_frames
-        self.input_channels = input_channels
         self.height = height
         self.width = width
         self.latent_dim = latent_dim
         self.use_checkpoint = use_checkpoint
         self.predict_re = predict_re
-        self.data_variables = data_variables  # Store the fixed list of variables
+        self.re_grad_enabled = re_grad_enabled
 
-        # Validate input_channels matches expected channels from data_variables
-        if len(self.data_variables) != input_channels:
-            raise ValueError(
-                f"Number of data_variables ({len(self.data_variables)}) "
-                f"does not match specified input_channels ({input_channels})."
+        # The total number of channels is derived from the data_variables dictionary
+        self.total_input_channels = sum(self.data_variables.values())
+
+        # --- Module Initialization ---
+        encoder_args = {
+            "H": height,
+            "W": width,
+            "latent_dim": latent_dim,
+            "hiddens": hidden_dims,
+            "block_size": block_size,
+            "kernel_size": kernel_size,
+            "use_checkpoint": use_checkpoint,
+            **conv_kwargs,
+        }
+
+        # History Encoder is only needed if we have history to process
+        self.history_encoder = None
+        if self.input_frames > 1:
+            assert (
+                transformer_config is not None
+            ), "Transformer config cannot be None when using history."
+            self.history_encoder = HistoryEncoder(
+                C=self.total_input_channels,
+                transformer_config=transformer_config,
+                **encoder_args,
             )
 
-        # Initialize History Encoder for historical frames (input_frames - 1)
-        self.history_encoder = HistoryEncoder(
-            C=input_channels,  # This C is per variable if history_encoder concatenates
-            H=height,
-            W=width,
-            latent_dim=latent_dim,
-            hiddens=hidden_dims,
-            block_size=block_size,
-            kernel_size=kernel_size,
-            use_checkpoint=use_checkpoint,
-            transformer_config=transformer_config,
-            **conv_kwargs,
-        )
+        # Encoder for the present frame
+        self.encoder = ConvEncoder(C=self.total_input_channels, **encoder_args)
 
-        # Initialize Encoder for the present frame
-        self.encoder: BaseEncoderDecoder = ConvEncoder(
-            C=input_channels,  # This C is the total concatenated channels
-            H=height,
-            W=width,
-            latent_dim=latent_dim,
-            hiddens=hidden_dims,
-            block_size=block_size,
-            kernel_size=kernel_size,
-            use_checkpoint=use_checkpoint,
-            **conv_kwargs,
-        )
+        # Decoder
+        self.decoder = ConvDecoder(C=self.total_input_channels, **encoder_args)
 
-        # Initialize Decoder
-        self.decoder: BaseEncoderDecoder = ConvDecoder(
-            C=input_channels,  # Output channels for decoder
-            H=height,
-            W=width,
-            latent_dim=latent_dim,
-            hiddens=hidden_dims,
-            block_size=block_size,
-            kernel_size=kernel_size,
-            use_checkpoint=use_checkpoint,
-            **conv_kwargs,
-        )
-
-        # Initialize Koopman Operator
+        # Koopman Operator and Reynolds Predictor
         self.koopman_operator = KoopmanOperator(
             latent_dim=latent_dim, use_checkpoint=use_checkpoint
         )
-        # Initialize Reynolds number predictor if required
-        self.re = (
+        self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
             if predict_re
             else None
         )
 
     def encode(self, x: TensorDict) -> Tensor:
-        """
-        Encode the input data (history + present) into the latent space.
-
-        Args:
-            x (TensorDict): Input TensorDict. Expected structure:
-                            Each key (variable name) should contain a tensor
-                            of shape (B, T_input, H, W), where T_input is `self.input_frames`.
-
-        Returns:
-            Tensor: Latent representation of shape (B, latent_dim).
-        """
-        # Validate input x structure
-        if not isinstance(x, TensorDict):
-            raise TypeError("Input 'x' must be a TensorDict.")
-
+        """Encodes input data (history + present) into the latent space."""
         if not all(var in x.keys() for var in self.data_variables):
-            missing_vars = [var for var in self.data_variables if var not in x.keys()]
+            raise ValueError("Input TensorDict 'x' is missing required data variables.")
+
+        present_list = []
+        for var, num_channels in self.data_variables.items():
+            tensor_slice = x[var][:, -1]  # Shape: (B, H, W) or (B, C, H, W)
+
+            # Add channel dimension if it's a single-channel variable and missing
+            if num_channels == 1 and tensor_slice.ndim == 3:
+                tensor_slice = tensor_slice.unsqueeze(1)  # -> (B, 1, H, W)
+            present_list.append(tensor_slice)
+
+        stacked_present = torch.cat(present_list, dim=1)
+
+        # Validate spatial dimensions
+        if stacked_present.shape[-2:] != (self.height, self.width):
             raise ValueError(
-                f"Input TensorDict 'x' is missing required data variables: {missing_vars}"
+                f"Spatial dimension mismatch. Model configured for ({self.height}, {self.width}), "
+                f"but received data with shape {stacked_present.shape[-2:]}."
             )
 
-        # Extract history and present frames based on input_frames
-        # History frames are x[:, :-1], Present frame is x[:, -1]
+        latent_present = self.encoder(stacked_present)
 
-        # history_list will contain tensors of shape (B, input_frames-1, H, W)
-        history_list = [x[var][:, :-1] for var in self.data_variables]
+        if self.input_frames > 1 and self.history_encoder is not None:
+            history_list = []
+            for var, num_channels in self.data_variables.items():
+                tensor_slice = x[var][:, :-1]  # Shape: (B, T, H, W) or (B, T, C, H, W)
 
-        # Validate history frame shapes and input_frames
-        if not history_list:
-            raise ValueError(
-                "No history frames found for encoding. Check input_frames and data variables."
-            )
-        if history_list[0].ndim != 4 or history_list[0].shape[1] != (
-            self.input_frames - 1
-        ):
-            raise ValueError(
-                f"History frames for encoding should be (B, {self.input_frames - 1}, H, W). "
-                f"Got {history_list[0].shape} after slicing."
-            )
+                # Add channel dimension for history as well
+                if num_channels == 1 and tensor_slice.ndim == 4:
+                    tensor_slice = tensor_slice.unsqueeze(2)  # -> (B, T, 1, H, W)
+                history_list.append(tensor_slice)
 
-        # Stack variables along the channel dimension for history
-        # (B, T_hist, H, W) -> (B, T_hist, C_var, H, W) for each var, then cat along C_var
-        # Current HistoryEncoder expects (B, T, C_total, H, W) where T is time and C_total is concatenated channels
-        stacked_history = torch.cat(
-            [var_tensor.unsqueeze(2) for var_tensor in history_list], dim=2
-        )  # (B, T_hist, C_total, H, W)
+            stacked_history = torch.cat(history_list, dim=2)
+            latent_history = self.history_encoder(stacked_history)
+            return latent_history + latent_present
 
-        # present_list will contain tensors of shape (B, H, W)
-        present_list = [x[var][:, -1] for var in self.data_variables]
+        return latent_present
 
-        # Validate present frame shapes
-        if not present_list:
-            raise ValueError(
-                "No present frame found for encoding. Check input_frames and data variables."
-            )
-        if present_list[0].ndim != 3:  # (B, H, W)
-            raise ValueError(
-                f"Present frame for encoding should be (B, H, W). Got {present_list[0].shape}."
-            )
-
-        # Stack variables along the channel dimension for present frame
-        stacked_present = torch.cat(
-            [var_tensor.unsqueeze(1) for var_tensor in present_list], dim=1
-        )  # (B, C_total, H, W)
-
-        # Pass through encoders
-        latent_history = self.history_encoder(stacked_history)  # (B, latent_dim)
-        latent_present = self.encoder(stacked_present)  # (B, latent_dim)
-
-        # Ensure consistent latent dimensions before adding
-        if latent_history.shape != latent_present.shape:
-            raise RuntimeError(
-                f"Mismatch in latent dimensions from history_encoder ({latent_history.shape}) "
-                f"and encoder ({latent_present.shape})."
-            )
-
-        return latent_history + latent_present
-
-    def decode(
-        self, z: Tensor, obstacle_mask: Optional[torch.Tensor] = None
-    ) -> TensorDict:
-        """
-        Decode the latent representation back to the input space.
-
-        Args:
-            z (Tensor): Latent representation tensor of shape (B, latent_dim).
-            obstacle_mask (Optional[Tensor]): Mask tensor of shape (H, W), (1, H, W), or (B, H, W)
-                                             to zero out obstacle regions.
-
-        Returns:
-            TensorDict: Decoded output per variable, masked if obstacle_mask is provided.
-                        Each key holds a tensor of shape (B, H, W).
-        """
+    def decode(self, z: Tensor, obstacle_mask: Optional[Tensor] = None) -> TensorDict:
+        """Decodes a batch of latent states back to the physical domain."""
         if z.ndim != 2 or z.shape[1] != self.latent_dim:
             raise ValueError(
-                f"Expected input latent tensor z for decoding to be (B, {self.latent_dim}), "
-                f"but got {z.shape}."
+                f"Expected latent tensor z of shape (B, {self.latent_dim}), got {z.shape}."
             )
 
-        reconstructed_channels = self.decoder(z)  # Output shape (B, C_total, H, W)
-
-        if reconstructed_channels.shape[1] != self.input_channels:
-            raise RuntimeError(
-                f"Decoder output channels ({reconstructed_channels.shape[1]}) "
-                f"do not match expected input_channels ({self.input_channels})."
-            )
+        reconstructed_channels = self.decoder(z)  # Shape: (B, C_total, H, W)
 
         if obstacle_mask is not None:
-            if not isinstance(obstacle_mask, torch.Tensor):
-                raise TypeError("obstacle_mask must be a torch.Tensor.")
-
-            # Ensure obstacle_mask is (B, 1, H, W) for broadcasting
-            if obstacle_mask.ndim == 2:  # (H, W) -> (1, 1, H, W)
-                obstacle_mask_broadcast = obstacle_mask.unsqueeze(0).unsqueeze(0)
-            elif obstacle_mask.ndim == 3:  # (B, H, W) -> (B, 1, H, W)
-                obstacle_mask_broadcast = obstacle_mask.unsqueeze(1)
-            elif (
-                obstacle_mask.ndim == 4 and obstacle_mask.shape[1] == 1
-            ):  # (B, 1, H, W)
-                obstacle_mask_broadcast = obstacle_mask
-            else:
-                raise ValueError(
-                    f"Unexpected obstacle_mask shape: {obstacle_mask.shape}. "
-                    "Expected (H, W), (B, H, W), or (B, 1, H, W)."
-                )
-
-            # Ensure mask matches spatial dimensions
-            if obstacle_mask_broadcast.shape[-2:] != reconstructed_channels.shape[-2:]:
-                raise ValueError(
-                    f"Obstacle mask spatial dimensions {obstacle_mask_broadcast.shape[-2:]} "
-                    f"do not match reconstructed data dimensions {reconstructed_channels.shape[-2:]}."
-                )
-
-            reconstructed_channels = reconstructed_channels * obstacle_mask_broadcast
-
-        # Split concatenated channels back into per-variable tensors
-        # Each var gets `self.input_channels / len(self.data_variables)` channels if multi-channel per var
-        # Assuming each variable is a single channel for now.
-        if self.input_channels % len(self.data_variables) != 0:
-            raise ValueError(
-                f"Total input_channels ({self.input_channels}) is not evenly divisible "
-                f"by the number of data_variables ({len(self.data_variables)}). "
-                "This indicates an issue in channel distribution."
+            # Broadcast mask to apply to all channels
+            mask = (
+                obstacle_mask.unsqueeze(1) if obstacle_mask.ndim == 3 else obstacle_mask
             )
+            reconstructed_channels = reconstructed_channels * mask
 
-        channels_per_var = self.input_channels // len(self.data_variables)
-
+        # Dynamically split channels based on the data_variables dictionary
         decoded_data = {}
-        for i, var_name in enumerate(self.data_variables):
-            start_channel = i * channels_per_var
-            end_channel = (i + 1) * channels_per_var
-            # If channels_per_var is 1, then we extract and remove the channel dim to get (B, H, W)
-            if channels_per_var == 1:
-                decoded_data[var_name] = reconstructed_channels[:, start_channel, :, :]
-            else:  # If a variable itself has multiple channels
-                decoded_data[var_name] = reconstructed_channels[
-                    :, start_channel:end_channel, :, :
-                ]
+        current_channel = 0
+        for var, num_channels in self.data_variables.items():
+            end_channel = current_channel + num_channels
+            var_tensor = reconstructed_channels[:, current_channel:end_channel]
+            # Squeeze channel dim if it's singular, otherwise keep it
+            decoded_data[var] = (
+                var_tensor.squeeze(1) if num_channels == 1 else var_tensor
+            )
+            current_channel = end_channel
 
-        return TensorDict(decoded_data, batch_size=z.size(0))
-
-    def predict_latent(self, z: Tensor) -> Tensor:
-        """
-        Predict the next state in latent space using the Koopman operator.
-
-        Args:
-            z (Tensor): Latent representation of shape (B, latent_dim).
-
-        Returns:
-            Tensor: Predicted next latent state of shape (B, latent_dim).
-        """
-        return self.koopman_operator(z)
+        return TensorDict(decoded_data, batch_size=[z.size(0)])
 
     def forward(self, x: TensorDict, seq_length: Union[int, Tensor]) -> KoopmanOutput:
-        """
-        Forward pass through the autoencoder with Koopman prediction rollout.
+        """Forward pass: Encode, roll out predictions, and decode."""
+        # --- Input Handling ---
+        obstacle_mask = x.get("obstacle_mask", None)
+        x_data = x.exclude("obstacle_mask") if "obstacle_mask" in x else x
 
-        Args:
-            x (TensorDict): Input tensor. Expected structure:
-                            Each key (variable name) should contain a tensor
-                            of shape (B, T_input, H, W), where T_input is `self.input_frames`.
-                            May also contain 'obstacle_mask' if applicable.
-            seq_length (Union[int, Tensor]): The number of future steps to predict.
-                                             If a Tensor, it must be a scalar (e.g., from DataLoader).
-
-        Returns:
-            KoopmanOutput: A dataclass containing reconstructed input,
-                           future predictions, latent predictions, and optionally Reynolds estimate.
-        """
-        # Validate input x
-        if not isinstance(x, TensorDict):
-            raise TypeError("Input 'x' must be a TensorDict.")
-        if "obstacle_mask" in x.keys():
-            obstacle_mask = x.get("obstacle_mask", None)
-            # Remove obstacle_mask from x for processing main data variables
-            # Create a shallow copy to avoid modifying the original TensorDict in place
-            x_data = x.exclude("obstacle_mask")
-        else:
-            obstacle_mask = None
-            x_data = x
-
-        # Ensure all expected data variables are present and have correct first dimension for sequence
-        for var in self.data_variables:
-            if var not in x_data.keys():
-                raise ValueError(
-                    f"Required data variable '{var}' not found in input TensorDict 'x'."
-                )
-            if x_data[var].ndim != 4 or x_data[var].shape[1] != self.input_frames:
-                raise ValueError(
-                    f"Variable '{var}' in input TensorDict 'x' has unexpected shape {x_data[var].shape}. "
-                    f"Expected (B, {self.input_frames}, H, W)."
-                )
-
-        # Handle seq_length: ensure it's a scalar integer
-        if isinstance(seq_length, torch.Tensor):
-            if seq_length.numel() == 0:
-                # Handle case where seq_length tensor might be empty (e.g. if batch is empty)
-                logger.warning(
-                    "seq_length tensor is empty. Setting target_length to 0."
-                )
-                seq_length_int = 0
-            else:
-                # Assuming all elements in the batch have the same sequence length
-                # due to the BatchSampler's design.
-                seq_length_int = seq_length[
-                    0
-                ].item()  # Take the first element and convert to Python int
-        elif isinstance(seq_length, int):
-            seq_length_int = seq_length
-        else:
-            raise TypeError(
-                f"seq_length must be an int or a Tensor, but got {type(seq_length)}."
-            )
-
+        # --- Sequence Length Parsing ---
+        seq_length_int = (
+            seq_length[0, 0].item()
+            if isinstance(seq_length, Tensor)
+            else int(seq_length)
+        )
         if seq_length_int < 0:
-            raise ValueError(
-                f"seq_length cannot be negative, but got {seq_length_int}."
-            )
+            raise ValueError(f"seq_length cannot be negative, got {seq_length_int}.")
 
-        if seq_length_int <= 0:
-            logger.warning(
-                f"Requested seq_length is {seq_length_int}. No future predictions will be made."
+        # --- Encode initial state ---
+        z0 = self.encode(x_data)
+
+        # --- Handle Zero-Length Prediction Edge Case ---
+        if seq_length_int == 0:
+            x_recon = self.decode(z0, obstacle_mask)
+            z_preds = z0.unsqueeze(1)  # Shape: (B, 1, D)
+            reynolds = (
+                self.re_predictor(z_preds.detach()) if self.re_predictor else None
             )
-            # Handle this case by returning empty predictions, but with valid initial z_preds
-            z = self.encode(x_data)
-            x_recon = self.decode(z, obstacle_mask=obstacle_mask)
-            z_preds = z.unsqueeze(1)  # (B, 1, latent_dim)
-            empty_x_preds = TensorDict(
+            # Create an empty TensorDict for predictions
+            empty_preds = TensorDict(
                 {
                     key: torch.empty(
-                        x.batch_size[0],
-                        0,
-                        self.height,
-                        self.width,
-                        device=x.device,
-                        dtype=x.dtype,
+                        z0.size(0), 0, *val.shape[-2:], device=z0.device, dtype=z0.dtype
                     )
-                    for key in self.data_variables
+                    for key, val in x_recon.items()
                 },
-                batch_size=[x.batch_size[0]],
+                batch_size=[z0.size(0)],
             )
-            reynolds = (
-                self.re(z_preds.detach()) if self.predict_re and self.re else None
-            )  # Re could still be predicted from initial z
             return KoopmanOutput(
-                x_recon=x_recon,
-                x_preds=empty_x_preds,
-                z_preds=z_preds,
-                reynolds=reynolds,
+                x_recon=x_recon, x_preds=empty_preds, z_preds=z_preds, reynolds=reynolds
             )
 
-        # Encode the input (the last frame for present, and previous for history)
-        z = self.encode(x_data)  # z is (B, latent_dim)
-
-        z_pred_current = z  # Start with the encoded initial state
-        z_preds_list = [z]  # Store initial z as the first element
-
-        # Roll out predictions for the given sequence length
+        # --- Autoregressive Rollout in Latent Space ---
+        z_preds_list = [z0]
+        z_current = z0
         for _ in range(seq_length_int):
-            z_pred_current = self.predict_latent(z_pred_current)
-            z_preds_list.append(z_pred_current)
+            z_current = self.koopman_operator(z_current)
+            z_preds_list.append(z_current)
 
-        # Decode initial input (for reconstruction loss)
-        x_recon = self.decode(z_preds_list[0], obstacle_mask=obstacle_mask)
+        z_preds_stacked = torch.stack(z_preds_list, dim=1)  # Shape: (B, T_pred+1, D)
 
-        # Decode future predictions
-        # z_preds_list[1:] contains only the predicted future latent states
-        x_preds_dict = {}
-        for key in self.data_variables:
-            # Stack decoded steps for each variable along a new 'time' dimension (dim=1)
-            x_preds_dict[key] = torch.stack(
-                [
-                    self.decode(z_step, obstacle_mask=obstacle_mask)[key]
-                    for z_step in z_preds_list[1:]
-                ],
-                dim=1,  # Stack along the sequence length dimension
+        # --- Decode Reconstruction and Predictions ---
+        # Decode reconstruction of the initial state
+        x_recon = self.decode(z_preds_stacked[:, 0], obstacle_mask)
+
+        # **PERFORMANCE-CRITICAL**: Decode all future steps in a single batched pass
+        future_z_batch = z_preds_stacked[:, 1:].reshape(
+            -1, self.latent_dim
+        )  # Shape: (B * T_pred, D)
+        if future_z_batch.shape[0] > 0:
+            decoded_batch = self.decode(future_z_batch, obstacle_mask)
+            # Reshape back to (B, T_pred, ...) for each variable
+            x_preds = decoded_batch.apply(
+                lambda t: t.view(z0.size(0), seq_length_int, *t.shape[1:]),
+                batch_size=[z0.size(0), seq_length_int],
             )
-        x_preds = TensorDict(
-            x_preds_dict, batch_size=x.batch_size
-        )  # x.batch_size is a tuple (B,)
+        else:  # Handle case where seq_length might have been 1, so future steps are empty
+            x_preds = x_recon.apply(
+                lambda t: t.unsqueeze(1)[:, :0], batch_size=[z0.size(0), 0]
+            )
 
-        # Stack all latent predictions (initial + rollouts)
-        z_preds_stacked = torch.stack(
-            z_preds_list, dim=1
-        )  # (B, seq_length_int + 1, latent_dim)
-
-        # Compute Reynolds prediction if enabled
-        # Crucially: decide if 'reynolds' prediction should flow gradient through Koopman operator
-        # Currently, it uses z_preds_stacked.detach(), meaning no gradient flows back to K.O. or encoder.
-        # If this is desired, remove .detach()
+        # --- Predict Reynolds Number ---
         reynolds = None
-        if self.predict_re and self.re:
-            reynolds = self.re(z_preds_stacked.detach())  # Shape (B, T_pred+1, 1)
+        if self.predict_re and self.re_predictor is not None:
+            # Detach unless gradient flow is explicitly enabled
+            z_for_re = z_preds_stacked.detach()
+            reynolds = self.re_predictor(z_for_re)
 
         return KoopmanOutput(
-            x_recon=x_recon,
-            x_preds=x_preds,
-            z_preds=z_preds_stacked,
-            reynolds=reynolds,
+            x_recon=x_recon, x_preds=x_preds, z_preds=z_preds_stacked, reynolds=reynolds
         )

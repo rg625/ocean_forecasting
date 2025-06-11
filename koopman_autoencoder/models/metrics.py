@@ -1,137 +1,136 @@
+# models/metrics.py
 import torch
 import torch.nn as nn
 import numpy as np
 from numpy.typing import NDArray
-import skimage.metrics as metrics
+import skimage.metrics as sk_metrics
 from tensordict import TensorDict
-from typing import Optional
+from typing import Optional, List
 
 
 class Metric(nn.Module):
+    """
+    Computes image-based comparison metrics (L2, SSIM, PSNR, VI).
+    Designed to work with TensorDicts in a batch-wise fashion.
+    """
+
+    VALID_MODES = ["L2", "SSIM", "PSNR", "VI"]
+
     def __init__(
         self,
         mode: str,
         variable_mode: str = "single",
         variable_name: Optional[str] = None,
     ):
-        """
-        Args:
-            mode: One of ["L2", "SSIM", "PSNR", "MI"]
-            variable_mode: "single" (use one variable) or "all" (average over all variables)
-            variable_name: Name of the variable if using "single" mode
-        """
         super().__init__()
-        assert mode in ["L2", "SSIM", "PSNR", "MI"], f"Unknown metric mode: {mode}"
-        assert variable_mode in [
-            "single",
-            "all",
-        ], "variable_mode must be 'single' or 'all'"
-        if variable_mode == "single":
-            assert (
-                variable_name is not None
-            ), "variable_name must be provided in 'single' mode"
+        if mode not in self.VALID_MODES:
+            raise ValueError(
+                f"Unknown metric mode '{mode}'. Valid modes: {self.VALID_MODES}"
+            )
+        if variable_mode not in ["single", "all"]:
+            raise ValueError("variable_mode must be 'single' or 'all'")
+        if variable_mode == "single" and not variable_name:
+            raise ValueError("variable_name must be provided for 'single' mode")
 
         self.mode = mode
         self.variable_mode = variable_mode
         self.variable_name = variable_name
-        self.eval()
+        self.eval()  # Set to evaluation mode by default
 
-    def _compute_pairwise_distance(
-        self, ref: torch.Tensor, other: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Args:
-            ref, other: Tensors of shape [B, T, H, W]
-        Returns:
-            Tensor of shape [B, T] with per-frame distances
-        """
-        assert ref.shape == other.shape
-        if ref.ndim == 2:
-            # Assume shape [H, W] → add batch dim
-            ref = ref.unsqueeze(0).unsqueeze(1)
-            other = other.unsqueeze(0).unsqueeze(1)
-        if ref.ndim == 3:
-            # Assume shape [T, H, W] → add batch dim
-            ref = ref.unsqueeze(0)
-            other = other.unsqueeze(0)
-        elif ref.ndim != 4:
-            raise ValueError(f"Expected ref to have 3 or 4 dims, got {ref.shape}")
+    def _compute_distance(self, ref: torch.Tensor, other: torch.Tensor) -> torch.Tensor:
+        """Computes pairwise distance for a single variable's tensors."""
+        assert ref.shape == other.shape and ref.ndim == 4, "Inputs must be [B, T, H, W]"
         B, T, H, W = ref.shape
 
+        # Prepare for skimage: move to CPU, scale to [0, 255] uint8
         ref_np = (ref * 255).clamp(0, 255).byte().cpu().numpy()
         other_np = (other * 255).clamp(0, 255).byte().cpu().numpy()
 
-        distances = np.empty((B, T))
+        distances = np.zeros((B, T), dtype=np.float32)
         for i in range(B):
             for j in range(T):
-                r = ref_np[i, j]
-                o = other_np[i, j]
-
+                r, o = ref_np[i, j], other_np[i, j]
                 if self.mode == "L2":
-                    distances[i, j] = metrics.mean_squared_error(r, o) / (255.0**2)
+                    distances[i, j] = sk_metrics.mean_squared_error(r, o) / (255.0**2)
                 elif self.mode == "SSIM":
-                    distances[i, j] = 1 - metrics.structural_similarity(
+                    # SSIM is a similarity, 1 - SSIM is a distance
+                    distances[i, j] = 1 - sk_metrics.structural_similarity(
                         r, o, data_range=255
                     )
                 elif self.mode == "PSNR":
-                    distances[i, j] = -metrics.peak_signal_noise_ratio(
+                    # PSNR is inverted to act as a distance (lower is better)
+                    distances[i, j] = -sk_metrics.peak_signal_noise_ratio(
                         r, o, data_range=255
                     )
-                elif self.mode == "MI":
-                    distances[i, j] = np.mean(metrics.variation_of_information(r, o))
+                elif self.mode == "VI":
+                    # Variation of Information
+                    distances[i, j] = np.mean(sk_metrics.variation_of_information(r, o))
 
-        return torch.tensor(distances, dtype=torch.float32)
+        return torch.from_numpy(distances)
 
-    def forward(self, x: dict) -> torch.Tensor:
+    def forward(self, reference: TensorDict, other: TensorDict) -> torch.Tensor:
         """
-        x["reference"], x["other"] should be TensorDicts with variables as keys,
-        and each variable should be shaped [B, T, H, W]
-        """
-        reference: TensorDict = x["reference"]
-        other: TensorDict = x["other"]
+        Computes metric between two TensorDicts.
 
+        Args:
+            reference (TensorDict): The ground truth data.
+            other (TensorDict): The predicted data.
+
+        Returns:
+            torch.Tensor: A tensor of shape [B, T] with the computed distances.
+        """
         if self.variable_mode == "single":
-            ref_tensor = reference[self.variable_name]
-            other_tensor = other[self.variable_name]
-            return self._compute_pairwise_distance(ref_tensor, other_tensor)
+            ref_tensor = reference.get(self.variable_name).unsqueeze(
+                2
+            )  # Add channel dim
+            other_tensor = other.get(self.variable_name).unsqueeze(2)
+            return self._compute_distance(ref_tensor, other_tensor)
 
         elif self.variable_mode == "all":
-            per_var_results = []
-            for var in reference.keys():
-                if var in ["seq_length", "Re"]:
-                    continue
-                dist = self._compute_pairwise_distance(reference[var], other[var])
+            per_var_results: List[torch.Tensor] = []
+            valid_keys = [
+                k
+                for k in reference.keys()
+                if k not in ["seq_length", "Re", "obstacle_mask"]
+            ]
+            for var in valid_keys:
+                ref_tensor = reference.get(var)
+                other_tensor = other.get(var)
+                # Ensure tensors have a channel dimension for consistency
+                if ref_tensor.ndim == 3:
+                    ref_tensor = ref_tensor.unsqueeze(2)
+                if other_tensor.ndim == 3:
+                    other_tensor = other_tensor.unsqueeze(2)
+
+                dist = self._compute_distance(ref_tensor, other_tensor)
                 per_var_results.append(dist)
+
+            if not per_var_results:
+                return torch.empty(0)
             # Stack and average across variables
-            stacked = torch.stack(per_var_results, dim=0)  # [V, B, T]
-            return stacked.mean(dim=0)  # [B, T]
+            return torch.stack(per_var_results, dim=0).mean(dim=0)
 
     def compute_distance(
-        self,
-        input1: TensorDict,
-        input2: TensorDict,
+        self, input1: TensorDict, input2: TensorDict
     ) -> NDArray[np.float32]:
-        """
-        Args:
-            input1, input2: TensorDicts with shape [T, H, W] or [B, T, H, W] per variable
-        Returns:
-            Numpy array of shape [B * T] (flattened)
-        """
+        """Convenience wrapper for use outside of the training loop."""
 
-        def expand(x: torch.Tensor) -> torch.Tensor:
-            return x.unsqueeze(0) if x.ndim == 3 else x
-
-        input_dict = {
-            "reference": TensorDict(
-                {k: expand(v) for k, v in input1.items() if k != "seq_length"},
-                batch_size=[],
-            ),
-            "other": TensorDict(
-                {k: expand(v) for k, v in input2.items() if k != "seq_length"},
-                batch_size=[],
-            ),
-        }
+        def _prepare_td(td: TensorDict) -> TensorDict:
+            # Ensure all tensors are 4D [B, T, H, W] for processing
+            out = {}
+            # Infer batch size from a tensor
+            b_size = next(iter(td.values())).shape[0] if td.batch_size else 1
+            for k, v in td.items():
+                if k in ["seq_length", "Re", "obstacle_mask"]:
+                    continue
+                if v.ndim == 2:  # [H, W] -> [1, 1, H, W]
+                    out[k] = v.unsqueeze(0).unsqueeze(0)
+                elif (
+                    v.ndim == 3
+                ):  # [T, H, W] or [B, H, W]? Assume [T, H, W] -> [1, T, H, W]
+                    out[k] = v.unsqueeze(0)
+            return TensorDict(out, batch_size=[b_size])
 
         with torch.no_grad():
-            result = self.forward(input_dict)  # shape [B, T, ...]
-        return np.array(result.view(-1).cpu().numpy(), dtype=np.float32)
+            result = self.forward(_prepare_td(input1), _prepare_td(input2))
+        return np.array(result.view(-1).cpu().numpy())

@@ -1,7 +1,7 @@
 from itertools import pairwise
 import torch
 from torch import nn
-from models.checkpoint import checkpoint
+from torch.utils.checkpoint import checkpoint
 from einops import rearrange
 from torch import Tensor
 from typing import List, Union, Tuple, Any
@@ -64,9 +64,7 @@ class ConvBlock(nn.Module):
     def forward(self, x: Tensor):
         # Use gradient checkpointing if the flag is enabled
         if self.use_checkpoint:
-            return checkpoint(
-                self._forward, (x,), self.parameters(), self.use_checkpoint
-            )
+            return checkpoint(self._forward, x, use_reentrant=True)
         else:
             return self._forward(x)
 

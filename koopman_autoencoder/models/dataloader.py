@@ -1,876 +1,515 @@
+# models/dataloader.py
 import torch
-from tensordict import TensorDict
+import xarray as xr
+import numpy as np
+import random
+import logging
+from pathlib import Path
+from typing import List, Optional, Union, Dict, Tuple
+from abc import ABC, abstractmethod
+from omegaconf import DictConfig
+
+from tensordict import TensorDict, stack as stack_tensordict
 from torch.utils.data import Dataset, DataLoader, Sampler
 from torch.utils.data.distributed import DistributedSampler
-import xarray as xr
-import random
-import numpy as np
-from tensordict import stack as stack_tensordict
-from typing import Optional, List, Any, Union
-import logging
-import os
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
-# Define a small constant for numerical stability
-EPS = 1e-8
+
+class DatasetConfigurationError(Exception):
+    """Custom exception for dataset configuration errors."""
+
+    pass
 
 
-class QGDatasetBase(Dataset):
-    """
-    Base Dataset class for Quasi-Geostrophic (QG) model data.
-    Handles loading, basic validation, and Z-score normalization.
-    """
+# --- Normalizer Classes ---
+class AbstractNormalizer(ABC):
+    """Abstract base class for data normalizers."""
 
-    def __init__(
-        self,
-        data_path: str,
-        input_sequence_length: int = 2,
-        max_sequence_length: int = 2,
-        variables: Optional[List[str]] = None,
-    ):
-        """
-        Initializes the QGDatasetBase.
+    def __init__(self):
+        self.normalized_vars: List[str] = []
 
-        Args:
-            data_path (str): Path to the xarray dataset file (e.g., .nc).
-            input_sequence_length (int): The length of the input sequence for the model.
-            max_sequence_length (int): The maximum length of the target sequence to predict.
-            variables (Optional[List[str]]): List of variables to load from the dataset.
-                                             If None, all data variables will be used.
-        """
-        if not os.path.exists(data_path):
-            raise FileNotFoundError(f"Data file not found at: {data_path}")
+    @abstractmethod
+    def fit(self, data: TensorDict):
+        pass
 
-        try:
-            self.data = xr.open_dataset(data_path)
-        except Exception as e:
-            raise IOError(f"Failed to open xarray dataset from {data_path}: {e}")
+    @abstractmethod
+    def transform(self, data: TensorDict) -> TensorDict:
+        pass
 
-        if not isinstance(input_sequence_length, int) or input_sequence_length <= 0:
-            raise ValueError("input_sequence_length must be a positive integer.")
-        if not isinstance(max_sequence_length, int) or max_sequence_length <= 0:
-            raise ValueError("max_sequence_length must be a positive integer.")
+    @abstractmethod
+    def inverse_transform(self, data: TensorDict) -> TensorDict:
+        pass
 
-        # Check for time dimension length validity
-        time_dim_length = self.data.sizes.get(
-            "t", 0
-        )  # Get 't' dimension size, default to 0 if not found
-        if input_sequence_length + max_sequence_length > time_dim_length:
-            logger.warning(
-                f"Combined sequence length ({input_sequence_length + max_sequence_length}) "
-                f"exceeds available time steps ({time_dim_length}). "
-                "This might lead to an empty dataset or errors."
-            )
 
-        self.input_sequence_length = input_sequence_length
-        self.max_sequence_length = max_sequence_length
+class MeanStdNormalizer(AbstractNormalizer):
+    """Normalizes data using Z-score (mean/standard deviation)."""
 
-        # Determine the variables to use for normalization and model input
-        if variables is None:
-            # If no specific variables are provided, use all data variables initially
-            all_dataset_vars = list(self.data.data_vars.keys())
-        else:
-            # If variables are provided, ensure they exist in the dataset
-            invalid_vars = [var for var in variables if var not in self.data.data_vars]
-            if invalid_vars:
-                raise ValueError(f"Variables not found in dataset: {invalid_vars}")
-            all_dataset_vars = variables
+    EPSILON = 1e-8
 
-        # --- CRITICAL FIX HERE: Filter out 'obstacle_mask' from variables for normalization ---
-        # The 'self.variables' attribute should only contain variables that are
-        # part of the model's input_channels (i.e., 'p', 'v_x', 'v_y').
-        # 'obstacle_mask' is handled separately as a mask, not a data channel.
-        self.variables = [var for var in all_dataset_vars if var != "obstacle_mask"]
+    def __init__(self):
+        super().__init__()
+        self.means: Optional[TensorDict] = None
+        self.stds: Optional[TensorDict] = None
 
-        # Check if 'obstacle_mask' is present in the dataset at all, regardless of 'self.variables'
-        # This is for potential later access (e.g., in MultipleSims or by the model)
-        self.obstacle_mask_present_in_dataset = "obstacle_mask" in self.data.data_vars
-
-        if not self.variables:
-            raise ValueError(
-                "No data variables selected or found after filtering. "
-                "Ensure at least one non-'obstacle_mask' variable is present or specified."
-            )
-
-        self._normalize()  # perform normalization
-
-    def _normalize(self):
-        """
-        Performs Z-score normalization (mean 0, std 1) on the selected variables.
-        Stores means, standard deviations, min, and max values.
-        Handles constant data to prevent division by zero.
-        """
+    def fit(self, data: TensorDict):
+        self.normalized_vars = list(data.keys())
         self.means = TensorDict(
-            {
-                var: torch.tensor(np.mean(self.data[var].values), dtype=torch.float32)
-                for var in self.variables  # Only normalize the actual data variables
-            },
+            {key: torch.mean(tensor).float() for key, tensor in data.items()},
             batch_size=[],
         )
         self.stds = TensorDict(
-            {
-                var: torch.tensor(np.std(self.data[var].values), dtype=torch.float32)
-                for var in self.variables  # Only normalize the actual data variables
-            },
+            {key: torch.std(tensor).float() for key, tensor in data.items()},
             batch_size=[],
         )
+        logger.info("Fitted MeanStdNormalizer.")
 
-        self.stacked_data = TensorDict({}, batch_size=[])
-        for var in self.variables:
-            data_tensor = torch.tensor(self.data[var].values, dtype=torch.float32)
-            mean = self.means[var]
-            std = self.stds[var]
+    def transform(self, data: TensorDict) -> TensorDict:
+        if self.means is None:
+            raise DatasetConfigurationError("Normalizer has not been fitted.")
 
-            if std < EPS:  # Handle constant data
-                logger.warning(
-                    f"Variable '{var}' has a standard deviation close to zero. Normalizing to zero."
-                )
-                self.stacked_data[var] = torch.zeros_like(data_tensor)
-            else:
-                self.stacked_data[var] = (data_tensor - mean) / (std + EPS)
+        def norm_fn(d: torch.Tensor, m: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+            return (d - m) / (s + self.EPSILON)
 
-        self.mins = TensorDict(
-            {
-                var: torch.tensor(np.min(self.data[var].values), dtype=torch.float32)
-                for var in self.variables  # Only mins/maxs for data variables
-            },
-            batch_size=[],
-        )
-        self.maxs = TensorDict(
-            {
-                var: torch.tensor(np.max(self.data[var].values), dtype=torch.float32)
-                for var in self.variables  # Only mins/maxs for data variables
-            },
-            batch_size=[],
-        )
+        data_to_transform = data.select(*self.normalized_vars, strict=False)
+        transformed_data = data_to_transform.apply(norm_fn, self.means, self.stds)
+        data.update(transformed_data)
+        return data
 
-    def __len__(self):
-        """
-        Returns the total number of possible input-target sequence pairs.
-        """
-        if not self.stacked_data or not self.variables:
-            return 0
-
-        # Assume all variables have the same time dimension length, use the first one
-        # to determine dataset length for sequence sampling.
-        time_dim_length = next(iter(self.stacked_data.values())).shape[0]
-
-        # Ensure there's enough data for at least one sequence
-        if time_dim_length < self.input_sequence_length + self.max_sequence_length:
-            return 0
-
-        return (
-            time_dim_length - self.input_sequence_length - self.max_sequence_length + 1
-        )
-
-    def __getitem__(self, idx: Union[int, tuple]):
-        """
-        Retrieves an input-target sequence pair.
-
-        Args:
-            idx (Union[int, tuple]): The index of the starting point for the sequence.
-                                     If a tuple (start_idx, target_length), it allows for
-                                     variable target sequence lengths.
-
-        Returns:
-            tuple[TensorDict, TensorDict]: A tuple containing the input TensorDict
-                                          and the target TensorDict.
-        """
-        if isinstance(idx, tuple):
-            start_idx, target_length = idx
-        else:
-            start_idx = idx
-            target_length = self.max_sequence_length
-
-        if not (0 <= start_idx < len(self)):
-            raise IndexError(
-                f"Index {start_idx} out of bounds for dataset length {len(self)}."
+    def inverse_transform(self, data: TensorDict) -> TensorDict:
+        if self.means is None:
+            raise DatasetConfigurationError(
+                "Normalizer has not been fitted (means is None)."
+            )
+        if self.stds is None:
+            raise DatasetConfigurationError(
+                "Normalizer has not been fitted (stds is None)."
             )
 
-        current_time_dim_length = next(iter(self.stacked_data.values())).shape[0]
-        max_possible_target_length = (
-            current_time_dim_length - start_idx - self.input_sequence_length
-        )
-
-        if target_length > max_possible_target_length:
-            logger.warning(
-                f"Requested target_length ({target_length}) at start_idx {start_idx} "
-                f"exceeds available data ({max_possible_target_length}). "
-                "Adjusting target_length to maximum possible."
-            )
-            target_length = max_possible_target_length
-
-        if target_length <= 0:
-            raise ValueError(
-                f"Calculated target_length is {target_length}. Cannot create empty target sequence. "
-                "Check input/max sequence lengths relative to data."
-            )
-
-        # Get input sequence for the defined data variables
-        input_seq = TensorDict(
-            {
-                var: self.stacked_data[var][
-                    start_idx : start_idx + self.input_sequence_length
-                ]
-                for var in self.variables  # Use self.variables which now excludes 'obstacle_mask'
-            },
-            batch_size=[],
-        )
-
-        # Get target sequence for the defined data variables
-        target_seq = TensorDict(
-            {
-                var: self.stacked_data[var][
-                    start_idx
-                    + self.input_sequence_length : start_idx
-                    + self.input_sequence_length
-                    + target_length
-                ]
-                for var in self.variables  # Use self.variables which now excludes 'obstacle_mask'
-            },
-            batch_size=[],
-        )
-        target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
-
-        # If 'obstacle_mask' is present in the dataset, add it to input_seq as a separate entry.
-        # This ensures it's available to the model (e.g., for the decoder).
-        if self.obstacle_mask_present_in_dataset:
-            # In QGDatasetBase, obstacle_mask is assumed to be static across time.
-            # So, we take the entire mask if it's found in the original self.data.
-            # Make sure it's converted to a tensor.
-            input_seq["obstacle_mask"] = torch.tensor(
-                self.data["obstacle_mask"].values, dtype=torch.float32
-            )
-            # You might want to add obstacle_mask to target_seq too, depending on usage.
-            # For KoopmanAutoencoder, it's typically only needed with the input.
-
-        return input_seq, target_seq
-
-    def denormalize(self, x: TensorDict) -> TensorDict:
-        """
-        Denormalizes a TensorDict from Z-score (mean 0, std 1) back to original scale.
-
-        Args:
-            x (TensorDict): A TensorDict containing normalized tensors.
-
-        Returns:
-            TensorDict: Denormalized version of the input TensorDict.
-        """
-        denormalized_data = {}
-        for var, tensor in x.items():
-            if var in [
-                "seq_length",
-                "Re",
-                "obstacle_mask",
-            ]:  # Pass through non-data variables
-                denormalized_data[var] = tensor
-                continue
-
-            # Check against self.variables for means/stds, as those are the variables normalized
-            if (
-                var not in self.variables
-                or var not in self.means
-                or var not in self.stds
-            ):
-                logger.warning(
-                    f"Denormalization: Variable '{var}' not found in stored means/stds. Passing through."
-                )
-                denormalized_data[var] = tensor
-                continue
-
-            device = tensor.device
-            means = self.means[var].to(device)
-            stds = self.stds[var].to(device)
-
-            if stds.item() < EPS:
-                denormalized_data[var] = means.expand_as(tensor)
-            else:
-                denormalized_data[var] = tensor * stds + means
-        return TensorDict(denormalized_data, batch_size=x.batch_size)
-
-
-class QGDatasetQuantile(QGDatasetBase):
-    """
-    Dataset that normalizes using specified quantiles instead of mean/std.
-    Normalizes data to [-1, 1] using the quantile range.
-    """
-
-    def __init__(
-        self,
-        data_path: str,
-        input_sequence_length: int = 2,
-        max_sequence_length: int = 2,
-        variables: Optional[List[str]] = None,
-        quantile_range: tuple = (2.5, 97.5),
-    ):
-        """
-        Initializes the QGDatasetQuantile.
-
-        Args:
-            data_path (str): Path to the xarray dataset file (e.g., .nc).
-            input_sequence_length (int): The length of the input sequence for the model.
-            max_sequence_length (int): The maximum length of the target sequence to predict.
-            variables (Optional[List[str]]): List of variables to load from the dataset.
-                                             If None, all data variables will be used.
-            quantile_range (tuple): A tuple (low_percentile, high_percentile) for normalization.
-                                    e.g., (2.5, 97.5) will normalize data between the 2.5th and 97.5th percentiles.
-        """
-        if not isinstance(quantile_range, tuple) or len(quantile_range) != 2:
-            raise ValueError(
-                "quantile_range must be a tuple of two numbers (low, high)."
-            )
-        if not (0 <= quantile_range[0] < quantile_range[1] <= 100):
-            raise ValueError(
-                "Quantile range values must be between 0 and 100, and low < high."
-            )
-
-        self.quantile_range = quantile_range
-        self.q_lows: Optional[TensorDict] = None
-        self.q_highs: Optional[TensorDict] = None
-        super().__init__(
-            data_path, input_sequence_length, max_sequence_length, variables
-        )
-
-    def _normalize(self):
-        """
-        Overrides base class normalization to use quantile normalization.
-        Normalizes each variable to the range [-1, 1] based on its specified quantile range.
-        Handles constant data to prevent division by zero.
-        """
-        # Ensure raw_data_td only contains the variables meant for normalization
-        raw_data_td = TensorDict(
-            {var: torch.FloatTensor(self.data[var].values) for var in self.variables},
-            batch_size=[],
-        )
-
-        self.stacked_data, self.q_lows, self.q_highs = self._quantile_normalize_static(
-            raw_data_td, quantile_range=self.quantile_range
-        )
-
-        # Min/Max are still useful for to_unit_range, even if not used for normalization here
-        self.mins = TensorDict(
-            {
-                var: torch.tensor(np.min(self.data[var].values), dtype=torch.float32)
-                for var in self.variables
-            },
-            batch_size=[],
-        )
-        self.maxs = TensorDict(
-            {
-                var: torch.tensor(np.max(self.data[var].values), dtype=torch.float32)
-                for var in self.variables
-            },
-            batch_size=[],
-        )
-
-    @staticmethod
-    def _quantile_normalize_static(tensor_dict: TensorDict, quantile_range=(2.5, 97.5)):
-        """
-        Static method to normalize each variable in the tensor_dict to [-1, 1]
-        using the specified quantile range.
-        Handles constant data to prevent division by zero.
-        """
-        q_lows = {}
-        q_highs = {}
-        normalized = {}
-
-        for var, tensor in tensor_dict.items():
-            data_flat = tensor.numpy().flatten()
-            q_low = np.percentile(data_flat, quantile_range[0])
-            q_high = np.percentile(data_flat, quantile_range[1])
-
-            q_lows[var] = torch.tensor([q_low], dtype=torch.float32)
-            q_highs[var] = torch.tensor([q_high], dtype=torch.float32)
-
-            diff = q_high - q_low
-            if diff < EPS:  # Handle constant data: normalize to 0
-                logger.warning(
-                    f"Quantile normalization: Variable '{var}' has a quantile range close to zero. Normalizing to zero."
-                )
-                normalized[var] = torch.zeros_like(tensor)
-            else:
-                norm = 2 * (tensor - q_low) / (diff + EPS) - 1
-                normalized[var] = norm
-
-        return (
-            TensorDict(normalized, batch_size=[]),
-            TensorDict(q_lows, batch_size=[]),
-            TensorDict(q_highs, batch_size=[]),
-        )
-
-    def denormalize(self, tensor_dict: TensorDict) -> TensorDict:
-        """
-        Denormalize data from [-1, 1] back to the original range using stored quantiles.
-
-        Args:
-            tensor_dict (TensorDict): Dictionary with normalized tensors.
-
-        Returns:
-            TensorDict: Denormalized version.
-        """
-        if self.q_lows is None or self.q_highs is None:
-            raise AttributeError(
-                "Quantile lows/highs are not set. Normalization might not have occurred correctly."
-            )
-
-        denormalized_data = {}
-        for var, tensor in tensor_dict.items():
-            if var in ["seq_length", "Re", "obstacle_mask"]:
-                denormalized_data[var] = tensor  # Pass through non-data variables
-                continue
-
-            if var not in self.q_lows or var not in self.q_highs:
-                logger.warning(
-                    f"Denormalization: Variable '{var}' not found in stored quantiles. Passing through."
-                )
-                denormalized_data[var] = tensor
-                continue
-
-            q_low = self.q_lows[var].to(tensor.device)
-            q_high = self.q_highs[var].to(tensor.device)
-
-            diff = q_high - q_low
-            if diff < EPS:  # Handle constant data during denormalization
-                denormalized_data[var] = q_low.expand_as(
-                    tensor
-                )  # All values become the q_low (which is q_high)
-            else:
-                denorm = ((tensor + 1) / 2) * (diff + EPS) + q_low
-                denormalized_data[var] = denorm
-
-        return TensorDict(denormalized_data, batch_size=tensor_dict.batch_size)
-
-
-class MultipleSims(QGDatasetBase):
-    def __init__(
-        self,
-        data_path: str,
-        input_sequence_length: int = 2,
-        max_sequence_length: int = 2,
-        variables: Optional[List[str]] = None,
-    ):
-        # Track the number of simulations (sim dimension)
-        super().__init__(
-            data_path, input_sequence_length, max_sequence_length, variables
-        )
-        self.num_sims = self.data.sizes["sim"]
-        self.Re: Union[list[float], np.ndarray, torch.Tensor] = (
-            self.data["Re"] if "Re" in self.data.variables else None
-        )
-        self.obstacle: Union[TensorDict, torch.Tensor] = (
-            self.data["obstacle_mask"]
-            if "obstacle_mask" in self.data.variables
-            else None
-        )
-        print(f"self.means.items(): {self.means.items()}")
-        print(f"self.stds.items(): {self.stds.items()}")
-
-    def __len__(self):
-        # Each simulation has a different number of time steps (sim, t, x, y)
-        return self.num_sims * (
-            len(self.data["t"])
-            - self.input_sequence_length
-            - self.max_sequence_length
-            + 1
-        )
-
-    def __getitem__(self, idx):
-        # If idx is a tuple, we extract the first element which is the index we want
-        if isinstance(idx, tuple):
-            idx, target_length = idx
-        else:
-            target_length = (
-                self.max_sequence_length
-            )  # Use default max_sequence_length if not provided
-
-        # Calculate which simulation and index in the simulation to sample from
-        sim_idx = idx // (
-            len(self.data["t"])
-            - self.input_sequence_length
-            - self.max_sequence_length
-            + 1
-        )
-        start_idx = idx % (
-            len(self.data["t"])
-            - self.input_sequence_length
-            - self.max_sequence_length
-            + 1
-        )
-
-        # Get the input sequence
-        input_seq = TensorDict(
-            {
-                var: self.stacked_data[var][
-                    sim_idx, start_idx : start_idx + self.input_sequence_length
-                ]
-                for var in self.variables
-                if var != "obstacle_mask"
-            },
-            batch_size=[],
-        )
-        input_seq["obstacle_mask"] = torch.tensor(
-            self.obstacle.values, dtype=torch.float32
-        )
-
-        # Get the target sequence (variable length)
-        # target_length = self.max_sequence_length
-        target_seq = TensorDict(
-            {
-                var: self.stacked_data[var][
-                    sim_idx,
-                    start_idx
-                    + self.input_sequence_length : start_idx
-                    + self.input_sequence_length
-                    + target_length,
-                ]
-                for var in self.variables
-                if var != "obstacle_mask"
-            },
-            batch_size=[],
-        )
-
-        # Add the sequence length to the target
-        target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
-        target_seq["Re"] = torch.tensor(self.Re[sim_idx].item(), dtype=torch.float32)
-        # target_seq["obstacle_mask"] = torch.tensor(self.obstacle.values, dtype=torch.float32)
-
-        return input_seq, target_seq
-
-    def denormalize(self, x):
         denormalized = {}
-        for var, tensor in x.items():
-            if var in ["seq_length", "Re", "obstacle_mask"]:
-                denormalized[var] = tensor  # passthrough
-                continue
-            device = tensor.device
-            means = self.means[var].to(device)
-            stds = self.stds[var].to(device)
-            denormalized[var] = tensor * stds + means
-        return TensorDict(denormalized, batch_size=x.batch_size)
+        for key, tensor in data.items():
+            if key in self.normalized_vars:
+                mean = self.means[key].to(tensor.device)
+                std = self.stds[key].to(tensor.device)
+                denormalized[key] = tensor * std + mean
+            else:
+                denormalized[key] = tensor
+        return TensorDict(denormalized, batch_size=data.batch_size)
 
 
-# OVERFIT EXPERIMENTS ONLY
-class SingleSimOverfit(MultipleSims):
-    def __init__(
-        self,
-        data_path: str,
-        input_sequence_length: int = 2,
-        max_sequence_length: int = 2,
-        variables: Optional[List[str]] = None,
-    ):
-        # Track the number of simulations (sim dimension)
-        super().__init__(
-            data_path, input_sequence_length, max_sequence_length, variables
-        )
-        self.num_sims = 1
-        self.Re: Union[torch.Tensor] = (
-            self.data["Re"] if "Re" in self.data.variables else None
-        )
-        self.obstacle: Union[TensorDict, torch.Tensor] = (
-            self.data["obstacle_mask"]
-            if "obstacle_mask" in self.data.variables
-            else None
-        )
+class QuantileNormalizer(AbstractNormalizer):
+    """Normalizes data to the range [-1, 1] using specified quantiles."""
 
-    def __len__(self):
-        # Each simulation has a different number of time steps (sim, t, x, y)
-        return self.num_sims * (
-            len(self.data["t"])
-            - self.input_sequence_length
-            - self.max_sequence_length
-            + 1
-        )
+    EPSILON = 1e-8
 
-    def __getitem__(self, idx):
-        # If idx is a tuple, we extract the first element which is the index we want
-        if isinstance(idx, tuple):
-            idx, target_length = idx
-        else:
-            target_length = (
-                self.max_sequence_length
-            )  # Use default max_sequence_length if not provided
+    def __init__(self, quantile_range: Tuple[float, float] = (2.5, 97.5)):
+        super().__init__()
+        if not (0 <= quantile_range[0] < quantile_range[1] <= 100):
+            raise ValueError("Quantile range must be valid.")
+        self.quantile_range = quantile_range
+        self.q_lows: Dict[str, torch.Tensor] = {}
+        self.q_highs: Dict[str, torch.Tensor] = {}
 
-        # Calculate which simulation and index in the simulation to sample from
-        sim_idx = 0
-        start_idx = idx % (
-            len(self.data["t"])
-            - self.input_sequence_length
-            - self.max_sequence_length
-            + 1
-        )
+    def fit(self, data: TensorDict):
+        self.normalized_vars = list(data.keys())
+        q_lows: Dict[str, torch.Tensor] = {}
+        q_highs: Dict[str, torch.Tensor] = {}
+        for key, tensor in data.items():
+            flat = tensor.numpy().flatten()
+            low, high = np.percentile(flat, self.quantile_range)
+            if np.isclose(high, low, atol=self.EPSILON):
+                logger.warning(f"Quantile range for '{key}' is near zero.")
+            q_lows[key] = torch.tensor([low], dtype=torch.float32)
+            q_highs[key] = torch.tensor([high], dtype=torch.float32)
+        self.q_lows = TensorDict(q_lows, [])
+        self.q_highs = TensorDict(q_highs, [])
+        logger.info("Fitted QuantileNormalizer.")
 
-        # Get the input sequence
-        input_seq = TensorDict(
-            {
-                var: self.stacked_data[var][
-                    sim_idx, start_idx : start_idx + self.input_sequence_length
-                ]
-                for var in self.variables
-                if var != "obstacle_mask"
-            },
-            batch_size=[],
-        )
-        input_seq["obstacle_mask"] = torch.tensor(
-            self.obstacle.values, dtype=torch.float32
-        )
+    def transform(self, data: TensorDict) -> TensorDict:
+        if self.q_lows is None:
+            raise DatasetConfigurationError(
+                "Normalizer has not been fitted (q_lows is None)."
+            )
+        if self.q_highs is None:
+            raise DatasetConfigurationError(
+                "Normalizer has not been fitted (q_highs is None)."
+            )
 
-        # Get the target sequence (variable length)
-        # target_length = self.max_sequence_length
-        target_seq = TensorDict(
-            {
-                var: self.stacked_data[var][
-                    sim_idx,
-                    start_idx
-                    + self.input_sequence_length : start_idx
-                    + self.input_sequence_length
-                    + target_length,
-                ]
-                for var in self.variables
-                if var != "obstacle_mask"
-            },
-            batch_size=[],
-        )
+        def norm_fn(
+            d: torch.Tensor, low: torch.Tensor, high: torch.Tensor
+        ) -> torch.Tensor:
+            return 2 * (d - low) / (high - low + self.EPSILON) - 1
 
-        # Add the sequence length to the target
-        target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
-        target_seq["Re"] = torch.tensor(self.Re[sim_idx].item(), dtype=torch.float32)
-        # target_seq["obstacle_mask"] = torch.tensor(self.obstacle.values, dtype=torch.float32)
+        data_to_transform = data.select(*self.normalized_vars, strict=False)
+        transformed_data = data_to_transform.apply(norm_fn, self.q_lows, self.q_highs)
+        data.update(transformed_data)
+        return data
 
-        return input_seq, target_seq
+    def inverse_transform(self, data: TensorDict) -> TensorDict:
+        if self.q_lows is None:
+            raise DatasetConfigurationError(
+                "Normalizer has not been fitted (q_lows is None)."
+            )
+        if self.q_highs is None:
+            raise DatasetConfigurationError(
+                "Normalizer has not been fitted (q_highs is None)."
+            )
+
+        # After these checks, mypy knows both attributes are valid TensorDicts.
+        denormalized = {}
+        for key, tensor in data.items():
+            if key in self.normalized_vars:
+                low = self.q_lows[key].to(tensor.device)
+                high = self.q_highs[key].to(tensor.device)
+                denormalized[key] = ((tensor + 1) / 2) * (high - low) + low
+            else:
+                denormalized[key] = tensor
+        return TensorDict(denormalized, batch_size=data.batch_size)
 
 
-class BatchSampler(Sampler):
-    """
-    Custom BatchSampler for PyTorch DataLoader that supports variable target sequence lengths
-    per batch and ensures all samples within a batch have the same target length.
-    """
+# --- Base Dataset Class ---
+class QGDatasetBase(Dataset):
+    """Base class for handling quasi-geostrophic simulation data."""
 
     def __init__(
         self,
-        dataset_size: int,
-        batch_size: int,
+        data_path: Union[str, Path],
+        normalizer: AbstractNormalizer,
+        input_sequence_length: int,
         max_sequence_length: int,
-        random_sequence_length: bool = True,
-        shuffle: bool = True,
-        drop_last: bool = False,
+        variables: Dict[str, int],
     ):
-        """
-        Initializes the BatchSampler.
+        self.data_path = Path(data_path)
+        if not self.data_path.exists():
+            raise FileNotFoundError(f"Dataset not found: {self.data_path}")
 
-        Args:
-            dataset_size (int): The total number of samples in the dataset.
-            batch_size (int): The number of samples per batch.
-            max_sequence_length (int): The maximum possible target sequence length.
-            random_sequence_length (bool): If True, randomly selects a target sequence length
-                                           between 1 and max_sequence_length for each batch.
-            shuffle (bool): If True, shuffles the dataset indices before creating batches.
-            drop_last (bool): If True, drops the last incomplete batch.
-        """
-        if not isinstance(dataset_size, int) or dataset_size < 0:
-            raise ValueError("dataset_size must be a non-negative integer.")
-        if not isinstance(batch_size, int) or batch_size <= 0:
-            raise ValueError("batch_size must be a positive integer.")
-        if not isinstance(max_sequence_length, int) or max_sequence_length <= 0:
-            raise ValueError("max_sequence_length must be a positive integer.")
-
-        self.dataset_size = dataset_size
-        self.batch_size = batch_size
+        self.input_sequence_length = input_sequence_length
         self.max_sequence_length = max_sequence_length
-        self.random_sequence_length = random_sequence_length
-        self.shuffle = shuffle
-        self.drop_last = drop_last
+        self.normalizer = normalizer
+        self.data_vars = list(variables.keys())
+
+        self._load_data()
+        self._prepare_data()
+
+    def _load_data(self):
+        """Loads data from NetCDF, validates variables, and infers batch dimensions."""
+        with xr.open_dataset(self.data_path) as ds:
+            self._data = ds
+            missing_vars = [v for v in self.data_vars if v not in ds.data_vars]
+            if missing_vars:
+                raise DatasetConfigurationError(
+                    f"Vars {missing_vars} not in {self.data_path}"
+                )
+
+            td_tensors = {
+                var: torch.from_numpy(ds[var].values).float() for var in self.data_vars
+            }
+
+            sample_var_name = self.normalizer_vars[0]
+            sample_tensor_shape = td_tensors[sample_var_name].shape
+
+            num_feature_dims = 2
+            num_batch_dims = len(sample_tensor_shape) - num_feature_dims
+            batch_size = list(sample_tensor_shape[:num_batch_dims])
+            self.raw_data_td = TensorDict(td_tensors, batch_size=batch_size)
+
+            self.mins = TensorDict(
+                {key: torch.min(tensor) for key, tensor in self.raw_data_td.items()},
+                batch_size=[],
+            )
+            self.maxs = TensorDict(
+                {key: torch.max(tensor) for key, tensor in self.raw_data_td.items()},
+                batch_size=[],
+            )
+
+    def _prepare_data(self):
+        """Fits the normalizer and transforms the data."""
+        self.normalizer.fit(self.raw_data_td.select(*self.normalizer_vars))
+        self.stacked_data = self.normalizer.transform(self.raw_data_td)
+
+    @property
+    def normalizer_vars(self) -> List[str]:
+        return self.data_vars
+
+    def __len__(self) -> int:
+        time_dim_index = self.raw_data_td.batch_dims - 1
+        num_timesteps = self.raw_data_td.batch_size[time_dim_index]
+        total_len = (
+            num_timesteps - self.input_sequence_length - self.max_sequence_length + 1
+        )
+        return int(max(0, total_len))
+
+    def __getitem__(self, idx: Union[int, Tuple[int, int]]):
+        start_idx, target_length = (
+            (idx, self.max_sequence_length) if isinstance(idx, int) else idx
+        )
+        if not (0 <= target_length <= self.max_sequence_length):
+            raise ValueError(
+                f"target_length must be in [0, {self.max_sequence_length}]"
+            )
+
+        input_end = start_idx + self.input_sequence_length
+        target_end = input_end + target_length
+
+        input_seq = self.stacked_data[..., start_idx:input_end, :, :]
+        target_seq = self.stacked_data[..., input_end:target_end, :, :]
+
+        # Create a metadata dictionary. The custom collate function will handle this.
+        metadata = {"seq_length": target_length}
+
+        # Return a 3-tuple that the custom_collate_fn expects
+        return input_seq, target_seq, metadata
+
+    def denormalize(self, data: TensorDict) -> TensorDict:
+        return self.normalizer.inverse_transform(data)
+
+    def to_unit_range(self, data: TensorDict) -> TensorDict:
+        scaled = {}
+        for var, tensor in data.items():
+            if var in self.normalizer.normalized_vars:
+                min_val, max_val = self.mins[var].to(tensor.device), self.maxs[var].to(
+                    tensor.device
+                )
+                scaled[var] = (tensor - min_val) / (max_val - min_val + 1e-8)
+            else:
+                scaled[var] = tensor
+        return TensorDict(scaled, batch_size=data.batch_size)
+
+
+# --- Multi-Simulation Dataset ---
+class QGDatasetMultiSim(QGDatasetBase):
+    """Dataset for multiple simulations, handling indexing and metadata."""
+
+    def __init__(self, *args, **kwargs):
+        self.num_sims: int = 0
+        self.Re: Optional[torch.Tensor] = None
+        self.obstacle_mask: Optional[torch.Tensor] = None
+        self.master_index: List[Tuple[int, int]] = []
+        super().__init__(*args, **kwargs)
+
+    def _load_data(self):
+        super()._load_data()
+        if "sim" not in self._data.dims:
+            raise DatasetConfigurationError("Expected 'sim' dimension in the dataset.")
+        self.num_sims = self._data.sizes["sim"]
+        if "Re" in self._data:
+            self.Re = torch.from_numpy(self._data["Re"].values).float()
+        if "obstacle_mask" in self.data_vars:
+            self.obstacle_mask = self.raw_data_td.get("obstacle_mask")
+
+    @property
+    def normalizer_vars(self) -> List[str]:
+        return [v for v in self.data_vars if v != "obstacle_mask"]
+
+    def _prepare_data(self):
+        self._compute_master_index()
+        super()._prepare_data()
+
+    def _compute_master_index(self):
+        self.master_index = []
+        num_timesteps = self._data.sizes["t"]
+        valid_starts = (
+            num_timesteps - self.input_sequence_length - self.max_sequence_length + 1
+        )
+        if valid_starts > 0:
+            for sim_idx in range(self.num_sims):
+                self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
+        if not self.master_index:
+            logger.warning("No valid sequences generated from dataset.")
+
+    def __len__(self) -> int:
+        return len(self.master_index)
+
+    def __getitem__(self, idx: Union[int, Tuple[int, int]]):
+        flat_idx, target_length = (
+            (idx, self.max_sequence_length) if isinstance(idx, int) else idx
+        )
+        if not (0 <= flat_idx < len(self)):
+            raise IndexError("Index out of bounds.")
+
+        sim_idx, start_idx = self.master_index[flat_idx]
+
+        input_end = start_idx + self.input_sequence_length
+        target_end = input_end + target_length
+
+        input_seq = self.stacked_data[sim_idx, start_idx:input_end]
+        target_seq = self.stacked_data[sim_idx, input_end:target_end]
+
+        # Create a metadata dictionary to be handled by the custom collate function.
+        metadata = {"seq_length": target_length}
+        if self.Re is not None:
+            metadata["Re"] = self.Re[sim_idx]
+
+        if self.obstacle_mask is not None:
+            mask = (
+                self.obstacle_mask
+                if self.obstacle_mask.ndim == 2
+                else self.obstacle_mask[sim_idx]
+            )
+            # Add a time dimension to the mask to make it broadcastable with the input sequence.
+            input_seq.set("obstacle_mask", mask.unsqueeze(0), inplace=True)
+
+        return input_seq, target_seq, metadata
+
+
+# --- Overfitting Dataset ---
+class SingleSimOverfit(QGDatasetMultiSim):
+    """Specialized dataset using only the first simulation for overfitting."""
+
+    def _compute_master_index(self):
+        super()._compute_master_index()
+        self.master_index = [item for item in self.master_index if item[0] == 0]
+        logger.info(f"SingleSimOverfit: Using sim 0. Samples: {len(self.master_index)}")
+
+
+# --- Samplers ---
+class RandomLengthBatchSampler(Sampler[List[Tuple[int, int]]]):
+    def __init__(
+        self, dataset_len, batch_size, max_seq_len, shuffle=True, drop_last=False
+    ):
+        self.dataset_len, self.batch_size, self.max_seq_len = (
+            dataset_len,
+            batch_size,
+            max_seq_len,
+        )
+        self.shuffle, self.drop_last = shuffle, drop_last
 
     def __iter__(self):
-        """
-        Generates batches of indices, with an associated target sequence length.
-        """
-        indices = list(range(self.dataset_size))
+        indices = list(range(self.dataset_len))
         if self.shuffle:
-            np.random.shuffle(indices)
-
+            random.shuffle(indices)
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i : i + self.batch_size]
             if len(batch_indices) < self.batch_size and self.drop_last:
                 continue
-
-            target_length = (
-                random.randint(1, self.max_sequence_length)
-                if self.random_sequence_length
-                else self.max_sequence_length
-            )
-            yield [(idx, target_length) for idx in batch_indices]
+            target_len = random.randint(1, self.max_seq_len)
+            yield [(idx, target_len) for idx in batch_indices]
 
     def __len__(self):
-        """
-        Returns the number of batches in an epoch.
-        """
+        return (
+            self.dataset_len // self.batch_size
+            if self.drop_last
+            else (self.dataset_len + self.batch_size - 1) // self.batch_size
+        )
+
+
+class FixedLengthBatchSampler(Sampler[List[Tuple[int, int]]]):
+    def __init__(
+        self, dataset_len, batch_size, seq_len, shuffle=False, drop_last=False
+    ):
+        self.dataset_len, self.batch_size, self.seq_len = (
+            dataset_len,
+            batch_size,
+            seq_len,
+        )
+        self.shuffle, self.drop_last = shuffle, drop_last
+
+    def __iter__(self):
+        indices = list(range(self.dataset_len))
+        if self.shuffle:
+            random.shuffle(indices)
+        for i in range(0, len(indices), self.batch_size):
+            batch_indices = indices[i : i + self.batch_size]
+            if len(batch_indices) < self.batch_size and self.drop_last:
+                continue
+            yield [(idx, self.seq_len) for idx in batch_indices]
+
+    def __len__(self):
         if self.drop_last:
-            return self.dataset_size // self.batch_size
-        return (self.dataset_size + self.batch_size - 1) // self.batch_size
+            return self.dataset_len // self.batch_size
+        return (self.dataset_len + self.batch_size - 1) // self.batch_size
 
 
+# --- DataLoader Setup ---
 class DataLoaderWrapper(DataLoader):
-    """
-    A custom DataLoader that provides convenient denormalization and unit-range scaling methods
-    by leveraging methods present in its underlying dataset.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if not isinstance(
-            self.dataset, (QGDatasetBase, QGDatasetQuantile, MultipleSims)
-        ):
-            logger.warning(
-                "DataLoaderWrapper is designed for QGDatasetBase subclasses. "
-                "Denormalization and to_unit_range methods might not be available."
-            )
+    def __init__(self, dataset: QGDatasetBase, *args, **kwargs):
+        super().__init__(dataset, *args, **kwargs)
+        self.dataset: QGDatasetBase
 
     def denormalize(self, x: TensorDict) -> TensorDict:
-        """
-        Denormalizes a TensorDict using the dataset's denormalization method.
-
-        Args:
-            x (TensorDict): The TensorDict to denormalize.
-
-        Returns:
-            TensorDict: The denormalized TensorDict.
-
-        Raises:
-            AttributeError: If the dataset does not have a `denormalize` method.
-        """
-        if hasattr(self.dataset, "denormalize"):
-            return self.dataset.denormalize(x)
-        else:
-            raise AttributeError("The dataset does not have a `denormalize` method.")
+        return self.dataset.denormalize(x)
 
     def to_unit_range(self, x: TensorDict) -> TensorDict:
-        """
-        Maps variables in the given TensorDict to the [0, 1] range using dataset-wide min/max values.
-
-        Args:
-            x (TensorDict): The TensorDict to scale.
-
-        Returns:
-            TensorDict: The scaled TensorDict with values in [0, 1].
-
-        Raises:
-            AttributeError: If the dataset does not have `mins` or `maxs` attributes.
-        """
-        if not hasattr(self.dataset, "mins") or not hasattr(self.dataset, "maxs"):
-            raise AttributeError(
-                "Dataset does not have `mins` or `maxs` attributes for unit range scaling."
-            )
-
-        scaled_data = {}
-        for var, tensor in x.items():
-            if var in ["seq_length", "Re", "obstacle_mask"]:
-                scaled_data[var] = tensor  # Passthrough metadata variables
-                continue
-
-            if var not in self.dataset.mins or var not in self.dataset.maxs:
-                logger.warning(
-                    f"Unit range scaling: Variable '{var}' not found in stored mins/maxs. Passing through."
-                )
-                scaled_data[var] = tensor
-                continue
-
-            min_val = self.dataset.mins[var].to(tensor.device)
-            max_val = self.dataset.maxs[var].to(tensor.device)
-
-            diff = max_val - min_val
-            if diff < EPS:  # Handle constant data: map to 0.5 (mid-point)
-                logger.warning(
-                    f"Unit range scaling: Variable '{var}' has a min/max range close to zero. Mapping to 0.5."
-                )
-                scaled_data[var] = torch.full_like(tensor, 0.5)
-            else:
-                scaled_data[var] = (tensor - min_val) / (diff + EPS)
-        return TensorDict(scaled_data, batch_size=x.batch_size)
+        return self.dataset.to_unit_range(x)
 
 
-def custom_collate_fn(batch: List[tuple]) -> tuple[TensorDict, TensorDict]:
+def custom_collate_fn(batch: List[Tuple[TensorDict, TensorDict, Dict]]):
     """
-    Custom collate function for DataLoader to stack lists of TensorDicts into single TensorDicts.
-
-    Args:
-        batch (List[tuple]): A list of (input_seq, target_seq) tuples, where each
-                             input_seq and target_seq are TensorDicts.
-
-    Returns:
-        tuple[TensorDict, TensorDict]: A tuple containing a batched input TensorDict
-                                      and a batched target TensorDict.
+    Collates data and metadata into final batched TensorDicts.
+    This function now correctly handles the metadata dictionary.
     """
-    input_seqs, target_seqs = zip(*batch)
-    input_tensordict = stack_tensordict(list(input_seqs))
-    target_tensordict = stack_tensordict(list(target_seqs))
-    return input_tensordict, target_tensordict
+    input_tds, target_tds, meta_dicts = zip(*batch)
+
+    # Stack the TensorDicts for data variables
+    batched_inputs = stack_tensordict(input_tds)
+    batched_targets = stack_tensordict(target_tds)
+
+    # Collate the metadata and add it to the final batched TensorDicts
+    for key in meta_dicts[0].keys():
+        if isinstance(meta_dicts[0][key], torch.Tensor):
+            meta_tensor = torch.stack([d[key] for d in meta_dicts])
+        else:
+            meta_tensor = torch.tensor([d[key] for d in meta_dicts])
+
+        ####################################
+        ### THIS IS THE CORRECTED SECTION ###
+        ####################################
+
+        # Get the target batch dimensions (e.g., [1, 10])
+        target_batch_size = batched_targets.batch_size
+
+        # Reshape the metadata tensor from [batch_size] to [batch_size, 1]
+        meta_tensor_reshaped = meta_tensor.unsqueeze(1)
+
+        # Explicitly expand the metadata tensor to match the target's batch dimensions.
+        # This changes the shape from [batch_size, 1] to [batch_size, seq_len].
+        meta_tensor_expanded = meta_tensor_reshaped.expand(*target_batch_size)
+
+        # Set the expanded tensor. The shapes now match exactly.
+        batched_targets.set(key, meta_tensor_expanded)
+
+    return batched_inputs, batched_targets
 
 
 def create_dataloaders(
     train_dataset: QGDatasetBase,
     val_dataset: QGDatasetBase,
     test_dataset: QGDatasetBase,
-    config: Any,  # This should be the Omegaconf Config object now
-) -> tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]:
-    """
-    Creates standard PyTorch DataLoaders with custom BatchSampler and collate function.
-
-    Args:
-        train_dataset (QGDatasetBase): Training dataset.
-        val_dataset (QGDatasetBase): Validation dataset.
-        test_dataset (QGDatasetBase): Test dataset.
-        config (Any): Omegaconf Config object containing training parameters.
-
-    Returns:
-        tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]: Train, validation, and test DataLoaders.
-    """
-    try:
-        # Access config using dot notation since it's an Omegaconf object
-        batch_size = config.training.batch_size
-        random_sequence_length = config.training.random_sequence_length
-    except KeyError as e:
-        raise KeyError(f"Missing required key in config for dataloaders: {e}")
-
-    train_batch_sampler = BatchSampler(
-        dataset_size=len(train_dataset),
-        batch_size=batch_size,
-        max_sequence_length=train_dataset.max_sequence_length,
-        random_sequence_length=random_sequence_length,
-        shuffle=True,
-        drop_last=True,
+    training_cfg: DictConfig,
+):
+    bs = training_cfg.batch_size
+    if training_cfg.random_sequence_length:
+        train_sampler = RandomLengthBatchSampler(
+            len(train_dataset),
+            bs,
+            train_dataset.max_sequence_length,
+            shuffle=True,
+            drop_last=True,
+        )
+    else:
+        train_sampler = FixedLengthBatchSampler(
+            len(train_dataset),
+            bs,
+            train_dataset.max_sequence_length,
+            shuffle=True,
+            drop_last=True,
+        )
+    val_sampler = FixedLengthBatchSampler(
+        len(val_dataset), bs, val_dataset.max_sequence_length, shuffle=False
     )
-    val_batch_sampler = BatchSampler(
-        dataset_size=len(val_dataset),
-        batch_size=batch_size,
-        max_sequence_length=val_dataset.max_sequence_length,
-        random_sequence_length=random_sequence_length,
-        shuffle=True,
-        drop_last=True,
-    )
-    test_batch_sampler = BatchSampler(
-        dataset_size=len(test_dataset),
-        batch_size=batch_size,
-        max_sequence_length=test_dataset.max_sequence_length,
-        random_sequence_length=random_sequence_length,
-        shuffle=False,
-        drop_last=False,
+    test_sampler = FixedLengthBatchSampler(
+        len(test_dataset), bs, test_dataset.max_sequence_length, shuffle=False
     )
 
     train_loader = DataLoaderWrapper(
-        train_dataset, batch_sampler=train_batch_sampler, collate_fn=custom_collate_fn
+        train_dataset, batch_sampler=train_sampler, collate_fn=custom_collate_fn
     )
     val_loader = DataLoaderWrapper(
-        val_dataset, batch_sampler=val_batch_sampler, collate_fn=custom_collate_fn
+        val_dataset, batch_sampler=val_sampler, collate_fn=custom_collate_fn
     )
     test_loader = DataLoaderWrapper(
-        test_dataset, batch_sampler=test_batch_sampler, collate_fn=custom_collate_fn
+        test_dataset, batch_sampler=test_sampler, collate_fn=custom_collate_fn
     )
-
     return train_loader, val_loader, test_loader
 
 
@@ -878,31 +517,13 @@ def create_ddp_dataloaders(
     train_dataset: QGDatasetBase,
     val_dataset: QGDatasetBase,
     test_dataset: QGDatasetBase,
-    config: Any,  # This should be the Omegaconf Config object now
-    rank: int = 0,
-    world_size: int = 1,
-) -> tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]:
-    """
-    Creates DistributedDataParallel (DDP) PyTorch DataLoaders using DistributedSampler.
-
-    Args:
-        train_dataset (QGDatasetBase): Training dataset.
-        val_dataset (QGDatasetBase): Validation dataset.
-        test_dataset (QGDatasetBase): Test dataset.
-        config (Any): Omegaconf Config object containing training parameters.
-        rank (int): Current process rank (for DDP).
-        world_size (int): Total number of processes (for DDP).
-
-    Returns:
-        tuple[DataLoaderWrapper, DataLoaderWrapper, DataLoaderWrapper]: Train, validation, and test DDP DataLoaders.
-    """
-    try:
-        batch_size = config.training.batch_size  # Access using dot notation
-    except KeyError as e:
-        raise KeyError(f"Missing required key in config for DDP dataloaders: {e}")
-
+    training_cfg: DictConfig,
+    rank: int,
+    world_size: int,
+):
+    bs = training_cfg.batch_size
     train_sampler = DistributedSampler(
-        train_dataset, num_replicas=world_size, rank=rank, shuffle=True
+        train_dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True
     )
     val_sampler = DistributedSampler(
         val_dataset, num_replicas=world_size, rank=rank, shuffle=False
@@ -913,24 +534,14 @@ def create_ddp_dataloaders(
 
     train_loader = DataLoaderWrapper(
         train_dataset,
+        batch_size=bs,
         sampler=train_sampler,
-        batch_size=batch_size,
         collate_fn=custom_collate_fn,
-        drop_last=True,
     )
     val_loader = DataLoaderWrapper(
-        val_dataset,
-        sampler=val_sampler,
-        batch_size=batch_size,
-        collate_fn=custom_collate_fn,
-        drop_last=False,
+        val_dataset, batch_size=bs, sampler=val_sampler, collate_fn=custom_collate_fn
     )
     test_loader = DataLoaderWrapper(
-        test_dataset,
-        sampler=test_sampler,
-        batch_size=batch_size,
-        collate_fn=custom_collate_fn,
-        drop_last=False,
+        test_dataset, batch_size=bs, sampler=test_sampler, collate_fn=custom_collate_fn
     )
-
     return train_loader, val_loader, test_loader
