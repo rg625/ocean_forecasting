@@ -52,7 +52,7 @@ class KoopmanOperator(nn.Module):
                 f"Expected input latent tensor z of shape (B, {self.latent_dim}), "
                 f"but got {z.shape}."
             )
-        return z + self.koopman_linear(z)
+        return self.koopman_linear(z)
 
     def forward(self, z: Tensor) -> Tensor:
         # Checkpointing is only beneficial during training.

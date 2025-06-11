@@ -1,11 +1,11 @@
 # Top-level run configuration
-output_dir: "model_outputs/production_run"
+output_dir: "model_outputs/128_inc_kl_1.0"
 ckpt: null
 log_epoch: 20
 
 # Data configuration
 data:
-  dataset_type: "SingleSimOverfit" #  "QGDatasetMultiSim" # CORRECTED: Matches the actual class name.
+  dataset_type: "QGDatasetMultiSim" #  "QGDatasetMultiSim" SingleSimOverfit # CORRECTED: Matches the actual class name.
   data_dir: "./data"
   train_file: "acdm/128_inc/train.nc"
   val_file: "acdm/128_inc/val.nc"
@@ -51,7 +51,7 @@ model:
 
 # Training loop configuration
 training:
-  batch_size: 1
+  batch_size: 60
   random_sequence_length: False
   num_epochs: 1000
   patience: 1000
@@ -70,6 +70,6 @@ lr_scheduler:
 loss:
   alpha: 1.0
   beta: 1.0
-  re_weight: 1.0
+  re_weight: 1.0e-4
   weighting_type: "cosine" # Enclosed in quotes for YAML consistency.
   sigma_blur: null
