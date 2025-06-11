@@ -80,7 +80,7 @@ def load_checkpoint(
         checkpoint_path: Path to the checkpoint file.
     """
     checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
     history = checkpoint.get("history", {})
     start_epoch = checkpoint.get("epoch", 0) + 1
@@ -106,9 +106,11 @@ def get_dataset_class_and_kwargs(config: dict):
             MultipleSims,
             {},
         )
-    # OVERFIT EXPERIMENTS ONLY
-    # elif norm_type == "diff":
-    #     return (MultipleSims, {"sim": norm_cfg.get("sim", "0000")})
+        # # OVERFIT EXPERIMENTS ONLY
+        # return (
+        #         SingleSimOverfit,
+        #         {},
+        #     )
     return QGDatasetBase, {}
 
 

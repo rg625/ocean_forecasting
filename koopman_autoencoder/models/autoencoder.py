@@ -54,7 +54,8 @@ class KoopmanOperator(nn.Module):
             torch.Tensor:
                 Residual change in latent space.
         """
-        return z + self.koopman_operator(
+        # return z + self.koopman_operator(
+        return self.koopman_operator(
             z
         )  # Residual latent connection z_{t+1} = (A + Id) z_t
 

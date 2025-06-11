@@ -325,22 +325,93 @@ class MultipleSims(QGDatasetBase):
 
 
 # OVERFIT EXPERIMENTS ONLY
-# class MultipleSims(QGDatasetBase):
-#     def __init__(
-#         self,
-#         data_path: str,
-#         input_sequence_length: int = 2,
-#         max_sequence_length: int = 2,
-#         variables: Optional[List[str]] = None,
-#         sim: int = 0,
-#     ):
-#         super().__init__(data_path, max_sequence_length, max_sequence_length, variables)
+class SingleSimOverfit(MultipleSims):
+    def __init__(
+        self,
+        data_path: str,
+        input_sequence_length: int = 2,
+        max_sequence_length: int = 2,
+        variables: Optional[List[str]] = None,
+    ):
+        # Track the number of simulations (sim dimension)
+        super().__init__(
+            data_path, input_sequence_length, max_sequence_length, variables
+        )
+        self.num_sims = 1
+        self.Re: Union[torch.Tensor] = (
+            self.data["Re"] if "Re" in self.data.variables else None
+        )
+        self.obstacle: Union[TensorDict, torch.Tensor] = (
+            self.data["obstacle_mask"]
+            if "obstacle_mask" in self.data.variables
+            else None
+        )
 
-#         # Override self.data to only keep the selected simulation
-#         self.data = self.data.isel(sim=sim)
+    def __len__(self):
+        # Each simulation has a different number of time steps (sim, t, x, y)
+        return self.num_sims * (
+            len(self.data["t"])
+            - self.input_sequence_length
+            - self.max_sequence_length
+            + 1
+        )
 
-#         # Now re-run normalization with the filtered data
-#         self._normalize()
+    def __getitem__(self, idx):
+        # If idx is a tuple, we extract the first element which is the index we want
+        if isinstance(idx, tuple):
+            idx, target_length = idx
+        else:
+            target_length = (
+                self.max_sequence_length
+            )  # Use default max_sequence_length if not provided
+
+        # Calculate which simulation and index in the simulation to sample from
+        sim_idx = 0
+        start_idx = idx % (
+            len(self.data["t"])
+            - self.input_sequence_length
+            - self.max_sequence_length
+            + 1
+        )
+
+        # Get the input sequence
+        input_seq = TensorDict(
+            {
+                var: self.stacked_data[var][
+                    sim_idx, start_idx : start_idx + self.input_sequence_length
+                ]
+                for var in self.variables
+                if var != "obstacle_mask"
+            },
+            batch_size=[],
+        )
+        input_seq["obstacle_mask"] = torch.tensor(
+            self.obstacle.values, dtype=torch.float32
+        )
+
+        # Get the target sequence (variable length)
+        # target_length = self.max_sequence_length
+        target_seq = TensorDict(
+            {
+                var: self.stacked_data[var][
+                    sim_idx,
+                    start_idx
+                    + self.input_sequence_length : start_idx
+                    + self.input_sequence_length
+                    + target_length,
+                ]
+                for var in self.variables
+                if var != "obstacle_mask"
+            },
+            batch_size=[],
+        )
+
+        # Add the sequence length to the target
+        target_seq["seq_length"] = torch.tensor(target_length, dtype=torch.int64)
+        target_seq["Re"] = torch.tensor(self.Re[sim_idx].item(), dtype=torch.float32)
+        # target_seq["obstacle_mask"] = torch.tensor(self.obstacle.values, dtype=torch.float32)
+
+        return input_seq, target_seq
 
 
 class BatchSampler(Sampler):
