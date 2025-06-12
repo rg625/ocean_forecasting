@@ -271,10 +271,8 @@ class KoopmanAutoencoder(nn.Module):
 
         if obstacle_mask is not None:
             # Broadcast mask to apply to all channels
-            mask = (
-                obstacle_mask.unsqueeze(1) if obstacle_mask.ndim == 3 else obstacle_mask
-            )
-            reconstructed_channels = reconstructed_channels * mask
+            mask = obstacle_mask[0, 0] if obstacle_mask.ndim == 4 else obstacle_mask
+            reconstructed_channels = reconstructed_channels * mask[None, None, :, :]
 
         # Dynamically split channels based on the data_variables dictionary
         decoded_data = {}

@@ -89,14 +89,17 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
     try:
         DatasetClass = get_dataset_class(cfg.data.dataset_type)
 
-        # CORRECTED: Instead of using a helper dictionary, we pass all arguments
-        # as explicit keywords. This is unambiguous to the mypy type checker.
+        common_args = {}
+        if cfg.data.static_variables:
+            common_args["static_variables"] = cfg.data.static_variables
+
         train_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.train_file,
             normalizer=get_normalizer(cfg),
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
+            **common_args,
         )
         val_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.val_file,
@@ -104,6 +107,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
+            **common_args,
         )
         test_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.test_file,
@@ -111,6 +115,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
+            **common_args,
         )
 
         logger.info(

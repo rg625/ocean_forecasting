@@ -278,34 +278,104 @@ class QGDatasetBase(Dataset):
 
 # --- Multi-Simulation Dataset ---
 class QGDatasetMultiSim(QGDatasetBase):
-    """Dataset for multiple simulations, handling indexing and metadata."""
+    """
+    Dataset for multiple simulations, handling dynamic and static variables
+    based on the provided configuration.
+    """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(
+        self,
+        data_path: Union[str, Path],
+        normalizer: AbstractNormalizer,
+        input_sequence_length: int,
+        max_sequence_length: int,
+        variables: Dict[str, int],
+        static_variables: Optional[Dict[str, int]] = None,
+        **kwargs,
+    ):
+        # Store the keys for dynamic and static variables
+        self.dynamic_keys = list(variables.keys())
+        self.static_keys = list(static_variables.keys()) if static_variables else []
+
+        all_variables_to_load = {**variables, **(static_variables or {})}
+
+        # These attributes will be populated in _load_data
         self.num_sims: int = 0
-        self.Re: Optional[torch.Tensor] = None
-        self.obstacle_mask: Optional[torch.Tensor] = None
         self.master_index: List[Tuple[int, int]] = []
-        super().__init__(*args, **kwargs)
+        self.static_tensors: Dict[str, torch.Tensor] = {}
+        self.Re: Optional[torch.Tensor] = None
+
+        super().__init__(
+            data_path,
+            normalizer,
+            input_sequence_length,
+            max_sequence_length,
+            variables=all_variables_to_load,
+        )
 
     def _load_data(self):
-        super()._load_data()
-        if "sim" not in self._data.dims:
-            raise DatasetConfigurationError("Expected 'sim' dimension in the dataset.")
-        self.num_sims = self._data.sizes["sim"]
-        if "Re" in self._data:
-            self.Re = torch.from_numpy(self._data["Re"].values).float()
-        if "obstacle_mask" in self.data_vars:
-            self.obstacle_mask = self.raw_data_td.get("obstacle_mask")
+        """
+        Loads data, correctly separating dynamic and static variables to prevent
+        the 'batch dimension mismatch' error.
+        This method completely overrides the base class's _load_data.
+        """
+        with xr.open_dataset(self.data_path) as ds:
+            self._data = ds
+
+            # --- Multi-sim specific setup ---
+            if "sim" not in self._data.dims:
+                raise DatasetConfigurationError(
+                    "Expected 'sim' dimension in the dataset."
+                )
+            self.num_sims = self._data.sizes["sim"]
+
+            if "Re" in self._data:
+                self.Re = torch.from_numpy(self._data["Re"].values).float()
+
+            # --- Segregated Variable Loading ---
+            # 1. Load ONLY DYNAMIC variables for the main TensorDict
+            dynamic_tensors = {
+                var: torch.from_numpy(ds[var].values).float()
+                for var in self.dynamic_keys
+            }
+
+            # 2. Load STATIC variables into a separate dictionary
+            self.static_tensors = {
+                var: torch.from_numpy(ds[var].values).float()
+                for var in self.static_keys
+            }
+
+            sample_var_name = self.dynamic_keys[0]
+            sample_tensor_shape = dynamic_tensors[sample_var_name].shape
+            num_feature_dims = 2  # (x, y)
+            num_batch_dims = len(sample_tensor_shape) - num_feature_dims
+            batch_size = list(sample_tensor_shape[:num_batch_dims])
+
+            self.raw_data_td = TensorDict(dynamic_tensors, batch_size=batch_size)
+
+            # Initialize mins/maxs required by the base class's `to_unit_range` method
+            self.mins = TensorDict(
+                {key: torch.min(tensor) for key, tensor in self.raw_data_td.items()},
+                batch_size=[],
+            )
+            self.maxs = TensorDict(
+                {key: torch.max(tensor) for key, tensor in self.raw_data_td.items()},
+                batch_size=[],
+            )
 
     @property
     def normalizer_vars(self) -> List[str]:
-        return [v for v in self.data_vars if v != "obstacle_mask"]
+        """Specifies that only dynamic variables should be normalized."""
+        return self.dynamic_keys
 
     def _prepare_data(self):
+        """Computes the master index before preparing the data."""
         self._compute_master_index()
+        # This now calls the modified QGDatasetBase._prepare_data
         super()._prepare_data()
 
     def _compute_master_index(self):
+        """Creates a master list of all possible (sim, start_index) pairs."""
         self.master_index = []
         num_timesteps = self._data.sizes["t"]
         valid_starts = (
@@ -321,6 +391,10 @@ class QGDatasetMultiSim(QGDatasetBase):
         return len(self.master_index)
 
     def __getitem__(self, idx: Union[int, Tuple[int, int]]):
+        """
+        Retrieves a sample and prepares a single metadata dictionary where each
+        value is a (data, destination_marker) tuple.
+        """
         flat_idx, target_length = (
             (idx, self.max_sequence_length) if isinstance(idx, int) else idx
         )
@@ -335,20 +409,23 @@ class QGDatasetMultiSim(QGDatasetBase):
         input_seq = self.stacked_data[sim_idx, start_idx:input_end]
         target_seq = self.stacked_data[sim_idx, input_end:target_end]
 
-        # Create a metadata dictionary to be handled by the custom collate function.
-        metadata = {"seq_length": target_length}
+        # --- Prepare a single metadata dictionary with destination markers ---
+        metadata = {}
+
+        mask_tensor = self.static_tensors.get("obstacle_mask")
+        if mask_tensor is not None:
+            if "sim" in self._data["obstacle_mask"].dims:
+                data = mask_tensor[sim_idx]
+            else:
+                data = mask_tensor
+            metadata["obstacle_mask"] = (data, "input")
+
+        # seq_length and Re -> marked for 'target'
+        metadata["seq_length"] = (target_length, "target")
         if self.Re is not None:
-            metadata["Re"] = self.Re[sim_idx]
+            metadata["Re"] = (self.Re[sim_idx], "target")
 
-        if self.obstacle_mask is not None:
-            mask = (
-                self.obstacle_mask
-                if self.obstacle_mask.ndim == 2
-                else self.obstacle_mask[sim_idx]
-            )
-            # Add a time dimension to the mask to make it broadcastable with the input sequence.
-            input_seq.set("obstacle_mask", mask.unsqueeze(0), inplace=True)
-
+        # This returns the standard 3-tuple
         return input_seq, target_seq, metadata
 
 
@@ -435,38 +512,49 @@ class DataLoaderWrapper(DataLoader):
 
 def custom_collate_fn(batch: List[Tuple[TensorDict, TensorDict, Dict]]):
     """
-    Collates data and metadata into final batched TensorDicts.
-    This function now correctly handles the metadata dictionary.
+    Collates data and routes metadata to the input or target TensorDict
+    based on a destination marker in the metadata values.
     """
     input_tds, target_tds, meta_dicts = zip(*batch)
 
-    # Stack the TensorDicts for data variables
     batched_inputs = stack_tensordict(input_tds)
     batched_targets = stack_tensordict(target_tds)
 
-    # Collate the metadata and add it to the final batched TensorDicts
+    # Check if there's any metadata to process
+    if not meta_dicts or not meta_dicts[0]:
+        return batched_inputs, batched_targets
+
+    # Process each key from the metadata dictionaries
     for key in meta_dicts[0].keys():
-        if isinstance(meta_dicts[0][key], torch.Tensor):
-            meta_tensor = torch.stack([d[key] for d in meta_dicts])
+        # --- 1. Unpack data and destination from the batch ---
+        # The value for each item is a (data, destination) tuple.
+        data_list = [d[key][0] for d in meta_dicts]
+        destination_marker = meta_dicts[0][key][1]  # 'input' or 'target'
+
+        # --- 2. Batch the data ---
+        if isinstance(data_list[0], torch.Tensor):
+            meta_tensor = torch.stack(data_list)
         else:
-            meta_tensor = torch.tensor([d[key] for d in meta_dicts])
+            meta_tensor = torch.tensor(data_list)
 
-        ####################################
-        ### THIS IS THE CORRECTED SECTION ###
-        ####################################
+        # --- 3. Identify the destination TensorDict ---
+        if destination_marker == "input":
+            destination_td = batched_inputs
+        elif destination_marker == "target":
+            destination_td = batched_targets
+        else:
+            # Skip any items with an unknown destination
+            continue
 
-        # Get the target batch dimensions (e.g., [1, 10])
-        target_batch_size = batched_targets.batch_size
+        # --- 4. Expand and assign to the correct destination ---
+        seq_len = destination_td.batch_size[1]
 
-        # Reshape the metadata tensor from [batch_size] to [batch_size, 1]
         meta_tensor_reshaped = meta_tensor.unsqueeze(1)
+        expand_shape = list(meta_tensor_reshaped.shape)
+        expand_shape[1] = seq_len
+        meta_tensor_expanded = meta_tensor_reshaped.expand(*expand_shape)
 
-        # Explicitly expand the metadata tensor to match the target's batch dimensions.
-        # This changes the shape from [batch_size, 1] to [batch_size, seq_len].
-        meta_tensor_expanded = meta_tensor_reshaped.expand(*target_batch_size)
-
-        # Set the expanded tensor. The shapes now match exactly.
-        batched_targets.set(key, meta_tensor_expanded)
+        destination_td.set(key, meta_tensor_expanded)
 
     return batched_inputs, batched_targets
 
