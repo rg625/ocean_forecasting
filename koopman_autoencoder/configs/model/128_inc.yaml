@@ -5,21 +5,21 @@ log_epoch: 20
 
 # Data configuration
 data:
-  dataset_type: "QGDatasetMultiSim" #  "QGDatasetMultiSim" SingleSimOverfit # CORRECTED: Matches the actual class name.
+  dataset_type: "QGDatasetMultiSim" # "SingleSimOverfit"
   data_dir: "./data"
   train_file: "acdm/128_inc/train.nc"
   val_file: "acdm/128_inc/val.nc"
   test_file: "acdm/128_inc/test.nc"
   input_sequence_length: 2
   max_sequence_length: 10
-  # ADDED: This is now a required field for the model and dataloader.
-  # It maps variable names to their number of channels.
   variables:
     v_x: 1
     v_y: 1
-    p: 1 # Example: assuming 3 single-channel variables.
+    p: 1
+  static_variables:
+    obstacle_mask: 1
   normalization:
-    type: "MeanStdNormalizer" # CORRECTED: Must be a valid normalizer type.
+    type: "MeanStdNormalizer"
     sim: 0
   quantile_range: [2.5, 97.5]
 
@@ -27,7 +27,7 @@ data:
 metric:
   mode: "SSIM"
   variable_mode: "all"
-  variable_name: null # Correctly null for 'all' mode.
+  variable_name: null
 
 # Model architecture configuration
 model:
@@ -47,11 +47,11 @@ model:
     max_len: 1000
     dropout: 0.1
   predict_re: True
-  re_grad_enabled: False # ADDED: Explicitly control regularization.
+  re_grad_enabled: False
 
 # Training loop configuration
 training:
-  batch_size: 60
+  batch_size: 30
   random_sequence_length: False
   num_epochs: 1000
   patience: 1000
@@ -71,5 +71,5 @@ loss:
   alpha: 1.0
   beta: 1.0
   re_weight: 1.0e-4
-  weighting_type: "cosine" # Enclosed in quotes for YAML consistency.
+  weighting_type: "cosine"
   sigma_blur: null
