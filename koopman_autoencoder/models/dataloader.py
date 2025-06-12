@@ -304,6 +304,14 @@ class QGDatasetMultiSim(QGDatasetBase):
         self.master_index: List[Tuple[int, int]] = []
         self.static_tensors: Dict[str, torch.Tensor] = {}
         self.Re: Optional[torch.Tensor] = None
+        # TOD0: Add mask after normalizaton and denoralization in the code  for both single sim overfir and multiple sims
+
+        # if self.static_tensors.get("obstacle_mask") is not None:
+        #     print("Obstacle mask found")
+        #     if "sim" in self._data["obstacle_mask"].dims:
+        #         self.obstacle_mask = self.static_tensors.get("obstacle_mask")[0]
+        #     else:
+        #         self.obstacle_mask = self.static_tensors.get("obstacle_mask")
 
         super().__init__(
             data_path,
@@ -363,6 +371,10 @@ class QGDatasetMultiSim(QGDatasetBase):
                 batch_size=[],
             )
 
+    def denormalize(self, data: TensorDict) -> TensorDict:
+        denormalized = self.normalizer.inverse_transform(data)
+        return self.apply_mask(denormalized)
+
     @property
     def normalizer_vars(self) -> List[str]:
         """Specifies that only dynamic variables should be normalized."""
@@ -390,6 +402,14 @@ class QGDatasetMultiSim(QGDatasetBase):
     def __len__(self) -> int:
         return len(self.master_index)
 
+    def apply_mask(self, x: Union[TensorDict]) -> Union[TensorDict]:
+        """
+        Applies an obstacle mask to either a TensorDict or a single Tensor.
+        """
+        if self.obstacle_mask is None:
+            return x.apply(lambda tensor: tensor * self.obstacle_mask)
+        return x
+
     def __getitem__(self, idx: Union[int, Tuple[int, int]]):
         """
         Retrieves a sample and prepares a single metadata dictionary where each
@@ -408,22 +428,17 @@ class QGDatasetMultiSim(QGDatasetBase):
 
         input_seq = self.stacked_data[sim_idx, start_idx:input_end]
         target_seq = self.stacked_data[sim_idx, input_end:target_end]
-
         # --- Prepare a single metadata dictionary with destination markers ---
         metadata = {}
-
-        mask_tensor = self.static_tensors.get("obstacle_mask")
-        if mask_tensor is not None:
-            if "sim" in self._data["obstacle_mask"].dims:
-                data = mask_tensor[sim_idx]
-            else:
-                data = mask_tensor
-            metadata["obstacle_mask"] = (data, "input")
+        metadata["obstacle_mask"] = (self.obstacle_mask, "input")
 
         # seq_length and Re -> marked for 'target'
         metadata["seq_length"] = (target_length, "target")
         if self.Re is not None:
             metadata["Re"] = (self.Re[sim_idx], "target")
+
+        input_seq = self.apply_mask(input_seq)
+        target_seq = self.apply_mask(target_seq)
 
         # This returns the standard 3-tuple
         return input_seq, target_seq, metadata

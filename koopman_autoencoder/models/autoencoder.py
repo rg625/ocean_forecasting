@@ -293,7 +293,6 @@ class KoopmanAutoencoder(nn.Module):
         # --- Input Handling ---
         obstacle_mask = x.get("obstacle_mask", None)
         x_data = x.exclude("obstacle_mask") if "obstacle_mask" in x else x
-
         # --- Sequence Length Parsing ---
         seq_length_int = (
             seq_length[0, 0].item()
@@ -328,8 +327,8 @@ class KoopmanAutoencoder(nn.Module):
             )
 
         # --- Autoregressive Rollout in Latent Space ---
-        z_preds_list = [z0]
         z_current = z0
+        z_preds_list = []
         for _ in range(seq_length_int):
             z_current = self.koopman_operator(z_current)
             z_preds_list.append(z_current)
@@ -338,10 +337,10 @@ class KoopmanAutoencoder(nn.Module):
 
         # --- Decode Reconstruction and Predictions ---
         # Decode reconstruction of the initial state
-        x_recon = self.decode(z_preds_stacked[:, 0], obstacle_mask)
+        x_recon = self.decode(z0, obstacle_mask)
 
         # **PERFORMANCE-CRITICAL**: Decode all future steps in a single batched pass
-        future_z_batch = z_preds_stacked[:, 1:].reshape(
+        future_z_batch = z_preds_stacked.view(
             -1, self.latent_dim
         )  # Shape: (B * T_pred, D)
         if future_z_batch.shape[0] > 0:
@@ -359,8 +358,14 @@ class KoopmanAutoencoder(nn.Module):
         # --- Predict Reynolds Number ---
         reynolds = None
         if self.predict_re and self.re_predictor is not None:
-            # Detach unless gradient flow is explicitly enabled
-            z_for_re = z_preds_stacked.detach()
+            # Conditionally detach based on the re_grad_enabled flag
+            if self.re_grad_enabled:
+                # Gradients will flow back to the main model
+                z_for_re = z_preds_stacked
+            else:
+                # Gradients are stopped, only the Re head is trained
+                z_for_re = z_preds_stacked.detach()
+
             reynolds = self.re_predictor(z_for_re)
 
         return KoopmanOutput(
