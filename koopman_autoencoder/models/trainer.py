@@ -3,6 +3,7 @@ import numpy as np
 from torch import Tensor
 from torch.optim import Optimizer
 from tensordict import TensorDict
+import torch.distributed as dist
 import matplotlib.pyplot as plt
 from pathlib import Path
 import yaml
@@ -73,6 +74,12 @@ class Trainer:
         if self.output_dir:
             self.output_dir.mkdir(exist_ok=True)
 
+    @staticmethod
+    def is_main_process() -> bool:
+        return (
+            not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+        )
+
     def train_step(self, input: TensorDict, target: TensorDict):
         """
         Performs a single training step.
@@ -110,8 +117,9 @@ class Trainer:
             for name, param in self.model.named_parameters()
         }
 
-        wandb.log(grad_norms)
-        wandb.log(param_norms)
+        if self.is_main_process():
+            wandb.log(grad_norms)
+            wandb.log(param_norms)
 
         # Compute evaluation metric if available
         if self.eval_metrics:
@@ -119,8 +127,8 @@ class Trainer:
             preds_denorm = self.train_loader.denormalize(out.x_preds)
 
             # Map both to [0, 1] using dataset min/max
-            target_unit = self.train_loader.dataset.to_unit_range(target_denorm)
-            preds_unit = self.train_loader.dataset.to_unit_range(preds_denorm)
+            target_unit = self.train_loader.to_unit_range(target_denorm)
+            preds_unit = self.train_loader.to_unit_range(preds_denorm)
 
             metric_value = self.eval_metrics.compute_distance(target_unit, preds_unit)
             losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
@@ -247,7 +255,8 @@ class Trainer:
                 wandb_log_dict[f"loss/{mode}/{key}"] = value
 
         # Log to W&B
-        wandb.log(wandb_log_dict)
+        if self.is_main_process():
+            wandb.log(wandb_log_dict)
 
     def plot_training_history(self):
         """

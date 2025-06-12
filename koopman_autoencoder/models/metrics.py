@@ -46,6 +46,16 @@ class Metric(nn.Module):
             Tensor of shape [B, T] with per-frame distances
         """
         assert ref.shape == other.shape
+        if ref.ndim == 2:
+            # Assume shape [H, W] → add batch dim
+            ref = ref.unsqueeze(0).unsqueeze(1)
+            other = other.unsqueeze(0).unsqueeze(1)
+        if ref.ndim == 3:
+            # Assume shape [T, H, W] → add batch dim
+            ref = ref.unsqueeze(0)
+            other = other.unsqueeze(0)
+        elif ref.ndim != 4:
+            raise ValueError(f"Expected ref to have 3 or 4 dims, got {ref.shape}")
         B, T, H, W = ref.shape
 
         ref_np = (ref * 255).clamp(0, 255).byte().cpu().numpy()
