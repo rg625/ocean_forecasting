@@ -304,14 +304,7 @@ class QGDatasetMultiSim(QGDatasetBase):
         self.master_index: List[Tuple[int, int]] = []
         self.static_tensors: Dict[str, torch.Tensor] = {}
         self.Re: Optional[torch.Tensor] = None
-        # TOD0: Add mask after normalizaton and denoralization in the code  for both single sim overfir and multiple sims
-
-        # if self.static_tensors.get("obstacle_mask") is not None:
-        #     print("Obstacle mask found")
-        #     if "sim" in self._data["obstacle_mask"].dims:
-        #         self.obstacle_mask = self.static_tensors.get("obstacle_mask")[0]
-        #     else:
-        #         self.obstacle_mask = self.static_tensors.get("obstacle_mask")
+        self.obstacle_mask: Optional[torch.Tensor] = None  # Initialize as None
 
         super().__init__(
             data_path,
@@ -352,6 +345,12 @@ class QGDatasetMultiSim(QGDatasetBase):
                 var: torch.from_numpy(ds[var].values).float()
                 for var in self.static_keys
             }
+            if "obstacle_mask" in self.static_tensors:
+                logger.info("Obstacle mask found and processed from static variables.")
+                mask_tensor = self.static_tensors["obstacle_mask"]
+                self.obstacle_mask = (
+                    mask_tensor[0] if mask_tensor.ndim > 2 else mask_tensor
+                )
 
             sample_var_name = self.dynamic_keys[0]
             sample_tensor_shape = dynamic_tensors[sample_var_name].shape
@@ -374,6 +373,10 @@ class QGDatasetMultiSim(QGDatasetBase):
     def denormalize(self, data: TensorDict) -> TensorDict:
         denormalized = self.normalizer.inverse_transform(data)
         return self.apply_mask(denormalized)
+
+    def to_unit_range(self, data: TensorDict) -> TensorDict:
+        super().to_unit_range(data=data)
+        return self.apply_mask(data)
 
     @property
     def normalizer_vars(self) -> List[str]:
@@ -402,13 +405,34 @@ class QGDatasetMultiSim(QGDatasetBase):
     def __len__(self) -> int:
         return len(self.master_index)
 
-    def apply_mask(self, x: Union[TensorDict]) -> Union[TensorDict]:
+    def apply_mask(self, x: TensorDict) -> TensorDict:
         """
-        Applies an obstacle mask to either a TensorDict or a single Tensor.
+        Applies an obstacle mask by dynamically broadcasting it to the shape of
+        each tensor in the TensorDict. This is the most robust method.
         """
         if self.obstacle_mask is None:
-            return x.apply(lambda tensor: tensor * self.obstacle_mask)
-        return x
+            return x
+
+        def broadcasting_mask_apply(tensor: torch.Tensor) -> torch.Tensor:
+            """
+            A closure that applies the correctly reshaped mask to a tensor.
+            """
+            assert self.obstacle_mask is not None, "Cannot apply None masking"
+            mask = self.obstacle_mask.to(tensor.device)
+            mask_shape = mask.shape
+            tensor_shape = tensor.shape
+            mask_rank = mask.ndim
+            tensor_rank = tensor.ndim
+
+            if tensor_rank >= mask_rank and tensor_shape[-mask_rank:] == mask_shape:
+                new_shape = (1,) * (tensor_rank - mask_rank) + mask_shape
+                broadcastable_mask = mask.view(new_shape)
+
+                return tensor * broadcastable_mask
+            else:
+                return tensor
+
+        return x.apply(broadcasting_mask_apply)
 
     def __getitem__(self, idx: Union[int, Tuple[int, int]]):
         """
