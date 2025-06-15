@@ -201,7 +201,8 @@ class Trainer:
                         x_recon=dataloader.denormalize(out.x_recon),
                         x_preds=dataloader.denormalize(out.x_preds),
                         output_dir=self.output_dir,
-                        mode=f"{mode}_epoch{epoch:04d}_batch{i:03d}",
+                        # mode=f"{mode}_epoch{epoch:04d}_batch{i:03d}",
+                        mode=f"{mode}",
                     )
 
         final_metrics = average_losses(total_losses, len(dataloader))

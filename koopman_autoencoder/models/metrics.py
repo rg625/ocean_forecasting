@@ -80,10 +80,8 @@ class Metric(nn.Module):
             torch.Tensor: A tensor of shape [B, T] with the computed distances.
         """
         if self.variable_mode == "single":
-            ref_tensor = reference.get(self.variable_name).unsqueeze(
-                2
-            )  # Add channel dim
-            other_tensor = other.get(self.variable_name).unsqueeze(2)
+            ref_tensor = reference.get(self.variable_name)
+            other_tensor = other.get(self.variable_name)
             return self._compute_distance(ref_tensor, other_tensor)
 
         elif self.variable_mode == "all":

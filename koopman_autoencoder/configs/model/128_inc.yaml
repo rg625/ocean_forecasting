@@ -5,10 +5,10 @@ log_epoch: 20
 
 # Data configuration
 data:
-  dataset_type: "SingleSimOverfit" # "QGDatasetMultiSim" # "SingleSimOverfit"
+  dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
   data_dir: "./data"
-  train_file: "acdm/128_inc/train_overfit.nc"
-  val_file: "acdm/128_inc/train_overfit.nc"
+  train_file: "acdm/128_inc/train.nc"
+  val_file: "acdm/128_inc/val.nc"
   test_file: "acdm/128_inc/test.nc"
   input_sequence_length: 2
   max_sequence_length: 10
@@ -51,20 +51,20 @@ model:
 
 # Training loop configuration
 training:
-  batch_size: 80
+  batch_size: 41
   random_sequence_length: False
   num_epochs: 1000
-  patience: 1000
+  patience: 100
   use_checkpoint: True
   save_latest_every: 1
   num_visual_batches: 1
 
 # Learning rate scheduler configuration
 lr_scheduler:
-  lr: 1.0e-3
+  lr: 1.0e-4
   warmup: 10
-  decay: 100
-  final_lr: 1.0e-4
+  decay: 990
+  final_lr: 1.0e-5
 
 # Loss function configuration
 loss:
