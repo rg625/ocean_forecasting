@@ -87,7 +87,12 @@ class Re(nn.Module):
             raise ValueError("latent_dim must be a positive integer.")
         self.use_checkpoint = use_checkpoint
         self.latent_dim = latent_dim
-        self.re_predictor = nn.Sequential(nn.Linear(latent_dim, 1), nn.Softplus())
+        self.re_predictor = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim // 8),
+            nn.SiLU(),
+            nn.Linear(latent_dim // 8, 1),
+            nn.Softplus(),
+        )
 
     def _forward_impl(self, z: Tensor) -> Tensor:
         original_shape = z.shape
@@ -107,7 +112,7 @@ class Re(nn.Module):
 
     def forward(self, z: Tensor) -> Tensor:
         if self.use_checkpoint and self.training:
-            return checkpoint(self._forward_impl, z, use_reentrant=True)
+            return checkpoint(self._forward_impl, z, use_reentrant=False)
         else:
             return self._forward_impl(z)
 
