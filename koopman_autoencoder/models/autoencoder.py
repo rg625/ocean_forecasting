@@ -3,7 +3,7 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 from tensordict import TensorDict
 from torch import Tensor
-from typing import Union, Tuple, Optional, List, Dict
+from typing import Union, Tuple, Optional, List, Dict, Literal
 from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
@@ -35,27 +35,105 @@ class KoopmanOutput:
 class KoopmanOperator(nn.Module):
     """
     Koopman operator for learning linear dynamics in latent space.
-    Implements a residual connection: z_{t+1} = z_t + A * z_t.
+    Implements a residual connection: z_{t+1} = K(z_t).
+
+    This class supports multiple operational modes for the operator K:
+    - 'linear': A standard single linear layer K.
+    - 'eigen': Learns the eigenvalues and eigenvectors of K directly and
+               reconstructs the operation z -> K @ z.
+    - 'mlp': A non-linear multi-layer perceptron.
     """
 
-    def __init__(self, latent_dim: int, use_checkpoint: bool = False):
+    def __init__(
+        self,
+        latent_dim: int,
+        mode: Literal["linear", "eigen", "mlp"] = "linear",
+        assume_orthogonal_eigenvectors: bool = True,
+        use_checkpoint: bool = False,
+    ):
+        """
+        Initializes the KoopmanOperator.
+
+        Args:
+            latent_dim (int): The dimension of the latent space.
+            mode (str): The operational mode. One of 'linear', 'eigen', 'mlp'.
+            assume_orthogonal_eigenvectors (bool): In 'eigen' mode, if True,
+                assumes eigenvectors are orthogonal (P_inv = P.T), which is
+                more stable and faster. Defaults to False.
+            use_checkpoint (bool): Whether to use checkpointing during training.
+        """
         super().__init__()
         if not isinstance(latent_dim, int) or latent_dim <= 0:
             raise ValueError("latent_dim must be a positive integer.")
-        self.use_checkpoint = use_checkpoint
+        if mode not in ["linear", "eigen", "mlp"]:
+            raise ValueError("mode must be one of 'linear', 'eigen', or 'mlp'.")
+
         self.latent_dim = latent_dim
-        self.koopman_linear = nn.Linear(latent_dim, latent_dim, bias=False)
+        self.mode = mode
+        self.use_checkpoint = use_checkpoint
+        self.assume_orthogonal = assume_orthogonal_eigenvectors
+
+        if self.mode == "linear":
+            self.koopman_linear = nn.Linear(latent_dim, latent_dim, bias=False)
+
+        elif self.mode == "eigen":
+            self.eigenvalues = nn.Parameter(torch.randn(self.latent_dim))
+            self.eigenvectors = nn.Parameter(
+                torch.randn(self.latent_dim, self.latent_dim)
+            )
+            # Optional: Initialize eigenvectors to be nearly orthogonal
+            # qr_decomp = torch.linalg.qr(self.eigenvectors.data)
+            # self.eigenvectors.data = qr_decomp.Q
+
+        elif self.mode == "mlp":
+            self.koopman_mlp = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim // 8),
+                nn.ReLU(),
+                nn.Linear(latent_dim // 8, latent_dim),
+            )
 
     def _forward_impl(self, z: Tensor) -> Tensor:
+        """Internal forward implementation based on the selected mode."""
         if z.ndim != 2 or z.shape[1] != self.latent_dim:
             raise ValueError(
                 f"Expected input latent tensor z of shape (B, {self.latent_dim}), "
                 f"but got {z.shape}."
             )
-        return self.koopman_linear(z)
+
+        if self.mode == "linear":
+            return self.koopman_linear(z)
+        elif self.mode == "eigen":
+            return self._forward_eigen(z)
+        elif self.mode == "mlp":
+            return self.koopman_mlp(z)
+
+    def _forward_eigen(self, z: Tensor) -> Tensor:
+        """
+        Performs the linear transformation by recomposing from learned
+        eigenvalues and eigenvectors: K@z = P @ diag(λ) @ P_inv @ z
+        """
+        P = self.eigenvectors
+
+        # Determine the inverse of the eigenvector matrix P
+        if self.assume_orthogonal:
+            P_inv = P.T
+        else:
+            try:
+                P_inv = torch.linalg.inv(P)
+            except torch.linalg.LinAlgError:
+                return torch.zeros_like(z)
+
+        z_eig_space = P_inv @ z.T
+        Lambda = torch.diag_embed(self.eigenvalues)
+        scaled_z = Lambda @ z_eig_space
+        recomposed_z = P @ scaled_z
+        return recomposed_z.T
 
     def forward(self, z: Tensor) -> Tensor:
-        # Checkpointing is only beneficial during training.
+        """
+        Applies the Koopman operator to the latent state z.
+        The full dynamics are z_{t+1} = z_t + K(z_t).
+        """
         if self.use_checkpoint and self.training:
             return checkpoint(self._forward_impl, z, use_reentrant=True)
         else:
@@ -131,6 +209,7 @@ class KoopmanAutoencoder(nn.Module):
         height: int = 64,
         width: int = 64,
         latent_dim: int = 32,
+        operator_mode: Literal["linear", "eigen", "mlp"] = "linear",
         hidden_dims: List[int] = [64, 128, 64],
         block_size: int = 2,
         kernel_size: Union[int, Tuple[int, int]] = 3,
@@ -150,6 +229,7 @@ class KoopmanAutoencoder(nn.Module):
             height (int): Height of the input data spatial dimension.
             width (int): Width of the input data spatial dimension.
             latent_dim (int): Dimensionality of the latent space.
+            operator_mode (ste): Mode for operator matrix calculation.
             hidden_dims (List[int]): List of hidden dimensions for encoder/decoder layers.
             block_size (int): Number of convolutional layers in a block.
             kernel_size (Union[int, Tuple[int, int]]): Size of the convolution kernel.
@@ -216,7 +296,7 @@ class KoopmanAutoencoder(nn.Module):
 
         # Koopman Operator and Reynolds Predictor
         self.koopman_operator = KoopmanOperator(
-            latent_dim=latent_dim, use_checkpoint=use_checkpoint
+            latent_dim=latent_dim, mode=operator_mode, use_checkpoint=use_checkpoint
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)

@@ -99,6 +99,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
+            subsample=cfg.data.subsample,
             **common_args,
         )
         val_dataset = DatasetClass(
@@ -107,6 +108,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
+            subsample=cfg.data.subsample,
             **common_args,
         )
         test_dataset = DatasetClass(
@@ -115,6 +117,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
+            subsample=cfg.data.subsample,
             **common_args,
         )
 
