@@ -22,6 +22,7 @@ class DataConfig:
     test_file: str = MISSING
     input_sequence_length: int = MISSING
     max_sequence_length: int = MISSING
+    subsample: int = MISSING
     # A dictionary mapping variable names to their channel counts is crucial.
     variables: Dict[str, int] = field(default_factory=dict)
     static_variables: Dict[str, int] = field(default_factory=dict)
@@ -39,6 +40,7 @@ class ModelConfig:
     kernel_size: int = MISSING
     conv_kwargs: Dict[str, Any] = field(default_factory=dict)
     latent_dim: int = MISSING
+    operator_mode: str = MISSING
     # Use the specific TransformerConfig dataclass for type safety
     transformer: ModelTransformerConfig = field(default_factory=ModelTransformerConfig)
     predict_re: bool = False

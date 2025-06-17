@@ -201,9 +201,9 @@ class Trainer:
                         x_recon=dataloader.denormalize(out.x_recon),
                         x_preds=dataloader.denormalize(out.x_preds),
                         output_dir=self.output_dir,
-                        # mode=f"{mode}_epoch{epoch:04d}_batch{i:03d}",
                         mode=f"{mode}",
                     )
+                # TODO: Add number of batches break
 
         final_metrics = average_losses(total_losses, len(dataloader))
         if self.eval_metrics:
@@ -276,6 +276,7 @@ class Trainer:
             self._log_metrics(avg_train_metrics, epoch, "train")
 
             if epoch % self.log_epoch == 0 or epoch == self.num_epochs - 1:
+                # TODO: Add train logging figures in WandB too
                 val_metrics = self.evaluate(self.val_loader, epoch, "val")
                 avg_val_metrics = self._gather_and_average_metrics(val_metrics)
                 self._log_metrics(avg_val_metrics, epoch, "val")

@@ -178,6 +178,7 @@ class QGDatasetBase(Dataset):
         input_sequence_length: int,
         max_sequence_length: int,
         variables: Dict[str, int],
+        subsample: int = 1,
     ):
         self.data_path = Path(data_path)
         if not self.data_path.exists():
@@ -187,6 +188,7 @@ class QGDatasetBase(Dataset):
         self.max_sequence_length = max_sequence_length
         self.normalizer = normalizer
         self.data_vars = list(variables.keys())
+        self.subsample = subsample
 
         self._load_data()
         self._prepare_data()
@@ -234,30 +236,49 @@ class QGDatasetBase(Dataset):
     def __len__(self) -> int:
         time_dim_index = self.raw_data_td.batch_dims - 1
         num_timesteps = self.raw_data_td.batch_size[time_dim_index]
-        total_len = (
-            num_timesteps - self.input_sequence_length - self.max_sequence_length + 1
-        )
+        required_timesteps = (
+            (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
+        ) + 1
+
+        if num_timesteps < required_timesteps:
+            return 0
+
+        total_len = num_timesteps - required_timesteps + 1
         return int(max(0, total_len))
 
     def __getitem__(self, idx: Union[int, Tuple[int, int]]):
+        """
+        Retrieves a single input/target sequence pair at a given index.
+
+        The `idx` corresponds to the starting time index in the original `stacked_data`.
+        """
+        # Determine the starting index and the desired target length
         start_idx, target_length = (
             (idx, self.max_sequence_length) if isinstance(idx, int) else idx
         )
+
+        # Validate that the target_length is within the allowed bounds
         if not (0 <= target_length <= self.max_sequence_length):
             raise ValueError(
                 f"target_length must be in [0, {self.max_sequence_length}]"
             )
 
-        input_end = start_idx + self.input_sequence_length
-        target_end = input_end + target_length
+        # Calculate the end point for the input sequence slice.
+        # To get `L` points with a step of `S`, the slice must be `data[t : t + L*S : S]`.
+        input_end = start_idx + self.input_sequence_length * self.subsample
+        input_seq = self.stacked_data[..., start_idx : input_end : self.subsample, :, :]
 
-        input_seq = self.stacked_data[..., start_idx:input_end, :, :]
-        target_seq = self.stacked_data[..., input_end:target_end, :, :]
+        # The target sequence starts immediately after the input sequence's window.
+        target_start = input_end
+        target_end = target_start + target_length * self.subsample
+        target_seq = self.stacked_data[
+            ..., target_start : target_end : self.subsample, :, :
+        ]
 
-        # Create a metadata dictionary. The custom collate function will handle this.
+        # Create a metadata dictionary. A custom collate function can handle this.
         metadata = {"seq_length": target_length}
 
-        # Return a 3-tuple that the custom_collate_fn expects
+        # Return a 3-tuple that a custom_collate_fn would expect
         return input_seq, target_seq, metadata
 
     def denormalize(self, data: TensorDict) -> TensorDict:
@@ -291,12 +312,13 @@ class QGDatasetMultiSim(QGDatasetBase):
         max_sequence_length: int,
         variables: Dict[str, int],
         static_variables: Optional[Dict[str, int]] = None,
+        subsample: int = 1,
         **kwargs,
     ):
         # Store the keys for dynamic and static variables
         self.dynamic_keys = list(variables.keys())
         self.static_keys = list(static_variables.keys()) if static_variables else []
-
+        self.subsample = subsample
         all_variables_to_load = {**variables, **(static_variables or {})}
 
         # These attributes will be populated in _load_data
@@ -312,6 +334,7 @@ class QGDatasetMultiSim(QGDatasetBase):
             input_sequence_length,
             max_sequence_length,
             variables=all_variables_to_load,
+            subsample=subsample,
         )
 
     def _load_data(self):
@@ -393,9 +416,13 @@ class QGDatasetMultiSim(QGDatasetBase):
         """Creates a master list of all possible (sim, start_index) pairs."""
         self.master_index = []
         num_timesteps = self._data.sizes["t"]
-        valid_starts = (
-            num_timesteps - self.input_sequence_length - self.max_sequence_length + 1
-        )
+        # The total number of timesteps needed for one full sample
+        required_length = (
+            self.input_sequence_length + self.max_sequence_length
+        ) * self.subsample
+
+        # The number of valid starting positions
+        valid_starts = num_timesteps - required_length + 1
         if valid_starts > 0:
             for sim_idx in range(self.num_sims):
                 self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
@@ -447,11 +474,15 @@ class QGDatasetMultiSim(QGDatasetBase):
 
         sim_idx, start_idx = self.master_index[flat_idx]
 
-        input_end = start_idx + self.input_sequence_length
-        target_end = input_end + target_length
+        input_end = start_idx + self.input_sequence_length * self.subsample
+        input_seq = self.stacked_data[sim_idx, start_idx : input_end : self.subsample]
 
-        input_seq = self.stacked_data[sim_idx, start_idx:input_end]
-        target_seq = self.stacked_data[sim_idx, input_end:target_end]
+        target_start = input_end
+        target_end = target_start + target_length * self.subsample
+        target_seq = self.stacked_data[
+            sim_idx, target_start : target_end : self.subsample
+        ]
+
         # --- Prepare a single metadata dictionary with destination markers ---
         metadata = {}
         metadata["obstacle_mask"] = (self.obstacle_mask, "input")

@@ -1,6 +1,6 @@
 # Top-level run configuration
 output_dir: "model_outputs/128_inc_kl_1.0"
-ckpt: null
+ckpt: null # '/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0/run-20250615_122521/checkpoints/best_model.pth'
 log_epoch: 20
 
 # Data configuration
@@ -11,7 +11,8 @@ data:
   val_file: "acdm/128_inc/val.nc"
   test_file: "acdm/128_inc/test.nc"
   input_sequence_length: 2
-  max_sequence_length: 10
+  max_sequence_length: 8
+  subsample: 2
   variables:
     v_x: 1
     v_y: 1
@@ -40,6 +41,7 @@ model:
     padding: 1
     padding_mode: "circular"
   latent_dim: 1024
+  operator_mode: "eigen"
   transformer:
     num_layers: 4
     nhead: 8
@@ -51,12 +53,12 @@ model:
 
 # Training loop configuration
 training:
-  batch_size: 41
+  batch_size: 16
   random_sequence_length: False
   num_epochs: 1000
   patience: 100
   use_checkpoint: True
-  save_latest_every: 1
+  save_latest_every: 20
   num_visual_batches: 1
 
 # Learning rate scheduler configuration

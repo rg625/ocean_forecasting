@@ -105,6 +105,7 @@ def main(cfg: DictConfig):
             height=cfg.model.height,
             width=cfg.model.width,
             latent_dim=cfg.model.latent_dim,
+            operator_mode=cfg.model.operator_mode,
             hidden_dims=cfg.model.hidden_dims,
             transformer_config=cfg.model.transformer,
             use_checkpoint=cfg.training.use_checkpoint,
