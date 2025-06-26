@@ -78,12 +78,9 @@ class KoopmanOperator(nn.Module):
 
         elif self.mode == "eigen":
             self.eigenvalues = nn.Parameter(torch.randn(self.latent_dim))
-            self.eigenvectors = nn.Parameter(
-                torch.randn(self.latent_dim, self.latent_dim)
-            )
-            # Optional: Initialize eigenvectors to be nearly orthogonal
-            # qr_decomp = torch.linalg.qr(self.eigenvectors.data)
-            # self.eigenvectors.data = qr_decomp.Q
+            eigenvectors_init = torch.randn(self.latent_dim, self.latent_dim)
+            qr_decomp = torch.linalg.qr(eigenvectors_init)
+            self.eigenvectors = nn.Parameter(qr_decomp.Q)
 
         elif self.mode == "mlp":
             self.koopman_mlp = nn.Sequential(
@@ -106,6 +103,7 @@ class KoopmanOperator(nn.Module):
             return self._forward_eigen(z)
         elif self.mode == "mlp":
             return self.koopman_mlp(z)
+        raise RuntimeError(f"Invalid mode '{self.mode}' encountered in forward pass.")
 
     def _forward_eigen(self, z: Tensor) -> Tensor:
         """
@@ -119,12 +117,17 @@ class KoopmanOperator(nn.Module):
             P_inv = P.T
         else:
             try:
-                P_inv = torch.linalg.inv(P)
+                P_inv = torch.linalg.pinv(P)
             except torch.linalg.LinAlgError:
+                logger.warning("Pseudo-inverse calculation failed. Returning zeros.")
                 return torch.zeros_like(z)
 
+        # The following operations project z into the eigenspace, scale by eigenvalues,
+        # and then project back into the original latent space.
         z_eig_space = P_inv @ z.T
-        Lambda = torch.diag_embed(self.eigenvalues)
+        Lambda = torch.diag_embed(
+            self.eigenvalues.to(z.dtype)
+        )  # Ensure dtype consistency
         scaled_z = Lambda @ z_eig_space
         recomposed_z = P @ scaled_z
         return recomposed_z.T
