@@ -8,7 +8,21 @@ import argparse
 
 
 def generate_gaussian_random_field(nx, ny, alpha=4.0, amplitude=0.1, seed=None):
-    """Generate a smooth Gaussian random field in 2D."""
+    """
+    Generate a smooth Gaussian random field in 2D.
+    
+    Args:
+        nx: int
+            Number of grid points in the x-direction.
+        ny: int
+            Number of grid points in the y-direction.
+        alpha: float
+            Spectral exponent for the field.
+        amplitude: float
+            Amplitude of the field.
+        seed: int, optional
+            Random seed for reproducibility.
+    """
     if seed is not None:
         np.random.seed(seed)
 
@@ -29,7 +43,9 @@ def generate_gaussian_random_field(nx, ny, alpha=4.0, amplitude=0.1, seed=None):
 
 
 class StationaryForcing:
-    """Callable forcing class using precomputed Gaussian random field."""
+    """
+    Callable forcing class using precomputed Gaussian random field.
+    """
 
     def __init__(self, nx, ny, alpha=4.0, amplitude=0.1, seed=None):
         forcing_pattern = generate_gaussian_random_field(nx, ny, alpha, amplitude, seed)
@@ -43,6 +59,10 @@ class StationaryForcing:
 def generate(config):
     """
     Generates multiple pyqg simulations with different forcing terms.
+    
+    Args:
+        config: dict
+            Configuration dictionary containing all parameters.
     """
     # Parse configuration parameters
     nx = config["grid"]["nx"]
@@ -173,12 +193,10 @@ def main(config_path):
 
 
 if __name__ == "__main__":
-    # Set up argument parser to accept the config file path from the command line
     parser = argparse.ArgumentParser(description="Generate forced QG timeseries dataset")
     parser.add_argument(
         "--config", type=str, required=True, help="Path to the YAML configuration file"
     )
     args = parser.parse_args()
     
-    # Run the main function with the provided config path
     main(args.config)
