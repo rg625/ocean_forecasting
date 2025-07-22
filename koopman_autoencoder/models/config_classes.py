@@ -14,6 +14,12 @@ class NormalizationConfig:
 
 
 @dataclass
+class SplitConfig:
+    path: str
+    select_re: Optional[float] = None
+
+
+@dataclass
 class DataConfig:
     dataset_type: str = MISSING
     data_dir: str = MISSING
@@ -23,11 +29,15 @@ class DataConfig:
     input_sequence_length: int = MISSING
     max_sequence_length: int = MISSING
     subsample: int = MISSING
-    # A dictionary mapping variable names to their channel counts is crucial.
+
     variables: Dict[str, int] = field(default_factory=dict)
     static_variables: Dict[str, int] = field(default_factory=dict)
     quantile_range: Tuple[float, float] = (2.5, 97.5)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
+
+    train_re: Optional[float] = None
+    val_re: Optional[float] = None
+    test_re: Optional[float] = None
 
 
 @dataclass

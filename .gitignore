@@ -26,6 +26,7 @@
 *.csv
 *.out
 *.err
+*.tex
 
 
 wget-log

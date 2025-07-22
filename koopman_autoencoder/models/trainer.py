@@ -255,7 +255,7 @@ class Trainer:
         if is_best:
             torch.save(state, cp_dir / "best_model.pth")
         if self.save_latest_every > 0 and epoch % self.save_latest_every == 0:
-            torch.save(state, cp_dir / "latest_model.pth")
+            torch.save(state, cp_dir / f"epoch_{epoch}.pth")
 
     def run(self) -> Dict:
         logger.info(
@@ -265,6 +265,7 @@ class Trainer:
         for epoch in (
             pbar := tqdm(range(self.start_epoch, self.num_epochs), desc="Epochs")
         ):
+            torch.autograd.set_detect_anomaly(True)
             self.current_epoch = epoch
 
             train_metrics = self._run_one_epoch()

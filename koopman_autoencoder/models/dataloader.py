@@ -179,6 +179,7 @@ class QGDatasetBase(Dataset):
         max_sequence_length: int,
         variables: Dict[str, int],
         subsample: int = 1,
+        **kwargs,
     ):
         self.data_path = Path(data_path)
         if not self.data_path.exists():
@@ -316,6 +317,7 @@ class QGDatasetMultiSim(QGDatasetBase):
         **kwargs,
     ):
         # Store the keys for dynamic and static variables
+        self.select_re = kwargs.pop("select_re", None)
         self.dynamic_keys = list(variables.keys())
         self.static_keys = list(static_variables.keys()) if static_variables else []
         self.subsample = subsample
@@ -353,8 +355,33 @@ class QGDatasetMultiSim(QGDatasetBase):
                 )
             self.num_sims = self._data.sizes["sim"]
 
+            self.Re = None
             if "Re" in self._data:
                 self.Re = torch.from_numpy(self._data["Re"].values).float()
+
+            if self.select_re is not None:
+                if self.Re is None:
+                    raise ValueError(
+                        "select_re was specified, but 'Re' not found in dataset."
+                    )
+
+                if isinstance(self.select_re, (float, int)):
+                    mask = self.Re == self.select_re
+                elif isinstance(self.select_re, (list, tuple)):
+                    mask = torch.isin(self.Re, torch.tensor(self.select_re))
+                else:
+                    raise ValueError(f"Invalid select_re: {self.select_re}")
+
+                selected_indices = mask.nonzero(as_tuple=True)[0]
+                if len(selected_indices) == 0:
+                    raise ValueError(f"No simulations found with Re={self.select_re}")
+
+                logger.info(
+                    f"Filtering {self.num_sims} simulations → {len(selected_indices)} with Re={self.select_re}"
+                )
+                self.Re = self.Re[selected_indices]
+                ds = ds.isel(sim=selected_indices)
+                self.num_sims = len(selected_indices)
 
             # --- Segregated Variable Loading ---
             # 1. Load ONLY DYNAMIC variables for the main TensorDict

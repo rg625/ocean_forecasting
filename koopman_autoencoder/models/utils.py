@@ -5,8 +5,9 @@ from torch import nn, Tensor
 from torch.optim import Optimizer
 from pathlib import Path
 import yaml
-from typing import Dict, Any, Type, Tuple, Union
+from typing import Dict, Any, Type, Tuple, Union, List, Optional
 import logging
+from models.metrics import Metric
 
 # Re-importing locally to make this file self-contained and reflect fix
 from .config_classes import Config
@@ -109,6 +110,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            select_re=cfg.data.val_re,
             **common_args,
         )
         test_dataset = DatasetClass(
@@ -118,6 +120,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            select_re=cfg.data.test_re,
             **common_args,
         )
 
@@ -158,3 +161,63 @@ def load_checkpoint(
     except Exception as e:
         logger.error(f"Failed to load checkpoint from {cp_path}: {e}", exc_info=True)
         raise RuntimeError("Critical error loading checkpoint.") from e
+
+
+def compute_all_metrics(
+    target: TensorDict,
+    prediction: TensorDict,
+    loader,
+    variables: List[str],
+    custom_min_max: Optional[Dict[str, Tuple[float, float]]] = None,
+) -> dict:
+    """
+    Computes all metrics (L2, SSIM, PSNR, VI) for each variable and for 'all'.
+    Applies manual normalization for custom-computed variables like 'vort'.
+
+    Args:
+        target (TensorDict): Ground truth data (denormalized).
+        prediction (TensorDict): Model predictions (denormalized).
+        loader: The dataset or loader that contains to_unit_range().
+        variables (List[str]): Variables to evaluate.
+        custom_min_max (dict, optional): For manual normalization, e.g. {'vort': (min, max)}
+
+    Returns:
+        dict: Nested structure {metric_mode: {variable_name: (mean, std)}}
+    """
+    results: Dict = {}
+
+    # --- Prepare data ---
+    target_norm = {}
+    prediction_norm = {}
+
+    for var in variables:
+        if custom_min_max and var in custom_min_max:
+            # Use manual normalization
+            vmin, vmax = custom_min_max[var]
+            target_norm[var] = (target[var] - vmin) / (vmax - vmin + 1e-8)
+            prediction_norm[var] = (prediction[var] - vmin) / (vmax - vmin + 1e-8)
+        else:
+            # Use loader's to_unit_range
+            target_norm[var] = loader.to_unit_range(target)[var]
+            prediction_norm[var] = loader.to_unit_range(prediction)[var]
+
+    # Convert to TensorDict
+    target_td = TensorDict(target_norm, batch_size=target.batch_size)
+    pred_td = TensorDict(prediction_norm, batch_size=prediction.batch_size)
+
+    # --- Run metrics ---
+    for mode in Metric.VALID_MODES:
+        results[mode] = {}
+
+        for var in variables + ["all"]:
+            variable_mode = "all" if var == "all" else "single"
+            metric_fn = Metric(
+                mode=mode,
+                variable_mode=variable_mode,
+                variable_name=None if variable_mode == "all" else var,
+            )
+
+            dist = metric_fn(target_td, pred_td)  # [B, T]
+            results[mode][var] = (dist.mean().item(), dist.std().item())
+
+    return results

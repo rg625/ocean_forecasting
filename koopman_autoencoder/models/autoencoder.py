@@ -48,7 +48,7 @@ class KoopmanOperator(nn.Module):
         self,
         latent_dim: int,
         mode: Literal["linear", "eigen", "mlp"] = "linear",
-        assume_orthogonal_eigenvectors: bool = True,
+        assume_orthogonal_eigenvectors: bool = False,
         use_checkpoint: bool = False,
     ):
         """

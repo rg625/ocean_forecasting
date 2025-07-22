@@ -24,3 +24,4 @@ from .cnn import TransformerConfig as TransformerConfig
 from .config_classes import Config as Config
 from . import utils as utils
 from . import visualization as visualization
+from . import lsim as lsim

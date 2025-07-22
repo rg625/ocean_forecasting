@@ -7,6 +7,7 @@ from torch import Tensor
 import torch
 import torch.distributed as dist
 import seaborn as sns
+from models.metrics import Metric
 
 cmap = sns.color_palette("icefire", as_cmap=True)
 
@@ -278,3 +279,31 @@ def denormalize_and_visualize(
         output_dir=output_dir,
         mode=mode,
     )
+
+
+def metrics_to_latex_table(metrics: dict) -> str:
+    """
+    Convert metrics dict to a LaTeX table showing mean ± std for each variable and mode.
+    Small values are shown in scientific notation for better readability.
+    """
+    all_vars = sorted({v for mode_vals in metrics.values() for v in mode_vals.keys()})
+    all_modes = Metric.VALID_MODES
+
+    header = r"\begin{tabular}{l" + "c" * len(all_modes) + "}\n"
+    header += "Variable & " + " & ".join(all_modes) + r" \\\hline" + "\n"
+
+    def fmt(num):
+        if num != num:  # NaN check
+            return "nan"
+        return f"{num:.2e}"
+
+    rows = []
+    for var in all_vars:
+        row = [var]
+        for mode in all_modes:
+            mean, std = metrics.get(mode, {}).get(var, (float("nan"), float("nan")))
+            row.append(f"{fmt(mean)} ± {fmt(std)}")
+        rows.append(" & ".join(row) + r" \\")
+
+    table = header + "\n".join(rows) + "\n\\end{tabular}"
+    return table
