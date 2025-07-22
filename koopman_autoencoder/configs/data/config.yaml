@@ -6,7 +6,12 @@ simulation:
   dt: 3600.0             # Time step in seconds
   tmax: 864000000.0      # Maximum simulation time (in seconds, ~27.4 years)
   save_interval: 86400.0 # Interval to save snapshots (in seconds, 1 day)
-  model_type: "jet"     # Type of model ("eddy", "jet", or "barotropic")
+  model_type: "jet"      # Type of model ("eddy", "jet", or "barotropic")
+  num_simulations: 5       # number of simulations to run
+  warmup_snapshots: 2000      # number of initial unstable steps to discard
+  n_snapshots: 2000     # number of timesteps to collect after warmup
 
 output:
-  output_dir: "./data/jet"   # Directory to save the generated dataset
+  output_dir: "../data/jet2"   # Directory to save the generated dataset
+
+  
