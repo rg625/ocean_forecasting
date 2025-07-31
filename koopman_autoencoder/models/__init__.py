@@ -1,4 +1,5 @@
 # models/__init__.py
+
 """Initializes the models package, exposing key classes for use."""
 
 from .trainer import Trainer as Trainer
@@ -23,5 +24,6 @@ from .metrics import Metric as Metric
 from .cnn import TransformerConfig as TransformerConfig
 from .config_classes import Config as Config
 from . import utils as utils
+from . import metrics_utils as metrics_utils
 from . import visualization as visualization
 from . import lsim as lsim

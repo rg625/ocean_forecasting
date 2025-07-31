@@ -1,7 +1,6 @@
 # main.py
 import torch
 import torch.optim as optim
-from torch.nn.attention import SDPBackend, sdpa_kernel
 from pathlib import Path
 from datetime import datetime
 import wandb
@@ -26,7 +25,7 @@ from models.dataloader import (
 )
 from models.trainer import Trainer
 from models.metrics import Metric
-from models.utils import load_checkpoint, load_datasets
+from models.utils import load_datasets  # Removed unused load_checkpoint import
 
 # Configure logging for clear and informative output
 logging.basicConfig(
@@ -64,13 +63,12 @@ def main(cfg: DictConfig):
             logger.info("Weights & Biases initialized.")
         except Exception as e:
             logger.error(f"Failed to initialize W&B: {e}. Running without logging.")
-            # Disable wandb if it fails, preventing crashes
             wandb.init(mode="disabled")
 
     # --- Output Directory (only on main process) ---
     output_dir = (
         Path(cfg.output_dir) / wandb.run.name
-        if rank == 0 and wandb.run
+        if rank == 0 and wandb.run.name is not None
         else Path(cfg.output_dir) / "local_run"
     )
     if rank == 0:
@@ -106,8 +104,6 @@ def main(cfg: DictConfig):
             height=cfg.model.height,
             width=cfg.model.width,
             latent_dim=cfg.model.latent_dim,
-            re_embedding_dim=cfg.model.re_embedding_dim,
-            re_cond_type=cfg.model.re_cond_type,
             operator_mode=cfg.model.operator_mode,
             hidden_dims=cfg.model.hidden_dims,
             transformer_config=cfg.model.transformer,
@@ -122,42 +118,77 @@ def main(cfg: DictConfig):
         logger.critical(f"Model initialization failed: {e}", exc_info=True)
         exit(1)
 
-    # --- Optimizer, Loss, Metrics, and Scheduler ---
-    model_params = model.module.parameters() if is_ddp else model.parameters()
-    optimizer = optim.Adam(model_params, lr=cfg.lr_scheduler.lr)
+    # --- CORRECTED AND ROBUST SETUP FOR FINE-TUNING ---
+
+    model_to_load = model.module if is_ddp else model
+
+    # 1. Load ONLY the Model Weights from the Checkpoint
+    # We do not need the old optimizer state for fine-tuning.
+    start_epoch = 0
+    if cfg.ckpt:
+        logger.info(f"Loading model weights from checkpoint: {cfg.ckpt}")
+        try:
+            # Load the entire checkpoint dictionary to the CPU first
+            checkpoint = torch.load(cfg.ckpt, map_location="cpu")
+
+            # Load only the model's state dictionary.
+            # This completely avoids issues with optimizer state mismatch.
+            model_to_load.load_state_dict(checkpoint["model_state_dict"])
+
+            # The epoch number is for logging continuity.
+            # The fine-tuning training process (optimizer, lr_scheduler) starts fresh.
+            start_epoch = checkpoint.get("epoch", -1) + 1
+            logger.info(
+                f"Successfully loaded model weights. Fine-tuning will start from epoch {start_epoch}."
+            )
+        except (KeyError, FileNotFoundError, RuntimeError) as e:
+            logger.critical(
+                f"Fatal checkpoint loading error: {e}. Exiting.", exc_info=True
+            )
+            exit(1)
+
+    # 2. Freeze Parameters for Fine-Tuning
+    logger.info("Freezing model parameters for fine-tuning the Reynolds predictor...")
+    for param in model_to_load.parameters():
+        param.requires_grad = False
+
+    if (
+        hasattr(model_to_load, "re_predictor")
+        and model_to_load.re_predictor is not None
+    ):
+        for param in model_to_load.re_predictor.parameters():
+            param.requires_grad = True
+        logger.info("Successfully unfroze the 're_predictor' network.")
+    else:
+        logger.error(
+            "'re_predictor' not found or is None. Cannot proceed with fine-tuning."
+        )
+        exit(1)
+
+    # 3. Create the REAL optimizer with ONLY the trainable parameters
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_params:
+        logger.critical(
+            "No trainable parameters found after freezing. Ensure 're_predictor' was unfrozen correctly."
+        )
+        exit(1)
+
+    optimizer = optim.Adam(trainable_params, lr=cfg.lr_scheduler.lr)
+    logger.info("Optimizer initialized with only the 're_predictor' parameters.")
+
+    # 4. Initialize Loss, Metrics, and LR Scheduler with the new optimizer
     criterion = KoopmanLoss(**cfg.loss)
     eval_metrics = Metric(**cfg.metric) if cfg.metric else None
-    # --- Learning Rate Scheduler and Checkpoint Loading ---
+
     logger.info("Initializing learning rate scheduler...")
     try:
         scheduler_args = OmegaConf.to_container(cfg.lr_scheduler, resolve=True)
-        # 2. Remove the 'lr' key. The 'None' default prevents errors if it's missing.
         scheduler_args.pop("lr", None)
-
-        # 3. Unpack the cleaned dictionary of arguments into the scheduler.
         lr_scheduler = CosineWarmup(optimizer=optimizer, **scheduler_args)
         logger.info("Learning rate scheduler initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize LR scheduler: {e}", exc_info=True)
         exit(1)
-
-    # --- Checkpoint Loading ---
-    start_epoch = 0
-    if cfg.ckpt:
-        logger.info(f"Attempting to load checkpoint from: {cfg.ckpt}")
-        model_to_load = model.module if is_ddp else model
-        try:
-            _, _, _, start_epoch = load_checkpoint(cfg.ckpt, model_to_load, optimizer)
-            # Ensure optimizer state is on the correct device after loading
-            for state in optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor):
-                        state[k] = v.to(device)
-        except RuntimeError as e:
-            logger.critical(
-                f"Fatal checkpoint loading error: {e}. Exiting.", exc_info=True
-            )
-            exit(1)
 
     # --- Trainer Initialization ---
     logger.info("Initializing Trainer...")
@@ -186,13 +217,12 @@ def main(cfg: DictConfig):
 
     # --- Run Training ---
     logger.info(f"Starting training from epoch {start_epoch}...")
-    with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
-        try:
-            history = trainer.run()
-            logger.info("Training finished successfully.")
-        except Exception as e:
-            logger.critical(f"Unhandled error during training: {e}", exc_info=True)
-            exit(1)
+    try:
+        history = trainer.run()
+        logger.info("Training finished successfully.")
+    except Exception as e:
+        logger.critical(f"Unhandled error during training: {e}", exc_info=True)
+        exit(1)
 
     # --- Final Evaluation and Saving (on main process) ---
     if rank == 0:
@@ -207,8 +237,11 @@ def main(cfg: DictConfig):
         final_model_path = output_dir / "final_model.pth"
         model_to_save = model.module if is_ddp else model
 
+        # FIX: Include the fine-tuned optimizer's state in the final save file.
+        # This makes the final model a proper, resumable checkpoint.
         save_data = {
             "model_state_dict": model_to_save.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),  # <-- CORRECTED
             "epoch": trainer.current_epoch,
             "config": OmegaConf.to_container(cfg, resolve=True),
             "history": history,
@@ -229,7 +262,7 @@ def main(cfg: DictConfig):
             }
 
         torch.save(save_data, final_model_path)
-        logger.info(f"Final model saved to {final_model_path}")
+        logger.info(f"Final model and optimizer state saved to {final_model_path}")
         wandb.save(str(final_model_path))
 
     if is_ddp:
@@ -240,9 +273,14 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Koopman Autoencoder")
+    parser = argparse.ArgumentParser(
+        description="Train Koopman Autoencoder for Re prediction"
+    )
     parser.add_argument(
-        "--config", type=str, required=True, help="Path to YAML config file"
+        "--config",
+        type=str,
+        required=True,
+        help="Path to YAML config file for fine-tuning",
     )
     args, unknown_args = parser.parse_known_args()
 
@@ -254,7 +292,9 @@ if __name__ == "__main__":
         cfg = OmegaConf.merge(base_config, file_config, cli_config)
         OmegaConf.resolve(cfg)
 
-        logger.info(f"Configuration loaded and merged:\n{OmegaConf.to_yaml(cfg)}")
+        logger.info(
+            f"Configuration loaded and merged for fine-tuning:\n{OmegaConf.to_yaml(cfg)}"
+        )
         main(cfg)
 
     except (FileNotFoundError, OmegaConfBaseException) as e:

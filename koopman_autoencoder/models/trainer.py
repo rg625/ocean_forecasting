@@ -1,16 +1,19 @@
 # models/trainer.py
+
 import torch
 import numpy as np
 from torch import Tensor
 from torch.optim import Optimizer
 from tensordict import TensorDict
 import torch.distributed as dist
+from torch.amp import GradScaler, autocast
 import matplotlib.pyplot as plt
 from pathlib import Path
 import yaml
 from tqdm import tqdm
 import logging
 from typing import Optional, Union, Dict, List
+import wandb
 
 # Local imports
 from .autoencoder import KoopmanAutoencoder
@@ -20,8 +23,10 @@ from .dataloader import DataLoaderWrapper
 from .metrics import Metric
 from .utils import accumulate_losses, average_losses
 from .visualization import denormalize_and_visualize
-import wandb
 
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +73,7 @@ class Trainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._init_history()
+        self.scaler = GradScaler(device="cuda")
 
     def _init_history(self):
         self.history: Dict[str, Dict[str, List[float]]] = {
@@ -117,28 +123,42 @@ class Trainer:
             input_td, target_td = input_td.to(self.device), target_td.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
 
-            model_module = (
-                self.model.module
-                if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
-                else self.model
-            )
-            out = self.model(input_td, target_td["seq_length"])
+            with autocast(device_type=str(input_td.device), dtype=torch.bfloat16):
+                model_module = (
+                    self.model.module
+                    if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+                    else self.model
+                )
+                out = self.model(input_td, target_td["seq_length"])
 
-            x_true_recon = TensorDict(
-                {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
-                batch_size=input_td.batch_size[0],
-            )
-            loss_dict = self.criterion(
-                out.x_recon,
-                out.x_preds,
-                out.z_preds,
-                x_true_recon,
-                target_td,
-                out.reynolds,
-            )
+                x_true_recon = TensorDict(
+                    {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
+                    batch_size=input_td.batch_size[0],
+                )
+                loss_dict = self.criterion(
+                    out.x_recon,
+                    out.x_preds,
+                    out.z_preds,
+                    x_true_recon,
+                    target_td,
+                    out.reynolds,
+                )
+            if not torch.isfinite(loss_dict["total_loss"]).all():
+                logger.critical(
+                    "NaN detected in the loss before backward pass. Halting."
+                )
+                raise RuntimeError("NaN loss detected")
 
-            loss_dict["total_loss"].backward()
-            self.optimizer.step()
+            self.scaler.scale(loss_dict["total_loss"]).backward()
+            self.scaler.unscale_(self.optimizer)  # Unscale gradients before clipping
+
+            torch.nn.utils.clip_grad_value_(
+                self.model.parameters(), clip_value=0.5
+            )  # Add this
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
             detached_losses = {
                 k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)

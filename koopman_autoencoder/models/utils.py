@@ -1,4 +1,5 @@
 # models/utils.py
+
 from tensordict import TensorDict
 import torch
 from torch import nn, Tensor
@@ -20,6 +21,9 @@ from .dataloader import (
     QuantileNormalizer,
 )
 
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 

@@ -1,3 +1,5 @@
+# models/utils.py
+
 import numpy as np
 import matplotlib.pyplot as plt
 import wandb
@@ -7,7 +9,6 @@ from torch import Tensor
 import torch
 import torch.distributed as dist
 import seaborn as sns
-from models.metrics import Metric
 
 cmap = sns.color_palette("icefire", as_cmap=True)
 
@@ -33,7 +34,7 @@ def plot_comparison(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for var in x.keys():
-        if var in ["seq_length", "Re", "obstacle_mask"]:
+        if var in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]:
             continue
         x_var = x[var][0]  # shape: (T, H, W)
         x_recon_var = x_recon[var][0]  # shape: (T, H, W)
@@ -139,7 +140,7 @@ def plot_energy_spectrum(
     plt.figure(figsize=(12, 6))  # Adjusted size for better readability in W&B
 
     for var in variables:
-        if var in ["seq_length", "Re", "obstacle_mask"]:
+        if var in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]:
             continue
         # Compute isotropic energy spectrum for each variable
         k_bins, true_spec = compute_isotropic_energy_spectrum(true_fields[var])
@@ -181,7 +182,7 @@ def compute_re(
     Compute Reynolds number and log in W&B
     """
     Re_logs = {}
-    true_Re = true_fields["Re"].detach().cpu().numpy()
+    true_Re = true_fields["Re_target"].detach().cpu().numpy()
     v_x = pred_fields["v_x"]
     v_y = pred_fields["v_y"]
     v = torch.sqrt(v_x**2 + v_y**2).mean(dim=(1, 2, 3))
@@ -279,31 +280,3 @@ def denormalize_and_visualize(
         output_dir=output_dir,
         mode=mode,
     )
-
-
-def metrics_to_latex_table(metrics: dict) -> str:
-    """
-    Convert metrics dict to a LaTeX table showing mean ± std for each variable and mode.
-    Small values are shown in scientific notation for better readability.
-    """
-    all_vars = sorted({v for mode_vals in metrics.values() for v in mode_vals.keys()})
-    all_modes = Metric.VALID_MODES
-
-    header = r"\begin{tabular}{l" + "c" * len(all_modes) + "}\n"
-    header += "Variable & " + " & ".join(all_modes) + r" \\\hline" + "\n"
-
-    def fmt(num):
-        if num != num:  # NaN check
-            return "nan"
-        return f"{num:.2e}"
-
-    rows = []
-    for var in all_vars:
-        row = [var]
-        for mode in all_modes:
-            mean, std = metrics.get(mode, {}).get(var, (float("nan"), float("nan")))
-            row.append(f"{fmt(mean)} ± {fmt(std)}")
-        rows.append(" & ".join(row) + r" \\")
-
-    table = header + "\n".join(rows) + "\n\\end{tabular}"
-    return table

@@ -1,3 +1,4 @@
+# models/metrics.py
 import torch
 import torch.nn as nn
 import numpy as np
@@ -5,8 +6,14 @@ import skimage.metrics as sk_metrics
 from tensordict import TensorDict
 from typing import Optional, List
 from pathlib import Path
+import logging
 
 from .lsim.distance_model import DistanceModel
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 class Metric(nn.Module):
@@ -78,14 +85,14 @@ class Metric(nn.Module):
         """
         Loads the LSIM model using the high-level DistanceModel wrapper.
         """
-        print(f"Setting up {self.mode} model from: {model_path}")
+        logger.info(f"Setting up {self.mode} model from: {model_path}")
         if not model_path.exists():
             raise FileNotFoundError(f"LSIM model weights not found at: {model_path}")
 
         use_gpu = self.device.type == "cuda"
         self.lsim_model = DistanceModel(baseType="lsim", isTrain=False, useGPU=use_gpu)
         self.lsim_model.load(str(model_path))
-        print("LSIM DistanceModel loaded successfully.")
+        logger.info("LSIM DistanceModel loaded successfully.")
 
     def _compute_lsim_distance(
         self, ref: torch.Tensor, other: torch.Tensor
@@ -184,14 +191,16 @@ class Metric(nn.Module):
             keys_to_process = [self.variable_name]
         else:  # 'all'
             # Process all keys present in both dicts, excluding metadata
-            excluded_keys = {"seq_length", "Re", "obstacle_mask"}
+            excluded_keys = {"seq_length", "Re_target", "Re_input", "obstacle_mask"}
             keys_to_process = [
                 k
                 for k in reference.keys()
                 if k in other.keys() and k not in excluded_keys
             ]
             if not keys_to_process:
-                print("Warning: No common, non-excluded variables found to compare.")
+                logger.info(
+                    "Warning: No common, non-excluded variables found to compare."
+                )
                 return torch.empty(0)
 
         per_var_results: List[torch.Tensor] = []
@@ -203,18 +212,18 @@ class Metric(nn.Module):
             if not isinstance(ref_tensor, torch.Tensor) or not isinstance(
                 other_tensor, torch.Tensor
             ):
-                print(f"Skipping variable '{var}': not a tensor.")
+                logger.info(f"Skipping variable '{var}': not a tensor.")
                 continue
             if ref_tensor.shape != other_tensor.shape:
-                print(f"Skipping variable '{var}': shapes mismatch.")
+                logger.info(f"Skipping variable '{var}': shapes mismatch.")
                 continue
             # Ensure tensor is 4D [B, T, H, W], assuming grayscale if 3D [B, T, D]
             if ref_tensor.ndim == 3:
                 # Assuming 3D is [B, T, Features], which is not image-like. Skip.
-                print(f"Skipping variable '{var}': not an image-like 4D tensor.")
+                logger.info(f"Skipping variable '{var}': not an image-like 4D tensor.")
                 continue
             if ref_tensor.ndim != 4:
-                print(f"Skipping variable '{var}': not an image-like 4D tensor.")
+                logger.info(f"Skipping variable '{var}': not an image-like 4D tensor.")
                 continue
 
             # --- Dispatch to correct computation function ---

@@ -1,4 +1,5 @@
 # models/dataloader.py
+
 import torch
 import xarray as xr
 import numpy as np
@@ -7,12 +8,15 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Union, Dict, Tuple
 from abc import ABC, abstractmethod
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 
 from tensordict import TensorDict, stack as stack_tensordict
 from torch.utils.data import Dataset, DataLoader, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -366,11 +370,30 @@ class QGDatasetMultiSim(QGDatasetBase):
                     )
 
                 if isinstance(self.select_re, (float, int)):
+                    logger.info(
+                        f"Filtering simulations with Reynolds number == {self.select_re}"
+                    )
                     mask = self.Re == self.select_re
-                elif isinstance(self.select_re, (list, tuple)):
-                    mask = torch.isin(self.Re, torch.tensor(self.select_re))
+                elif isinstance(self.select_re, (list, tuple, ListConfig)):
+                    # Check for a two-element list/tuple to treat as an interval [min, max]
+                    if len(self.select_re) == 2 and all(
+                        isinstance(v, (float, int)) for v in self.select_re
+                    ):
+                        re_min, re_max = self.select_re
+                        logger.info(
+                            f"Filtering simulations with Reynolds number in interval [{re_min}, {re_max}]"
+                        )
+                        mask = (self.Re >= re_min) & (self.Re <= re_max)
+                    else:  # Otherwise, treat as a list of discrete values
+                        logger.info(
+                            f"Filtering simulations with Reynolds numbers in list: {self.select_re}"
+                        )
+                        mask = torch.isin(self.Re, torch.tensor(list(self.select_re)))
                 else:
-                    raise ValueError(f"Invalid select_re: {self.select_re}")
+                    # This now correctly handles unsupported types
+                    raise ValueError(
+                        f"Invalid type for 'select_re': {type(self.select_re)}"
+                    )
 
                 selected_indices = mask.nonzero(as_tuple=True)[0]
                 if len(selected_indices) == 0:
@@ -517,7 +540,8 @@ class QGDatasetMultiSim(QGDatasetBase):
         # seq_length and Re -> marked for 'target'
         metadata["seq_length"] = (target_length, "target")
         if self.Re is not None:
-            metadata["Re"] = (self.Re[sim_idx], "target")
+            metadata["Re_target"] = (self.Re[sim_idx], "target")
+            metadata["Re_input"] = (self.Re[sim_idx], "input")
 
         input_seq = self.apply_mask(input_seq)
         target_seq = self.apply_mask(target_seq)

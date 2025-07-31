@@ -1,4 +1,5 @@
 # models/config_classes.py
+
 from omegaconf import MISSING
 from typing import Dict, Any, Tuple, Optional, List
 from dataclasses import dataclass, field
@@ -35,9 +36,9 @@ class DataConfig:
     quantile_range: Tuple[float, float] = (2.5, 97.5)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
 
-    train_re: Optional[float] = None
-    val_re: Optional[float] = None
-    test_re: Optional[float] = None
+    train_re: Optional[Any] = None
+    val_re: Optional[Any] = None
+    test_re: Optional[Any] = None
 
 
 @dataclass
@@ -50,6 +51,8 @@ class ModelConfig:
     kernel_size: int = MISSING
     conv_kwargs: Dict[str, Any] = field(default_factory=dict)
     latent_dim: int = MISSING
+    re_embedding_dim: Optional[int] = None
+    re_cond_type: Optional[str] = None
     operator_mode: str = MISSING
     # Use the specific TransformerConfig dataclass for type safety
     transformer: ModelTransformerConfig = field(default_factory=ModelTransformerConfig)

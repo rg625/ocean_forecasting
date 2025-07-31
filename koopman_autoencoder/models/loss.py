@@ -1,3 +1,5 @@
+# models/loss.py
+
 import torch
 from torch import nn, Tensor
 from tensordict import TensorDict
@@ -7,6 +9,9 @@ import logging
 from typing import Union, Optional, Dict
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -214,8 +219,8 @@ class KoopmanLoss(nn.Module):
         latent_loss = self._kl_divergence(latent_pred)
 
         re_loss = torch.tensor(0.0, device=latent_pred.device)
-        if self.re_weight > 0 and reynolds is not None and "Re" in x_future:
-            re_loss = self._compute_re_loss(reynolds, x_future["Re"])
+        if self.re_weight > 0 and reynolds is not None and "Re_target" in x_future:
+            re_loss = self._compute_re_loss(reynolds, x_future["Re_target"])
 
         # --- Sum Weighted Losses for Backpropagation ---
         total_recon_loss = (
