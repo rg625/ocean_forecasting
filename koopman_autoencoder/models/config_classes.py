@@ -3,7 +3,7 @@
 from omegaconf import MISSING
 from typing import Dict, Any, Tuple, Optional, List
 from dataclasses import dataclass, field
-from .cnn import (
+from .networks import (
     TransformerConfig as ModelTransformerConfig,
 )  # Alias to avoid naming conflict
 
@@ -45,7 +45,7 @@ class DataConfig:
 class ModelConfig:
     height: int = MISSING
     width: int = MISSING
-    input_channels: int = MISSING
+    # input_channels: int = MISSING
     hidden_dims: List[int] = field(default_factory=list)
     block_size: int = MISSING
     kernel_size: int = MISSING
@@ -59,6 +59,7 @@ class ModelConfig:
     predict_re: bool = False
     # Explicitly control if the Reynolds loss regularizes the main model.
     re_grad_enabled: bool = False
+    disturb_std: Optional[float] = None
 
 
 @dataclass
@@ -70,13 +71,15 @@ class TrainingConfig:
     random_sequence_length: bool = True
     save_latest_every: int = 1
     num_visual_batches: int = 1
+    precision: str = "bfloat16"
 
 
 @dataclass
 class LossConfig:
     alpha: float = MISSING
     beta: float = MISSING
-    re_weight: float = MISSING
+    re_weight: Optional[float] = None
+    stability_weight: Optional[float] = None
     weighting_type: str = MISSING
     sigma_blur: Optional[float] = None
 

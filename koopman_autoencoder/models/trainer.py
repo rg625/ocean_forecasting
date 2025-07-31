@@ -50,6 +50,7 @@ class Trainer:
         save_latest_every: int = 1,
         num_visual_batches: int = 1,
         eval_metrics: Optional[Metric] = None,
+        precision: Optional[str] = "bfloat16",
     ):
         self.model = model
         self.train_loader, self.val_loader = train_loader, val_loader
@@ -73,7 +74,28 @@ class Trainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._init_history()
-        self.scaler = GradScaler(device="cuda")
+        self.scaler = None
+
+        if precision == "float16":
+            self.autocast_dtype = torch.float16
+            self.scaler = GradScaler(device=self.device)
+            logger.info("Using float16 mixed precision with GradScaler.")
+
+        elif precision == "bfloat16":
+            # bfloat16 is only available on Ampere and newer GPUs
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                self.autocast_dtype = torch.bfloat16
+                # GradScaler is not required for bfloat16
+                logger.info("Using bfloat16 mixed precision.")
+            else:
+                logger.warning(
+                    "bfloat16 not supported on this device, falling back to float32."
+                )
+
+        elif precision not in ["float32", None]:
+            raise ValueError(f"Unsupported precision: '{precision}'")
+        else:
+            logger.info("Using float32 full precision.")
 
     def _init_history(self):
         self.history: Dict[str, Dict[str, List[float]]] = {
@@ -123,7 +145,11 @@ class Trainer:
             input_td, target_td = input_td.to(self.device), target_td.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
 
-            with autocast(device_type=str(input_td.device), dtype=torch.bfloat16):
+            with autocast(
+                device_type=str(self.device),
+                dtype=self.autocast_dtype,
+                enabled=self.autocast_dtype is not None,
+            ):
                 model_module = (
                     self.model.module
                     if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
@@ -142,6 +168,7 @@ class Trainer:
                     x_true_recon,
                     target_td,
                     out.reynolds,
+                    out.disturbed_latents,
                 )
             if not torch.isfinite(loss_dict["total_loss"]).all():
                 logger.critical(
@@ -149,16 +176,27 @@ class Trainer:
                 )
                 raise RuntimeError("NaN loss detected")
 
-            self.scaler.scale(loss_dict["total_loss"]).backward()
-            self.scaler.unscale_(self.optimizer)  # Unscale gradients before clipping
+            # self.scaler is only initialized for float16 precision
+            if self.scaler:
+                # 1. Compute scaled gradients
+                self.scaler.scale(loss_dict["total_loss"]).backward()
 
-            torch.nn.utils.clip_grad_value_(
-                self.model.parameters(), clip_value=0.5
-            )  # Add this
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                # 2. Unscale gradients before clipping
+                self.scaler.unscale_(self.optimizer)
 
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+                # 3. Clip the unscaled gradients
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                # 4. Optimizer step
+                self.scaler.step(self.optimizer)
+
+                # 5. Update the scale for next iteration
+                self.scaler.update()
+
+            else:  # For float32 or bfloat16 precision
+                loss_dict["total_loss"].backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
 
             detached_losses = {
                 k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
@@ -199,6 +237,7 @@ class Trainer:
                     x_true_recon,
                     target_td,
                     out.reynolds,
+                    out.disturbed_latents,
                 )
                 detached_losses = {
                     k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)

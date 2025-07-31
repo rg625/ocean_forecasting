@@ -30,6 +30,7 @@ class KoopmanLoss(nn.Module):
         alpha (float): Weight for the prediction (rollout) loss term.
         beta (float): Weight for the latent KL divergence loss term.
         re_weight (float): Weight for the optional Reynolds number prediction loss.
+        stability_weight (float): Weight for regularizing the latent space to be invariant to small perturbations.
         weighting_type (str): Rollout weighting schedule ('cosine' or 'uniform').
         sigma_blur (Optional[float]): If provided, applies a Gaussian blur with this sigma
                                       to the ground truth tensors before loss calculation.
@@ -39,22 +40,22 @@ class KoopmanLoss(nn.Module):
         self,
         alpha: float = 1.0,
         beta: float = 0.1,
-        re_weight: float = 0.1,
+        re_weight: Optional[float] = None,
+        stability_weight: Optional[float] = None,
         weighting_type: str = "cosine",
         sigma_blur: Optional[float] = None,
     ):
         super().__init__()
 
-        if not (alpha >= 0 and beta >= 0 and re_weight >= 0):
-            raise ValueError(
-                "Loss weights (alpha, beta, re_weight) must be non-negative."
-            )
+        if not (alpha >= 0 and beta >= 0):
+            raise ValueError("Basic loss weights (alpha, beta) must be non-negative.")
         if weighting_type not in ["cosine", "uniform"]:
             raise ValueError(f"Unknown weighting type: {weighting_type}")
 
         self.alpha = alpha
         self.beta = beta
         self.re_weight = re_weight
+        self.stability_weight = stability_weight
         self.weighting_type = weighting_type
 
         self.gaussian_blur = self._init_blur_transform(sigma_blur)
@@ -179,6 +180,16 @@ class KoopmanLoss(nn.Module):
         )
         return reduce(kl_per_sample, "b ->", "mean")
 
+    @staticmethod
+    def stability_loss(latent_pred: Tensor, disturbed_latents: Tensor) -> Tensor:
+        """Computes stability regularization for latent vectors."""
+        assert (
+            latent_pred.shape == disturbed_latents.shape
+        ), f"expected latent vectors and their disturbed version to have the same shape but got {latent_pred.shape} and {disturbed_latents.shape} instead"
+        diff = latent_pred - disturbed_latents
+        per_step_loss = reduce(diff**2, "b ... -> b", "mean")
+        return reduce(per_step_loss, "b ->", "mean")
+
     def _compute_re_loss(self, pred_re: Tensor, true_re: Tensor) -> Tensor:
         """Computes MSE loss for the Reynolds number prediction."""
 
@@ -203,6 +214,7 @@ class KoopmanLoss(nn.Module):
         x_true: TensorDict,
         x_future: TensorDict,
         reynolds: Optional[Tensor],
+        disturbed_latents: Optional[Tensor] = None,
     ) -> Dict[str, Union[Tensor, float, Dict[str, float]]]:
         """
         Computes the full, weighted Koopman loss.
@@ -217,11 +229,6 @@ class KoopmanLoss(nn.Module):
         )
         pred_loss_dict = self._compute_rollout_loss(x_preds, x_future)
         latent_loss = self._kl_divergence(latent_pred)
-
-        re_loss = torch.tensor(0.0, device=latent_pred.device)
-        if self.re_weight > 0 and reynolds is not None and "Re_target" in x_future:
-            re_loss = self._compute_re_loss(reynolds, x_future["Re_target"])
-
         # --- Sum Weighted Losses for Backpropagation ---
         total_recon_loss = (
             sum(recon_loss_dict.values())
@@ -235,11 +242,30 @@ class KoopmanLoss(nn.Module):
         )
 
         total_loss = (
-            total_recon_loss
-            + self.alpha * total_pred_loss
-            + self.beta * latent_loss
-            + self.re_weight * re_loss
+            total_recon_loss + self.alpha * total_pred_loss + self.beta * latent_loss
         )
+        # --- Conditionally Add Optional Losses ---
+        re_loss = torch.tensor(0.0, device=latent_pred.device)
+        # Only compute and add the loss if the weight is specified and inputs are available
+        if self.re_weight is not None and reynolds is not None:
+            assert (
+                self.re_weight > 0
+            ), f"re_weight must be positive, but got {self.re_weight}"
+            re_loss = self._compute_re_loss(reynolds, x_future["Re_target"])
+            total_loss = total_loss + self.re_weight * re_loss
+
+        stability_loss = torch.tensor(0.0, device=latent_pred.device)
+        # Only compute and add the loss if the weight is specified and inputs are available
+        if self.stability_weight is not None and disturbed_latents is not None:
+            assert (
+                self.stability_weight > 0
+            ), f"stability_weight must be positive, but got {self.stability_weight}"
+            stability_loss = self.stability_loss(
+                latent_pred=latent_pred, disturbed_latents=disturbed_latents
+            )
+            # Note: Using .detach() here means the stability loss acts as a regularizer
+            # but gradients do not flow back through this specific calculation.
+            total_loss = total_loss + self.stability_weight * stability_loss.detach()
 
         # --- Prepare Detached Dictionary for Logging ---
         return {
@@ -248,6 +274,7 @@ class KoopmanLoss(nn.Module):
             "loss_pred": total_pred_loss.detach(),
             "loss_latent": latent_loss.detach(),
             "loss_re": re_loss.detach(),
+            "loss_stability": stability_loss.detach(),
             "details_recon": {k: v.detach() for k, v in recon_loss_dict.items()},
             "details_pred": {k: v.detach() for k, v in pred_loss_dict.items()},
         }

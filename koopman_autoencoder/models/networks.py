@@ -1,4 +1,4 @@
-# models/cnn.py
+# models/networks.py
 
 from itertools import pairwise
 import torch
@@ -6,11 +6,11 @@ from torch import nn
 from torch.utils.checkpoint import checkpoint
 from einops import rearrange
 from torch import Tensor
-from typing import List, Union, Tuple, Any, Optional
+from typing import List, Union, Tuple, Any, Optional, Literal
 from dataclasses import dataclass
 
 
-class AdaLNorm(nn.Module):
+class AdaLNConv(nn.Module):
     """
     Adaptive Layer Normalization.
     Projects a conditioning vector to a scale and shift for normalization.
@@ -88,7 +88,7 @@ class ConvBlock(nn.Module):
                 assert (re_embedding_dim is not None) and (
                     isinstance(re_embedding_dim, int)
                 ), f"re_embedding_dim must be provided for adaln as int but got type {type(re_embedding_dim)}"
-                layers.append(AdaLNorm(C_out, re_embedding_dim))
+                layers.append(AdaLNConv(C_out, re_embedding_dim))
             layers.append(nn.ReLU())
 
             # Subsequent layers
@@ -98,7 +98,7 @@ class ConvBlock(nn.Module):
                     assert (re_embedding_dim is not None) and (
                         isinstance(re_embedding_dim, int)
                     ), f"re_embedding_dim must be provided for adaln as int but got type {type(re_embedding_dim)}"
-                    layers.append(AdaLNorm(C_out, re_embedding_dim))
+                    layers.append(AdaLNConv(C_out, re_embedding_dim))
                 layers.append(nn.ReLU())
         else:
             # Initial layers
@@ -111,7 +111,7 @@ class ConvBlock(nn.Module):
                     assert (
                         re_embedding_dim is not None
                     ), "re_embedding_dim must be provided for adaln"
-                    layers.append(AdaLNorm(C_in, re_embedding_dim))
+                    layers.append(AdaLNConv(C_in, re_embedding_dim))
                 layers.append(nn.ReLU())
 
             # Output layer (no activation after this one)
@@ -128,11 +128,11 @@ class ConvBlock(nn.Module):
 
     def _forward(self, x: Tensor, re_emb: Optional[Tensor] = None) -> Tensor:
         for module in self.stack:
-            if isinstance(module, AdaLNorm):
-                # AdaLNorm requires the conditioning embedding
+            if isinstance(module, AdaLNConv):
+                # AdaLNConv requires the conditioning embedding
                 if re_emb is None:
                     raise ValueError(
-                        "AdaLNorm layer requires re_emb, but it was not provided."
+                        "AdaLNConv layer requires re_emb, but it was not provided."
                     )
                 x = module(x, re_emb)
             else:
@@ -400,6 +400,11 @@ class ConvDecoder(BaseEncoderDecoder):
             **conv_kwargs,
         )
 
+    # # The base class forward now handles the logic, but we need to ensure
+    # # the signature here accepts `re` to pass it to super().
+    # def forward(self, x: Tensor, re: Optional[Tensor] = None) -> Tensor:
+    #     return super().forward(x, re=re)
+
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 1000):
@@ -509,3 +514,204 @@ class HistoryEncoder(ConvEncoder):
         out = self.transformer(features)
 
         return out.mean(dim=1)
+
+
+class AdaLNMLP(nn.Module):
+    """
+    Adaptive Layer Norm for conditioning a latent vector based on a physical parameter.
+
+    This module takes a latent vector 'z' and a corresponding Reynolds number 're'.
+    It first creates a high-dimensional embedding of 're', then uses a linear
+    projection to predict a feature-wise scale (gamma) and shift (beta). These are
+    applied to modulate the latent vector 'z'.
+    """
+
+    def __init__(self, latent_dim: int, re_embedding_dim: int):
+        """
+        Initializes the AdaLNMLP module.
+
+        Args:
+            latent_dim (int): The dimension of the latent vector to be modulated.
+            re_embedding_dim (int): The dimension of the intermediate Reynolds number embedding.
+        """
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        # 1. A small MLP to embed the scalar Reynolds number into a vector space.
+        self.re_embedding = nn.Sequential(
+            nn.Linear(1, re_embedding_dim),
+            nn.ReLU(),
+            nn.Linear(re_embedding_dim, re_embedding_dim),
+        )
+
+        # 2. A linear layer to project the embedding to the scale and shift parameters.
+        #    We need 2 * latent_dim outputs: one for gamma (scale) and one for beta (shift).
+        self.projection = nn.Linear(re_embedding_dim, latent_dim * 2)
+
+    def forward(self, z: Tensor, re: Tensor) -> Tensor:
+        """
+        Applies the adaptive modulation.
+
+        Args:
+            z (Tensor): The input latent vector. Shape: (B, latent_dim).
+            re (Tensor): The corresponding Reynolds numbers. Shape: (B, 1).
+
+        Returns:
+            Tensor: The modulated latent vector. Shape: (B, latent_dim).
+        """
+        # Ensure re has the correct shape (B, 1)
+        if re.ndim == 1:
+            re = re.unsqueeze(1)
+
+        # Create the embedding from the Reynolds number
+        re_emb = self.re_embedding(re)
+
+        # Predict scale (gamma) and shift (beta) from the embedding
+        gamma, beta = self.projection(re_emb).chunk(2, dim=1)
+
+        # Apply the modulation: z_new = gamma * z + beta
+        # This is a feature-wise affine transformation.
+        return gamma * z + beta
+
+
+class KoopmanOperator(nn.Module):
+    """
+    Koopman operator for learning linear dynamics in latent space.
+    This class supports multiple operational modes for the operator K:
+    - 'linear': A standard single linear layer K.
+    - 'eigen': Learns the eigenvalues and eigenvectors of K directly.
+    - 'mlp': A non-linear multi-layer perceptron.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        re_embedding_dim: Optional[int] = None,
+        mode: Literal["linear", "eigen", "mlp"] = "linear",
+        assume_orthogonal_eigenvectors: bool = False,
+        use_checkpoint: bool = False,
+    ):
+        super().__init__()
+        if not isinstance(latent_dim, int) or latent_dim <= 0:
+            raise ValueError("latent_dim must be a positive integer.")
+        if mode not in ["linear", "eigen", "mlp"]:
+            raise ValueError("mode must be one of 'linear', 'eigen', or 'mlp'.")
+
+        self.latent_dim = latent_dim
+        self.mode = mode
+        self.use_checkpoint = use_checkpoint
+        self.assume_orthogonal = assume_orthogonal_eigenvectors
+        self.re_embedding_dim = re_embedding_dim
+
+        # Instantiate the AdaLNMLP conditioner if an embedding dimension is provided.
+        self.adaln_conditioner = (
+            AdaLNMLP(latent_dim, re_embedding_dim) if re_embedding_dim else None
+        )
+
+        if self.mode == "linear":
+            self.koopman_linear = nn.Linear(latent_dim, latent_dim, bias=False)
+
+        elif self.mode == "eigen":
+            # Initialize eigenvalues to be stable (magnitudes <= 1.0)
+            # using tanh to constrain the range, promoting stability.
+            self.unconstrained_eigenvalues = nn.Parameter(torch.randn(self.latent_dim))
+            eigenvectors_init = torch.randn(self.latent_dim, self.latent_dim)
+            qr_decomp = torch.linalg.qr(eigenvectors_init)
+            self.eigenvectors = nn.Parameter(qr_decomp.Q)
+
+        elif self.mode == "mlp":
+            self.koopman_mlp = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim // 8),
+                nn.ReLU(),
+                nn.Linear(latent_dim // 8, latent_dim),
+            )
+
+    @property
+    def eigenvalues(self):
+        """Constrains eigenvalues to have magnitude <= 1.0 for stability."""
+        if self.mode == "eigen":
+            return torch.tanh(self.unconstrained_eigenvalues)
+        return None
+
+    def _forward_impl(self, z: Tensor) -> Tensor:
+        """Internal forward implementation based on the selected mode."""
+        if z.ndim != 2 or z.shape[1] != self.latent_dim:
+            raise ValueError(
+                f"Expected input latent tensor z of shape (B, {self.latent_dim}), "
+                f"but got {z.shape}."
+            )
+
+        # The operation is z_{t+1} = K(z_t)
+        if self.mode == "linear":
+            return self.koopman_linear(z)
+        elif self.mode == "eigen":
+            return self._forward_eigen(z)
+        elif self.mode == "mlp":
+            return self.koopman_mlp(z)
+        raise RuntimeError(f"Invalid mode '{self.mode}' encountered in forward pass.")
+
+    def _forward_eigen(self, z: Tensor) -> Tensor:
+        """
+        Performs the linear transformation: K@z = P @ diag(λ) @ P_inv @ z
+        """
+        P = self.eigenvectors
+        P_inv = P.T if self.assume_orthogonal else torch.linalg.pinv(P)
+
+        z_eig_space = P_inv @ z.T
+        Lambda = torch.diag_embed(self.eigenvalues.to(z.dtype))
+        scaled_z = Lambda @ z_eig_space
+        recomposed_z = P @ scaled_z
+        return recomposed_z.T
+
+    def forward(self, z: Tensor, re: Optional[Tensor] = None) -> Tensor:
+        """
+        Applies the full one-step evolution: condition, then operate.
+
+        Args:
+            z (Tensor): The current latent state.
+            re (Tensor, optional): The Reynolds number for conditioning.
+        """
+        # 1. First, apply the AdaLNMLP conditioning if available.
+        z_conditioned = (
+            self.adaln_conditioner(z, re)
+            if self.adaln_conditioner is not None and re is not None
+            else z
+        )
+
+        # 2. Then, apply the core dynamics operator to the conditioned state.
+        if self.use_checkpoint and self.training:
+            return checkpoint(self._forward_impl, z_conditioned, use_reentrant=True)
+        else:
+            return self._forward_impl(z_conditioned)
+
+
+class Re(nn.Module):
+    """
+    Neural network module to predict a scalar Reynolds number from the latent space.
+    """
+
+    def __init__(self, latent_dim: int, use_checkpoint: bool = False):
+        super().__init__()
+        self.use_checkpoint = use_checkpoint
+        self.latent_dim = latent_dim
+        self.re_predictor = nn.Sequential(
+            nn.Linear(latent_dim, latent_dim // 8),
+            nn.SiLU(),
+            nn.Linear(latent_dim // 8, 1),
+            nn.Softplus(),
+        )
+
+    def _forward_impl(self, z: Tensor) -> Tensor:
+        original_shape = z.shape
+        if z.ndim > 2:
+            z = z.view(-1, self.latent_dim)
+        reynolds = self.re_predictor(z)
+        if len(original_shape) > 2:
+            reynolds = reynolds.view(*original_shape[:-1], 1)
+        return reynolds
+
+    def forward(self, z: Tensor) -> Tensor:
+        if self.use_checkpoint and self.training:
+            return checkpoint(self._forward_impl, z, use_reentrant=False)
+        else:
+            return self._forward_impl(z)

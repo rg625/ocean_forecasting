@@ -114,6 +114,7 @@ def main(cfg: DictConfig):
             use_checkpoint=cfg.training.use_checkpoint,
             predict_re=cfg.model.predict_re,
             re_grad_enabled=cfg.model.re_grad_enabled,
+            disturb_std=cfg.model.disturb_std,
             **cfg.model.conv_kwargs,
         ).to(device)
         if is_ddp:
@@ -178,6 +179,7 @@ def main(cfg: DictConfig):
             log_epoch=cfg.log_epoch,
             save_latest_every=cfg.training.save_latest_every,
             num_visual_batches=cfg.training.num_visual_batches,
+            precision=cfg.training.precision,
         )
         logger.info("Trainer initialized.")
     except Exception as e:
