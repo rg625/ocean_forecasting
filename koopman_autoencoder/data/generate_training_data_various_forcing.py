@@ -42,7 +42,7 @@ def generate_gaussian_random_field(nx, ny, alpha=4.0, amplitude=0.1, seed=None):
     return field
 
 
-class StationaryForcing:
+class GRFForcing:
     """
     Callable forcing class using precomputed Gaussian random field.
     """
@@ -53,6 +53,29 @@ class StationaryForcing:
         self.forcing_array = np.ascontiguousarray(forcing_array)
 
     def __call__(self, m):
+        return self.forcing_array
+    
+    
+class StationaryForcing:
+    """
+    Callable class to apply a time-invariant (stationary) forcing term.
+    """
+    def __init__(self, nx, ny, wavenumber_x, wavenumber_y):
+        """
+        Pre-computes the forcing vector field during initialization.
+        """
+        x, y = np.meshgrid(
+            np.linspace(0, 2 * np.pi, nx, endpoint=False),
+            np.linspace(0, 2 * np.pi, ny, endpoint=False)
+        )
+        forcing_pattern = 0.1 * np.sin(wavenumber_x * x) * np.cos(wavenumber_y * y)
+        forcing_array = np.array([forcing_pattern, np.zeros((ny, nx))], dtype=np.float64)
+        self.forcing_array = np.ascontiguousarray(forcing_array)
+
+    def __call__(self, m):
+        """
+        This method is called by pyqg at each timestep.
+        """
         return self.forcing_array
 
 
