@@ -1,13 +1,13 @@
 grid:
-  nx: 128                # Grid resolution in the x-direction
-  ny: 128                # Grid resolution in the y-direction (using a square grid)
+  nx: 256                # Grid resolution in the x-direction
+  ny: 256                # Grid resolution in the y-direction (using a square grid)
 
 simulation:
-  dt: 3600.0             # Time step in seconds
+  dt: 800.0             # Time step in seconds
   model_type: "jet"     # Type of model ("eddy", "jet", or "barotropic")
 
 ensemble:
-  n_simulations: 10     # Total number of simulations to generate
+  n_simulations: 1     # Total number of simulations to generate
   simulation_tmax: 259200000.0 # Duration of EACH simulation (~500 days)
   save_interval: 86400.0   # Interval to save snapshots (1 day), yields 500 snapshots per sim after dropping samples
   drop_samples: 2500  # Number of samples to drop from each simulation
@@ -19,4 +19,4 @@ randomization:
   initial_cond_amp_range: [0.5e-7, 2.0e-7] # Min/max for initial condition noise amplitude
 
 output:
-  output_dir: "/home/pz281@ad.eng.cam.ac.uk/mnt/PhD/ocean/data/jet_ensemble"
+  output_dir: "./data/jet_ensemble_highres_method1"

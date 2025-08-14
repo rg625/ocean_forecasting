@@ -6,6 +6,32 @@ import yaml
 import argparse
 import shutil
 
+def create_jet_forcing_func(forcing_params):
+    """
+    Factory function that creates the jet forcing function.
+    
+    Args:
+        forcing_params (dict): A dictionary with "amplitude" and "wavenumber".
+        
+    Returns:
+        function: A function suitable for pyqg's q_parameterization argument.
+    """
+    forcing_amp = forcing_params["amplitude"]
+    forcing_k = forcing_params["wavenumber"]
+    
+    def jet_forcing(model):
+        """
+        The actual forcing function that will be called by pyqg at each timestep.
+        It uses the model's own coordinates for robustness.
+        """
+        nx = model.nx
+        ny = model.ny
+        x, y = np.meshgrid(np.arange(0.5, nx, 1.0) / nx, np.arange(0.5, ny, 1.0) / ny)
+        forcing_pattern = forcing_amp * np.cos(2 * np.pi * forcing_k * y)
+        return np.tile(forcing_pattern, (model.nz, 1, 1))
+
+    return jet_forcing
+
 
 def run_single_simulation(model_config, sim_config, forcing_params, initial_conds):
     """
@@ -29,18 +55,20 @@ def run_single_simulation(model_config, sim_config, forcing_params, initial_cond
         sim_config["tmax"],
         sim_config["save_interval"],
     )
-
+    
     # Initialize model
     if model_type == "jet":
+        forcing_function = create_jet_forcing_func(forcing_params)
         m = pyqg.QGModel(
             nx=nx,
             ny=ny,
             dt=dt,
             tmax=tmax,
             tavestart=tmax / 2,
-            rek=7e-8,
+            rek=7e-6,
             delta=0.1,
             beta=1e-11,
+            q_parameterization=forcing_function,
         )
     # Add other model types as needed...
     else:
@@ -54,7 +82,7 @@ def run_single_simulation(model_config, sim_config, forcing_params, initial_cond
     forcing_k = forcing_params["wavenumber"]
     x, y = np.meshgrid(np.arange(0.5, nx, 1.0) / nx, np.arange(0.5, ny, 1.0) / ny)
     forcing_pattern = forcing_amp * np.cos(2 * np.pi * forcing_k * y)
-    m.F_q1 = forcing_pattern
+    # m.F_q1 = forcing_pattern
 
     # --- Data Collection ---
     times = []
