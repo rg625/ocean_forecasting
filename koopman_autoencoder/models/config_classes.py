@@ -90,6 +90,7 @@ class LRSchedulerConfig:
     warmup: int = MISSING
     decay: int = MISSING
     final_lr: float = MISSING
+    last_epoch: Optional[int] = -1
 
 
 @dataclass

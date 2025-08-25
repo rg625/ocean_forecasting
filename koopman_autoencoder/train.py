@@ -154,6 +154,21 @@ def main(cfg: DictConfig):
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(device)
+
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = cfg.lr_scheduler.lr
+                param_group["initial_lr"] = cfg.lr_scheduler.lr
+
+            lr_scheduler = CosineWarmup(
+                optimizer=optimizer,
+                warmup=0,
+                decay=cfg.lr_scheduler.decay,
+                final_lr=cfg.lr_scheduler.final_lr,
+                last_epoch=cfg.lr_scheduler.last_epoch,
+            )
+            logger.info(
+                f"Checkpoint loaded. Resuming at epoch {start_epoch} with LR {optimizer.param_groups[0]['lr']:.6e}"
+            )
         except RuntimeError as e:
             logger.critical(
                 f"Fatal checkpoint loading error: {e}. Exiting.", exc_info=True
