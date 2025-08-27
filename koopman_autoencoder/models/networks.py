@@ -602,6 +602,7 @@ class KoopmanOperator(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.assume_orthogonal = assume_orthogonal_eigenvectors
         self.re_embedding_dim = re_embedding_dim
+        self.residual = False
 
         # Instantiate the AdaLNMLP conditioner if an embedding dimension is provided.
         self.adaln_conditioner = (
@@ -680,9 +681,12 @@ class KoopmanOperator(nn.Module):
 
         # 2. Then, apply the core dynamics operator to the conditioned state.
         if self.use_checkpoint and self.training:
-            return checkpoint(self._forward_impl, z_conditioned, use_reentrant=True)
+            out = checkpoint(self._forward_impl, z_conditioned, use_reentrant=True)
         else:
-            return self._forward_impl(z_conditioned)
+            out = self._forward_impl(z_conditioned)
+
+        # 3. Residual connection: z_{t+1} = z + K(z)
+        return z_conditioned + out if self.residual else out
 
 
 class Re(nn.Module):

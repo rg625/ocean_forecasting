@@ -226,3 +226,13 @@ def compute_all_metrics(
             results[mode][var] = (dist.mean().item(), dist.std().item())
 
     return results
+
+
+def cuda_timer():
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    return start, end
+
+
+def elapsed_time(start, end):
+    return start.elapsed_time(end) / 1000.0  # ms → seconds

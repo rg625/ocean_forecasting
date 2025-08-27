@@ -64,21 +64,20 @@ def compute_all_metrics(
 
     target_td = TensorDict(target_norm, batch_size=target.batch_size)
     pred_td = TensorDict(prediction_norm, batch_size=prediction.batch_size)
+    target_td = target_td.to(DEVICE)
+    pred_td = pred_td.to(DEVICE)
 
     for mode in Metric.VALID_MODES:
         results[mode] = {}
         for var in variables + ["all"]:
             variable_mode = "all" if var == "all" else "single"
-            if var == "v_x" and variable_mode == "single" and mode in ["L2", "LSIM"]:
-                metric_fn = Metric(
-                    mode=mode,
-                    variable_mode=variable_mode,
-                    variable_name=None if variable_mode == "all" else var,
-                )
-                dist = metric_fn(target_td, pred_td)  # [B, T]
-                results[mode][var] = (dist.mean().item(), dist.std().item())
-            else:
-                pass
+            metric_fn = Metric(
+                mode=mode,
+                variable_mode=variable_mode,
+                variable_name=None if variable_mode == "all" else var,
+            )
+            dist = metric_fn(target_td, pred_td)  # [B, T]
+            results[mode][var] = (dist.mean().item(), dist.std().item())
     return results
 
 
@@ -378,7 +377,7 @@ def exhaustive_diffusion_rollout(
 
             # Move tensors to CPU for stacking and conversion
             prediction_cpu = prediction.cpu()
-            gt_cpu = d.cpu()
+            gt_cpu = d[:, :sequenceLength, ...].cpu()
 
             all_pred.append(prediction_cpu)
             all_gt.append(gt_cpu)
@@ -393,9 +392,8 @@ def exhaustive_diffusion_rollout(
     ]  # adjust if you have more channels or different order
 
     # Convert to TensorDict format with shape (time, H, W)
-    pred_td = convert_to_tensordict_fields(all_pred.transpose(-2, -1), var_names)
-    gt_td = convert_to_tensordict_fields(all_gt.transpose(-2, -1), var_names)
-
+    pred_td = convert_to_tensordict_fields(all_pred, var_names)
+    gt_td = convert_to_tensordict_fields(all_gt, var_names)
     return gt_td, pred_td
 
 
@@ -443,7 +441,7 @@ def run_full_eval_and_report_diffusion(
         vort_pred = compute_vorticity_diff(
             batched_predictions["v_x"].squeeze(), batched_predictions["v_y"].squeeze()
         )
-        batched_predictions["vort"] = vort_pred
+        batched_predictions["vort"] = vort_pred.unsqueeze(0)
 
         global_vort_min = vort_truth.min().item()
         global_vort_max = vort_truth.max().item()

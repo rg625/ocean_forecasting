@@ -292,6 +292,8 @@ class Trainer:
             if key in self.history and mode in self.history[key]:
                 self.history[key][mode].append(value)
 
+        wandb.log(self.model.timings)
+
     def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool):
         if not self.is_main_process():
             return

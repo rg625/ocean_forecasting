@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import logging
 
 # Assume these are correctly defined elsewhere
+from models.utils import cuda_timer, elapsed_time
 from models.networks import (
     ConvEncoder,
     ConvDecoder,
@@ -79,6 +80,7 @@ class KoopmanAutoencoder(nn.Module):
         self.predict_re = predict_re
         self.re_grad_enabled = re_grad_enabled
         self.disturb_std = disturb_std
+        self.timings: Dict = {}
 
         # --- Module Initialization ---
         common_args = {
@@ -223,13 +225,20 @@ class KoopmanAutoencoder(nn.Module):
 
     def forward(self, x: TensorDict, seq_length: Union[int, Tensor]) -> KoopmanOutput:
         """Forward pass: Encode, roll out predictions, and decode."""
+        total_start, total_end = cuda_timer()
+        total_start.record()
         # 1. Prepare inputs
         obstacle_mask, re_input, x_data, seq_length_int = self._prepare_inputs(
             x, seq_length
         )
 
         # 2. Encode initial states (original and optionally disturbed)
+        start, end = cuda_timer()
+        start.record()
         z0, z0_disturbed = self._encode_initial_states(x_data, re_input)
+        end.record()
+        torch.cuda.synchronize()
+        self.timings["encode"] = elapsed_time(start, end)
 
         # 3. Get conditioning Reynolds number for the prediction phase
         re_for_prediction = (
@@ -239,9 +248,14 @@ class KoopmanAutoencoder(nn.Module):
         )
 
         # 4. Perform autoregressive rollout for the main trajectory
+        start, end = cuda_timer()
+        start.record()
         z_preds_stacked = self._autoregressive_rollout(
             z0, seq_length_int, re_for_prediction
         )
+        end.record()
+        torch.cuda.synchronize()
+        self.timings["rollout"] = elapsed_time(start, end)
 
         # 5. Perform rollout for the disturbed trajectory if needed for stability loss
         disturbed_latents = None
@@ -251,9 +265,14 @@ class KoopmanAutoencoder(nn.Module):
             )
 
         # 6. Decode outputs for the main trajectory
+        start, end = cuda_timer()
+        start.record()
         x_recon, x_preds = self._decode_outputs(
             z0, z_preds_stacked, seq_length_int, obstacle_mask
         )
+        end.record()
+        torch.cuda.synchronize()
+        self.timings["decode"] = elapsed_time(start, end)
 
         # 7. Predict Reynolds number from the main trajectory (optional)
         reynolds = None
@@ -261,6 +280,10 @@ class KoopmanAutoencoder(nn.Module):
             z_all = torch.cat([z0.unsqueeze(1), z_preds_stacked], dim=1)
             z_for_re = z_all if self.re_grad_enabled else z_all.detach()
             reynolds = self.re_predictor(z_for_re)
+
+        total_end.record()
+        torch.cuda.synchronize()
+        self.timings["total"] = elapsed_time(total_start, total_end)
 
         # 8. Return the final output structure
         return KoopmanOutput(
