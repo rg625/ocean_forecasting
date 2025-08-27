@@ -1,223 +1,280 @@
+# models/loss.py
+
 import torch
-from torch import nn, Tensor, device
+from torch import nn, Tensor
 from tensordict import TensorDict
 from einops import reduce, rearrange, repeat
 from torchvision.transforms import GaussianBlur
+import logging
+from typing import Union, Optional, Dict
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
 
 
 class KoopmanLoss(nn.Module):
     """
-    Custom loss function for Koopman-based models.
+    A robust, production-ready loss function for Koopman-based deep learning models.
+
+    This module computes a weighted sum of several loss components:
+    1. Reconstruction Loss: Mean Squared Error on the autoencoded initial state.
+    2. Prediction/Rollout Loss: Time-weighted MSE on future state predictions.
+    3. Latent Regularization Loss: KL divergence to encourage a standard normal distribution
+       in the latent space.
+    4. Reynolds Number Prediction Loss: An optional auxiliary loss on a physical parameter.
 
     Args:
-        alpha (float): Weight for the prediction loss term.
-        beta (float): Weight for the latent loss term.
+        alpha (float): Weight for the prediction (rollout) loss term.
+        beta (float): Weight for the latent KL divergence loss term.
+        re_weight (float): Weight for the optional Reynolds number prediction loss.
+        stability_weight (float): Weight for regularizing the latent space to be invariant to small perturbations.
+        weighting_type (str): Rollout weighting schedule ('cosine' or 'uniform').
+        sigma_blur (Optional[float]): If provided, applies a Gaussian blur with this sigma
+                                      to the ground truth tensors before loss calculation.
     """
 
     def __init__(
         self,
-        alpha=1.0,
-        beta=0.1,
-        re_weight=0.1,
-        weighting_type="cosine",
-        sigma_blur=None,
+        alpha: float = 1.0,
+        beta: float = 0.1,
+        re_weight: Optional[float] = None,
+        stability_weight: Optional[float] = None,
+        weighting_type: str = "cosine",
+        sigma_blur: Optional[float] = None,
     ):
-        super(KoopmanLoss, self).__init__()
-        self.alpha = alpha  # weight for prediction loss
-        self.beta = beta  # weight for latent loss
-        self.re_weight = re_weight  # weight for latent loss
-        self.weighting_type = weighting_type  # weighting schedule for rollout loss
+        super().__init__()
 
-        if sigma_blur is not None:
-            # Use a fixed kernel size; ensure it fits sigma
-            self.gaussian_blur = GaussianBlur(kernel_size=5, sigma=sigma_blur)
-        else:
-            self.gaussian_blur = None
+        if not (alpha >= 0 and beta >= 0):
+            raise ValueError("Basic loss weights (alpha, beta) must be non-negative.")
+        if weighting_type not in ["cosine", "uniform"]:
+            raise ValueError(f"Unknown weighting type: {weighting_type}")
 
-    def blur(self, tensor: Tensor):
+        self.alpha = alpha
+        self.beta = beta
+        self.re_weight = re_weight
+        self.stability_weight = stability_weight
+        self.weighting_type = weighting_type
+
+        self.gaussian_blur = self._init_blur_transform(sigma_blur)
+
+    @staticmethod
+    def _init_blur_transform(sigma: Optional[float]) -> Optional[GaussianBlur]:
+        """Initializes the GaussianBlur transform with a dynamically sized kernel."""
+        if sigma is None:
+            return None
+        if sigma <= 0:
+            raise ValueError("sigma_blur must be a positive float.")
+        # Rule of thumb: kernel size should be ~4 sigmas in each direction from center.
+        kernel_size = 2 * int(4.0 * sigma + 0.5) + 1
+        logger.info(
+            f"Initializing GaussianBlur with sigma={sigma} and kernel_size={kernel_size}"
+        )
+        return GaussianBlur(kernel_size=kernel_size, sigma=sigma)
+
+    def _blur(self, tensor: Tensor) -> Tensor:
+        """Applies the configured Gaussian blur to a tensor."""
         if self.gaussian_blur is None:
             return tensor
 
+        # We only apply blur to spatial data, which we expect to be 4D or 5D.
         if tensor.ndim == 5:  # [B, T, C, H, W]
             B, T, C, H, W = tensor.shape
-            tensor = rearrange(tensor, "b t c h w -> (b t) c h w")
-            tensor = self.gaussian_blur(tensor)
-            return rearrange(tensor, "(b t) c h w -> b t c h w", b=B, t=T)
-
+            tensor_reshaped = rearrange(tensor, "b t c h w -> (b t) c h w")
+            blurred_reshaped = self.gaussian_blur(tensor_reshaped)
+            return rearrange(blurred_reshaped, "(b t) c h w -> b t c h w", b=B, t=T)
         elif tensor.ndim == 4:  # [B, C, H, W]
             return self.gaussian_blur(tensor)
-
         else:
-            return tensor  # Do nothing for other shapes
+            # Do not blur non-spatial data (e.g., latent vectors)
+            return tensor
 
-    def recon_loss(self, x: TensorDict, y: TensorDict):
-        """
-        Compute the reconstruction loss per variable.
-
-        Args:
-            x (TensorDict): Predicted TensorDict.
-            y (TensorDict): Ground truth TensorDict.
-
-        Returns:
-            dict: Reconstruction loss per variable.
-        """
-        assert x.batch_size == y.batch_size, "Mismatch in batch size."
+    def _compute_recon_loss(
+        self, pred: TensorDict, true: TensorDict
+    ) -> Dict[str, Tensor]:
+        """Computes reconstruction loss safely over common keys."""
         loss_dict = {}
-        for key in x.keys():
-            diff = x[key] - self.blur(y[key])
+        common_keys = pred.keys() & true.keys()
+        if not common_keys:
+            logger.warning(
+                "No common keys found between prediction and ground truth for reconstruction loss."
+            )
+            return {}
+
+        for key in common_keys:
+            diff = pred[key] - self._blur(true[key])
             loss_per_sample = reduce(diff**2, "b ... -> b", "mean")
             loss_dict[key] = reduce(loss_per_sample, "b ->", "mean")
         return loss_dict
 
-    def rollout_loss(self, x: TensorDict, y: TensorDict):
-        """
-        Compute the rollout loss per variable, weighted over sequence steps.
+    def _compute_rollout_loss(
+        self, pred: TensorDict, true: TensorDict
+    ) -> Dict[str, Tensor]:
+        """Computes time-weighted rollout loss safely over common keys."""
+        if "seq_length" not in true:
+            logger.warning(
+                "'seq_length' not in ground truth TensorDict. Cannot compute rollout loss."
+            )
+            return {}
 
-        Args:
-            x (TensorDict): Predicted TensorDict of shape [batch, N, ...].
-            y (TensorDict): Ground truth TensorDict of same shape, with "seq_length" key.
+        # This assertion enforces the contract that this loss function expects
+        # batches where all samples have the same sequence length.
+        seq_len_tensor = true["seq_length"]
+        assert torch.all(
+            seq_len_tensor == seq_len_tensor[0]
+        ), "All samples in a batch must have the same sequence length for this loss implementation."
 
-        Returns:
-            dict: Rollout loss per variable.
-        """
-        assert x.batch_size == y.batch_size, "Mismatch in batch size."
+        seq_len = seq_len_tensor[0, 0].item()
+        weights = self._get_rollout_weights(seq_len, device=seq_len_tensor.device)
 
-        # Get sequence length and device
-        seq_len = y["seq_length"][0]
+        loss_dict = {}
+        common_keys = pred.keys() & true.keys()
+        if not common_keys:
+            logger.warning(
+                "No common keys found between prediction and ground truth for rollout loss."
+            )
+            return {}
 
-        # Compute step weights
-        weights = self.weighting(
-            timesteps=seq_len.item(), device=seq_len.device
-        )  # shape [N]
+        for key in common_keys:
+            diff = pred[key] - self._blur(true[key])
+            per_step_loss = reduce(diff**2, "b n ... -> b n", "mean")
+            weighted_loss = per_step_loss * weights.view(1, -1)
+            loss_dict[key] = reduce(weighted_loss, "b n ->", "mean")
+        return loss_dict
 
-        x_filtered = x.exclude("seq_length")
-        y_filtered = y.exclude("seq_length")
-        losses = {}
-
-        for key in x_filtered.keys():
-            diff = x_filtered[key] - self.blur(y_filtered[key])  # [B, N, ...]
-            squared = diff**2
-            per_step_loss = reduce(squared, "b n ... -> b n", "mean")  # [B, N]
-            weighted_loss = per_step_loss * weights[None, :]  # [B, N]
-            loss = reduce(weighted_loss, "b n ->", "mean")  # scalar
-            losses[key] = loss
-
-        return losses
-
-    def weighting(self, timesteps: int, device: device):
-        """
-        Compute weights for rollout loss per step.
-
-        Args:
-            timesteps (int): Rollout sequence length.
-            device (torch.device): Device to place the tensor on.
-        Returns:
-            Tensor: Weight vector of shape [timesteps].
-        """
-        idx = torch.arange(end=timesteps, device=device)
+    def _get_rollout_weights(self, timesteps: int, device: torch.device) -> Tensor:
+        """Computes weights for each step in the rollout loss."""
+        if timesteps <= 0:
+            return torch.tensor([], device=device)
+        idx = torch.arange(timesteps, device=device, dtype=torch.float32)
 
         if self.weighting_type == "cosine":
-            # Prevent division by zero when timesteps is 1
             if timesteps > 1:
                 weights = 0.5 * (1 + torch.cos(torch.pi * idx / (timesteps - 1)))
             else:
-                weights = torch.tensor([1.0], device=device)
-
-            weights = weights / torch.max(
-                weights.sum(), torch.tensor(1e-8, device=device)
-            )  # Avoid NaN by clamping the sum
-
+                weights = torch.ones(1, device=device)
+            return weights / weights.sum().clamp(
+                min=1e-8
+            )  # Normalize and prevent div by zero
         elif self.weighting_type == "uniform":
-            weights = torch.ones(timesteps, device=device) / timesteps
+            return torch.ones(timesteps, device=device) / timesteps
         else:
-            raise ValueError(f"Unknown weighting type: {self.weighting_type}")
-
-        return weights
+            # This case is already checked in __init__, but as a safeguard:
+            raise NotImplementedError(
+                f"Weighting type '{self.weighting_type}' not implemented."
+            )
 
     @staticmethod
-    def kl(mu: Tensor, var: Tensor):
-        return -0.5 * reduce(1.0 + torch.log(var) - mu**2 - var, "b t -> t", "mean")
-
-    def kl_divergence(self, latent_pred: Tensor):
-        """
-        Compute KL divergence between a Gaussian N(μ, σ²) (estimated from latent_diff)
-        and a standard Gaussian N(0, 1).
-
-        Args:
-            latent_pred (Tensor): Tensor of shape [batch, time, latent_dim].
-
-        Returns:
-            Tensor: Mean KL divergence over the batch.
-        """
+    def _kl_divergence(latent_pred: Tensor) -> Tensor:
+        """Computes KL divergence to a standard normal distribution N(0,1)."""
         mu = reduce(latent_pred, "b t d -> b t", "mean")
-        var = reduce((latent_pred - mu[:, :, None]) ** 2, "b t d -> b t", "mean") + 1e-6
-
-        kl_loss = self.kl(mu=mu, var=var)
-        return reduce(kl_loss, "b ->", "mean")
+        # Add epsilon for numerical stability before taking the log
+        var = (
+            reduce((latent_pred - mu.unsqueeze(-1)) ** 2, "b t d -> b t", "mean") + 1e-6
+        )
+        # Correctly average over time for each batch sample -> (B,)
+        kl_per_sample = -0.5 * reduce(
+            1.0 + torch.log(var) - mu**2 - var, "b t -> b", "mean"
+        )
+        return reduce(kl_per_sample, "b ->", "mean")
 
     @staticmethod
-    def re(input: Tensor, predicted: Tensor):
-        input_expanded = repeat(input, 'b -> b t 1', t=predicted.shape[1])
-
-        # Assert shapes are compatible
+    def stability_loss(latent_pred: Tensor, disturbed_latents: Tensor) -> Tensor:
+        """Computes stability regularization for latent vectors."""
         assert (
-            input_expanded.shape == predicted.shape
-        ), f"Shape mismatch: input_expanded {input_expanded.shape}, predicted {predicted.shape}"
+            latent_pred.shape == disturbed_latents.shape
+        ), f"expected latent vectors and their disturbed version to have the same shape but got {latent_pred.shape} and {disturbed_latents.shape} instead"
+        diff = latent_pred - disturbed_latents
+        per_step_loss = reduce(diff**2, "b ... -> b", "mean")
+        return reduce(per_step_loss, "b ->", "mean")
 
-        # Compute difference, squeeze last dim to get [b, t]
-        diff = (input_expanded - predicted).squeeze(-1) / 1000  # now shape: [b, t]
-        return reduce(diff**2, "b t -> b", "mean")
+    def _compute_re_loss(self, pred_re: Tensor, true_re: Tensor) -> Tensor:
+        """Computes MSE loss for the Reynolds number prediction."""
 
-    def re_loss(self, input: Tensor, predicted: Tensor):
-        re_loss = self.re(input=input, predicted=predicted)
-        return reduce(re_loss, "b ->", "mean")
+        if true_re.ndim == 2:
+            true_re = true_re[:, 0]
+        true_expanded = repeat(true_re, "b -> b t 1", t=pred_re.shape[1])
 
-    def forward(self, x_recon, x_preds, latent_pred, x_true, x_future, reynolds):
+        if true_expanded.shape != pred_re.shape:
+            logger.error(
+                f"Shape mismatch in Reynolds loss: true {true_expanded.shape}, pred {pred_re.shape}"
+            )
+            return torch.tensor(0.0, device=pred_re.device)
+
+        loss_per_sample = reduce((true_expanded - pred_re) ** 2, "b t 1 -> b", "mean")
+        return reduce(loss_per_sample, "b ->", "mean")
+
+    def forward(
+        self,
+        x_recon: TensorDict,
+        x_preds: TensorDict,
+        latent_pred: Tensor,
+        x_true: TensorDict,
+        x_future: TensorDict,
+        reynolds: Optional[Tensor],
+        disturbed_latents: Optional[Tensor] = None,
+    ) -> Dict[str, Union[Tensor, float, Dict[str, float]]]:
         """
-        Compute the Koopman loss.
-
-        Args:
-            x_recon (TensorDict): Reconstructed input of shape [batch, channels, height, width].
-            x_preds (TensorDict): Rollout predictions of shape [batch, N, channels, height, width].
-            latent_pred (torch.Tensor): Latent space predictions.
-            x_true (TensorDict): Ground truth input TensorDict.
-            x_future (TensorDict): Ground truth future states TensorDict.
-            reynolds (torch.Tensor): Reynold's Number estimates.
+        Computes the full, weighted Koopman loss.
 
         Returns:
-            dict: Combined total loss, reconstruction loss (per variable), prediction loss (per variable), and latent loss.
+            A dictionary containing the total loss for backpropagation and detached
+            scalar values for all individual loss components for logging.
         """
-        # Reconstruction loss (per variable)
-        recon_loss_per_variable = self.recon_loss(x_recon, x_true)
-        # Prediction loss (per variable)
-        pred_loss_per_variable = self.rollout_loss(x_preds, x_future)
-        # KL loss for latent space
-        latent_loss = self.kl_divergence(latent_pred)
-        # Reynolds Number estimation
-        re_loss = (
-            self.re_loss(x_future["Re"], reynolds)
-            if reynolds is not None
-            else torch.tensor(0)
+        # --- Compute Individual Loss Components ---
+        recon_loss_dict = self._compute_recon_loss(
+            x_recon, x_true.select(*x_recon.keys())
+        )
+        pred_loss_dict = self._compute_rollout_loss(x_preds, x_future)
+        latent_loss = self._kl_divergence(latent_pred)
+        # --- Sum Weighted Losses for Backpropagation ---
+        total_recon_loss = (
+            sum(recon_loss_dict.values())
+            if recon_loss_dict
+            else torch.tensor(0.0, device=latent_pred.device)
+        )
+        total_pred_loss = (
+            sum(pred_loss_dict.values())
+            if pred_loss_dict
+            else torch.tensor(0.0, device=latent_pred.device)
         )
 
-        # Combine total losses (only total_loss will backpropagate)
         total_loss = (
-            sum(recon_loss_per_variable.values())  # Tensors sum to a tensor
-            + self.alpha * sum(pred_loss_per_variable.values())
-            + self.beta * latent_loss
-            + +self.re_weight * re_loss
+            total_recon_loss + self.alpha * total_pred_loss + self.beta * latent_loss
         )
+        # --- Conditionally Add Optional Losses ---
+        re_loss = torch.tensor(0.0, device=latent_pred.device)
+        # Only compute and add the loss if the weight is specified and inputs are available
+        if self.re_weight is not None and reynolds is not None:
+            assert (
+                self.re_weight > 0
+            ), f"re_weight must be positive, but got {self.re_weight}"
+            re_loss = self._compute_re_loss(reynolds, x_future["Re_target"])
+            total_loss = total_loss + self.re_weight * re_loss
 
+        stability_loss = torch.tensor(0.0, device=latent_pred.device)
+        # Only compute and add the loss if the weight is specified and inputs are available
+        if self.stability_weight is not None and disturbed_latents is not None:
+            assert (
+                self.stability_weight > 0
+            ), f"stability_weight must be positive, but got {self.stability_weight}"
+            stability_loss = self.stability_loss(
+                latent_pred=latent_pred, disturbed_latents=disturbed_latents
+            )
+            # Note: Using .detach() here means the stability loss acts as a regularizer
+            # but gradients do not flow back through this specific calculation.
+            total_loss = total_loss + self.stability_weight * stability_loss.detach()
+
+        # --- Prepare Detached Dictionary for Logging ---
         return {
-            "total_loss": total_loss,  # This will backpropagate
-            "latent_loss": latent_loss.detach().item(),
-            "re_loss": re_loss.detach().item(),
-            "recon_loss": {
-                key: value.detach().item()
-                for key, value in recon_loss_per_variable.items()
-            },
-            "pred_loss": {
-                key: value.detach().item()
-                for key, value in pred_loss_per_variable.items()
-            },
+            "total_loss": total_loss,  # Keep this attached to the graph for backprop
+            "loss_recon": total_recon_loss.detach(),
+            "loss_pred": total_pred_loss.detach(),
+            "loss_latent": latent_loss.detach(),
+            "loss_re": re_loss.detach(),
+            "loss_stability": stability_loss.detach(),
+            "details_recon": {k: v.detach() for k, v in recon_loss_dict.items()},
+            "details_pred": {k: v.detach() for k, v in pred_loss_dict.items()},
         }

@@ -1,78 +1,115 @@
+# models/trainer.py
+
 import torch
 import numpy as np
 from torch import Tensor
 from torch.optim import Optimizer
 from tensordict import TensorDict
 import torch.distributed as dist
+from torch.amp import GradScaler, autocast
 import matplotlib.pyplot as plt
 from pathlib import Path
 import yaml
 from tqdm import tqdm
+import logging
+from typing import Optional, Union, Dict, List
 import wandb
-from typing import Optional, Union
-from models.autoencoder import KoopmanAutoencoder
-from models.loss import KoopmanLoss
-from models.lr_schedule import CosineWarmup
-from torch.utils.data import DataLoader
-from models.visualization import denormalize_and_visualize
-from models.metrics import Metric
-from models.utils import (
-    average_losses,
-    accumulate_losses,
-    tensor_dict_to_json,
+
+# Local imports
+from .autoencoder import KoopmanAutoencoder
+from .loss import KoopmanLoss
+from .lr_schedule import CosineWarmup
+from .dataloader import DataLoaderWrapper
+from .metrics import Metric
+from .utils import accumulate_losses, average_losses
+from .visualization import denormalize_and_visualize
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
+logger = logging.getLogger(__name__)
 
 
 class Trainer:
+    """A robust training orchestrator for PyTorch models with DDP support."""
+
     def __init__(
         self,
         model: KoopmanAutoencoder,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
+        train_loader: DataLoaderWrapper,
+        val_loader: DataLoaderWrapper,
         optimizer: Optimizer,
         criterion: KoopmanLoss,
-        eval_metrics: Metric,
         lr_scheduler: CosineWarmup,
         device: torch.device,
-        num_epochs: int = 100,
-        patience: int = 10,
-        output_dir: Optional[Union[Path, str]] = "/home/koopman/",
+        output_dir: Union[Path, str],
+        num_epochs: int,
+        patience: int,
+        log_epoch: int,
         start_epoch: int = 0,
-        log_epoch: int = 10,
+        save_latest_every: int = 1,
+        num_visual_batches: int = 1,
+        eval_metrics: Optional[Metric] = None,
+        precision: Optional[str] = "bfloat16",
     ):
-        """
-        Initializes the Trainer class.
-
-        Args:
-            model: PyTorch model to train.
-            train_loader: DataLoader for training data.
-            val_loader: DataLoader for validation data.
-            optimizer: Optimizer for training.
-            eval_metrics: Evaluation metrics for validation.
-            criterion: Loss function.
-            device: Device to train on ('cpu' or 'cuda').
-            num_epochs: Maximum number of epochs to train.
-            patience: Number of epochs to wait for improvement before early stopping.
-            output_dir: Directory to save model checkpoints and logs.
-        """
         self.model = model
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.optimizer = optimizer
-        self.criterion = criterion
+        self.train_loader, self.val_loader = train_loader, val_loader
+        self.optimizer, self.criterion, self.lr_scheduler = (
+            optimizer,
+            criterion,
+            lr_scheduler,
+        )
         self.eval_metrics = eval_metrics
-        self.lr_scheduler = lr_scheduler
         self.device = device
-        self.num_epochs = num_epochs
-        self.patience = patience
+        self.num_epochs, self.patience, self.log_epoch = num_epochs, patience, log_epoch
+        self.save_latest_every, self.num_visual_batches = (
+            num_visual_batches,
+            num_visual_batches,
+        )
+
         self.best_val_loss = float("inf")
         self.patience_counter = 0
-        self.history: dict[str, dict[str, list[float]]] = {}
-        self.output_dir = Path(output_dir) if output_dir else None
         self.start_epoch = start_epoch
-        self.log_epoch = log_epoch
-        if self.output_dir:
-            self.output_dir.mkdir(exist_ok=True)
+        self.current_epoch = start_epoch
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._init_history()
+        self.scaler = None
+
+        if precision == "float16":
+            self.autocast_dtype = torch.float16
+            self.scaler = GradScaler(device=self.device)
+            logger.info("Using float16 mixed precision with GradScaler.")
+
+        elif precision == "bfloat16":
+            # bfloat16 is only available on Ampere and newer GPUs
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                self.autocast_dtype = torch.bfloat16
+                # GradScaler is not required for bfloat16
+                logger.info("Using bfloat16 mixed precision.")
+            else:
+                logger.warning(
+                    "bfloat16 not supported on this device, falling back to float32."
+                )
+
+        elif precision not in ["float32", None]:
+            raise ValueError(f"Unsupported precision: '{precision}'")
+        else:
+            logger.info("Using float32 full precision.")
+
+    def _init_history(self):
+        self.history: Dict[str, Dict[str, List[float]]] = {
+            "total_loss": {"train": [], "val": []},
+            "loss_recon": {"train": [], "val": []},
+            "loss_pred": {"train": [], "val": []},
+            "loss_latent": {"train": [], "val": []},
+            "loss_re": {"train": [], "val": []},
+        }
+        if self.eval_metrics:
+            metric_key = (
+                f"metric_{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
+            )
+            self.history[metric_key] = {"val": []}
 
     @staticmethod
     def is_main_process() -> bool:
@@ -80,250 +117,316 @@ class Trainer:
             not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
         )
 
-    def train_step(self, input: TensorDict, target: TensorDict):
-        """
-        Performs a single training step.
+    def _gather_and_average_metrics(
+        self, metrics: Dict[str, float]
+    ) -> Dict[str, float]:
+        if (
+            not dist.is_available()
+            or not dist.is_initialized()
+            or dist.get_world_size() == 1
+        ):
+            return metrics
 
-        Args:
-            input: Input TensorDict.
-            target: Target TensorDict.
+        # Ensure all metrics are floats for tensor conversion
+        metric_values = [float(v) for v in metrics.values()]
+        metric_tensor = torch.tensor(metric_values, device=self.device)
+        dist.all_reduce(metric_tensor, op=dist.ReduceOp.AVG)
 
-        Returns:
-            Losses for the step (including total loss).
-        """
+        return {key: val.item() for key, val in zip(metrics.keys(), metric_tensor)}
+
+    def _run_one_epoch(self) -> Dict[str, float]:
+        """Runs a single training epoch."""
         self.model.train()
-        input, target = input.to(self.device), target.to(self.device)
-        self.optimizer.zero_grad()
+        if hasattr(self.train_loader.sampler, "set_epoch"):
+            self.train_loader.sampler.set_epoch(self.current_epoch)
 
-        # Forward pass
-        out = self.model(input, seq_length=target["seq_length"])
+        epoch_losses: Dict[str, Tensor] = {}
+        for input_td, target_td in self.train_loader:
+            input_td, target_td = input_td.to(self.device), target_td.to(self.device)
+            self.optimizer.zero_grad(set_to_none=True)
 
-        # Compute loss
-        losses = self.criterion(
-            out.x_recon, out.x_preds, out.z_preds, input[:, -1], target, out.reynolds
-        )
-        losses["total_loss"].backward()
+            with autocast(
+                device_type=str(self.device),
+                dtype=self.autocast_dtype,
+                enabled=self.autocast_dtype is not None,
+            ):
+                model_module = (
+                    self.model.module
+                    if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+                    else self.model
+                )
+                out = self.model(input_td, target_td["seq_length"])
 
-        self.optimizer.step()
-
-        # Log gradient and parameter norms
-        grad_norms = {
-            f"gradient_norms/{name}": param.grad.norm(2).item()
-            for name, param in self.model.named_parameters()
-            if param.grad is not None
-        }
-        param_norms = {
-            f"parameter_norms/{name}": param.norm(2).item()
-            for name, param in self.model.named_parameters()
-        }
-
-        if self.is_main_process():
-            wandb.log(grad_norms)
-            wandb.log(param_norms)
-
-        # Compute evaluation metric if available
-        if self.eval_metrics:
-            target_denorm = self.train_loader.denormalize(target)
-            preds_denorm = self.train_loader.denormalize(out.x_preds)
-
-            # Map both to [0, 1] using dataset min/max
-            target_unit = self.train_loader.to_unit_range(target_denorm)
-            preds_unit = self.train_loader.to_unit_range(preds_denorm)
-
-            metric_value = self.eval_metrics.compute_distance(target_unit, preds_unit)
-            losses[f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"] = (
-                float(np.mean(metric_value))
-            )
-
-        return losses
-
-    def evaluate(self, dataloader: DataLoader, mode: str = "train"):
-        """
-        Evaluates the model on the given dataloader.
-
-        Args:
-            dataloader: DataLoader to evaluate on.
-            mode: train/val/test
-        Returns:
-            TensorDict: Averaged losses over the dataset.
-        """
-        self.model.eval()
-        total_losses = TensorDict({}, batch_size=[])
-
-        with torch.no_grad():
-            for input, target in dataloader:
-                input, target = input.to(self.device), target.to(self.device)
-                out = self.model(input, seq_length=target["seq_length"])
-                losses = self.criterion(
+                x_true_recon = TensorDict(
+                    {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
+                    batch_size=input_td.batch_size[0],
+                )
+                loss_dict = self.criterion(
                     out.x_recon,
                     out.x_preds,
                     out.z_preds,
-                    input[:, -1],
-                    target,
+                    x_true_recon,
+                    target_td,
                     out.reynolds,
+                    out.disturbed_latents,
+                )
+            if not torch.isfinite(loss_dict["total_loss"]).all():
+                logger.critical(
+                    "NaN detected in the loss before backward pass. Halting."
+                )
+                raise RuntimeError("NaN loss detected")
+
+            # self.scaler is only initialized for float16 precision
+            if self.scaler:
+                # 1. Compute scaled gradients
+                self.scaler.scale(loss_dict["total_loss"]).backward()
+
+                # 2. Unscale gradients before clipping
+                self.scaler.unscale_(self.optimizer)
+
+                # 3. Clip the unscaled gradients
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                # 4. Optimizer step
+                self.scaler.step(self.optimizer)
+
+                # 5. Update the scale for next iteration
+                self.scaler.update()
+
+            else:  # For float32 or bfloat16 precision
+                loss_dict["total_loss"].backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+
+            detached_losses = {
+                k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
+            }
+            epoch_losses = accumulate_losses(epoch_losses, detached_losses)
+
+        return average_losses(epoch_losses, len(self.train_loader))
+
+    def evaluate(
+        self, dataloader: DataLoaderWrapper, epoch: int, mode: str = "val"
+    ) -> Dict[str, float]:
+        """Evaluates the model on a given dataloader."""
+        self.model.eval()
+        total_losses: Dict[str, Tensor] = {}
+        all_metric_values: List[float] = []
+
+        with torch.no_grad():
+            for i, (input_td, target_td) in enumerate(dataloader):
+                input_td, target_td = input_td.to(self.device), target_td.to(
+                    self.device
                 )
 
-                # Accumulate losses
-                total_losses = accumulate_losses(total_losses, losses)
+                model_module = (
+                    self.model.module
+                    if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+                    else self.model
+                )
+                out = self.model(input_td, target_td["seq_length"])
 
-                # Visualization for the first batch
-                if self.output_dir:
+                x_true_recon = TensorDict(
+                    {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
+                    batch_size=input_td.batch_size[0],
+                )
+                loss_dict = self.criterion(
+                    out.x_recon,
+                    out.x_preds,
+                    out.z_preds,
+                    x_true_recon,
+                    target_td,
+                    out.reynolds,
+                    out.disturbed_latents,
+                )
+                detached_losses = {
+                    k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
+                }
+                total_losses = accumulate_losses(total_losses, detached_losses)
+
+                if self.eval_metrics and not out.x_preds.is_empty():
+                    preds_denorm = dataloader.denormalize(out.x_preds)
+                    target_denorm = dataloader.denormalize(target_td)
+                    metric_val = self.eval_metrics(
+                        dataloader.to_unit_range(target_denorm),
+                        dataloader.to_unit_range(preds_denorm),
+                    )
+                    all_metric_values.extend(np.atleast_1d(metric_val.cpu().numpy()))
+
+                if self.is_main_process() and i < self.num_visual_batches:
                     denormalize_and_visualize(
-                        input=dataloader.denormalize(input),
-                        target=dataloader.denormalize(target),
+                        input=dataloader.denormalize(input_td),
+                        target=dataloader.denormalize(target_td),
                         x_recon=dataloader.denormalize(out.x_recon),
                         x_preds=dataloader.denormalize(out.x_preds),
                         output_dir=self.output_dir,
-                        mode=mode,
+                        mode=f"{mode}",
                     )
-                break  # Break after the first batch for visualization
+                # TODO: Add number of batches break
 
-        n_batches = len(dataloader)
-        total_losses = average_losses(total_losses, n_batches)
-
-        # Compute metric if available
-        if self.eval_metrics is not None:
-            target_denorm = dataloader.denormalize(target)
-            preds_denorm = dataloader.denormalize(out.x_preds)
-            metric_value = self.eval_metrics.compute_distance(
-                target_denorm, preds_denorm
+        final_metrics = average_losses(total_losses, len(dataloader))
+        if self.eval_metrics:
+            metric_key = (
+                f"metric_{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
             )
-            metric_mean = float(np.mean(metric_value))
-            total_losses[
-                f"{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
-            ] = metric_mean
-
-        return total_losses
-
-    def save_checkpoint(self, epoch: int, val_loss: Tensor):
-        """
-        Saves the model checkpoint.
-
-        Args:
-            epoch: Current epoch.
-            val_loss: Validation loss at the current epoch.
-        """
-        if self.output_dir:
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model_state_dict": self.model.state_dict(),
-                    "optimizer_state_dict": self.optimizer.state_dict(),
-                    "val_loss": val_loss,
-                    "history": self.history,
-                },
-                self.output_dir / "best_model.pth",
+            final_metrics[metric_key] = (
+                float(np.mean(all_metric_values)) if all_metric_values else float("nan")
             )
 
-    def log_metrics(self, step: int, losses: dict, mode: str = "train"):
-        """
-        Logs metrics to W&B.
+        return final_metrics
 
-        Args:
-            step: Current step (iteration or epoch).
-            losses: Losses for the step as a dictionary.
-            mode: Mode for logging (e.g., 'train' or 'val').
-        """
-        # Prepare the W&B log dictionary
-        wandb_log_dict = {"step": step}
+    def _log_metrics(self, metrics: Dict, epoch: int, mode: str):
+        if not self.is_main_process() or not metrics:
+            return
 
-        for key, value in losses.items():
-            if isinstance(value, dict):  # For nested dictionaries
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, TensorDict):  # Check if it's a TensorDict
-                        wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = (
-                            tensor_dict_to_json(sub_value)
-                        )
-                    elif isinstance(sub_value, torch.Tensor):  # Check if it's a tensor
-                        wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = (
-                            sub_value.item()
-                            if sub_value.numel() == 1
-                            else sub_value.cpu().numpy().tolist()
-                        )
-                    else:  # Handle scalars or other types
-                        wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = sub_value
-            elif isinstance(value, TensorDict):  # For top-level TensorDicts
-                for sub_key, sub_value in value.items():
-                    wandb_log_dict[f"loss/{mode}/{key}_{sub_key}"] = (
-                        tensor_dict_to_json(sub_value)
-                    )
-            elif isinstance(value, torch.Tensor):  # For top-level tensors
-                wandb_log_dict[f"loss/{mode}/{key}"] = (
-                    value.item() if value.numel() == 1 else value.cpu().numpy().tolist()
-                )
-            else:  # For other types (e.g., scalars)
-                wandb_log_dict[f"loss/{mode}/{key}"] = value
+        log_data = {f"{mode}/{k}": v for k, v in metrics.items()}
+        log_data["epoch"] = epoch
+        if mode == "train":
+            log_data["lr"] = self.optimizer.param_groups[0]["lr"]
+        wandb.log(log_data)
 
-        # Log to W&B
-        if self.is_main_process():
-            wandb.log(wandb_log_dict)
+        metrics_str = " | ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
+        logger.info(f"Epoch {epoch:04d} [{mode.upper()}] {metrics_str}")
 
-    def plot_training_history(self):
-        """
-        Plots and saves the training history.
-        """
-        if self.output_dir:
-            plt.figure(figsize=(12, 6))
-            for key in self.history.keys():
-                plt.plot(self.history[key]["train"], label=f"Train {key}")
-                plt.plot(self.history[key]["val"], label=f"Val {key}")
-            plt.xlabel("Epoch")
-            plt.ylabel("Loss")
-            plt.title("Training History")
-            plt.legend()
-            plt.savefig(self.output_dir / "training_history.png")
-            plt.close()
+        for key, value in metrics.items():
+            if key in self.history and mode in self.history[key]:
+                self.history[key][mode].append(value)
 
-            with open(self.output_dir / "training_history.yaml", "w") as f:
-                yaml.dump(self.history, f)
+        wandb.log(self.model.timings)
 
-    def run_training_loop(self):
-        """
-        Runs the full training loop with validation and early stopping.
+    def save_checkpoint(self, epoch: int, val_loss: float, is_best: bool):
+        if not self.is_main_process():
+            return
 
-        Returns:
-            Dictionary with training history.
-        """
-        progress_bar = tqdm(
-            range(self.start_epoch, self.num_epochs), desc="Training", unit="epoch"
+        model_to_save = (
+            self.model.module
+            if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+            else self.model
         )
-        global_step = self.start_epoch * len(self.train_loader)
-        for epoch in progress_bar:
-            # Training step
-            for input, target in self.train_loader:
-                losses = self.train_step(input, target)
-                self.log_metrics(step=global_step, losses=losses, mode="train")
-                global_step += 1
+        state = {
+            "epoch": epoch,
+            "best_val_loss": self.best_val_loss,
+            "history": self.history,
+            "model_state_dict": model_to_save.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+        }
 
+        cp_dir = self.output_dir / "checkpoints"
+        cp_dir.mkdir(exist_ok=True)
+        if is_best:
+            torch.save(state, cp_dir / "best_model.pth")
+        if self.save_latest_every > 0 and epoch % self.save_latest_every == 0:
+            torch.save(state, cp_dir / f"epoch_{epoch}.pth")
+
+    def run(self) -> Dict:
+        logger.info(
+            f"Starting training from epoch {self.start_epoch}/{self.num_epochs}"
+        )
+
+        for epoch in (
+            pbar := tqdm(range(self.start_epoch, self.num_epochs), desc="Epochs")
+        ):
+            torch.autograd.set_detect_anomaly(True)
+            self.current_epoch = epoch
+
+            train_metrics = self._run_one_epoch()
+
+            # Step the scheduler AFTER the training epoch
             self.lr_scheduler.step()
 
-            # Evaluate on train and validation sets
-            if (epoch % self.log_epoch == 0) or (epoch == self.start_epoch):
-                train_losses = self.evaluate(dataloader=self.train_loader, mode="train")
-                val_losses = self.evaluate(dataloader=self.val_loader, mode="val")
-                self.log_metrics(step=epoch, losses=val_losses, mode="val")
+            avg_train_metrics = self._gather_and_average_metrics(train_metrics)
+            self._log_metrics(avg_train_metrics, epoch, "train")
 
-            progress_bar.set_postfix(
-                {
-                    "Train Loss": f"{train_losses['total_loss']:.4f}",
-                }
+            if epoch % self.log_epoch == 0 or epoch == self.num_epochs - 1:
+                # TODO: Add train logging figures in WandB too
+                val_metrics = self.evaluate(self.val_loader, epoch, "val")
+                avg_val_metrics = self._gather_and_average_metrics(val_metrics)
+                self._log_metrics(avg_val_metrics, epoch, "val")
+
+                if self.is_main_process():
+                    current_val_loss = float(
+                        avg_val_metrics.get("total_loss", float("inf"))
+                    )
+                    is_best = current_val_loss < self.best_val_loss
+                    if is_best:
+                        self.best_val_loss = current_val_loss
+                        self.patience_counter = 0
+                        self.save_checkpoint(epoch, current_val_loss, is_best=True)
+                    else:
+                        self.patience_counter += 1
+
+                    self.save_checkpoint(epoch, current_val_loss, is_best=False)
+
+                    if self.patience_counter >= self.patience:
+                        logger.info(f"Early stopping at epoch {epoch}.")
+                        break
+
+            pbar.set_postfix(
+                train_loss=avg_train_metrics.get("total_loss"),
+                val_loss=(
+                    self.history["total_loss"]["val"][-1]
+                    if self.history["total_loss"]["val"]
+                    else -1
+                ),
+                best_val=self.best_val_loss,
             )
 
-            # Early stopping and checkpoint saving
-            if val_losses["total_loss"] and (
-                val_losses["total_loss"] < self.best_val_loss
-            ):
-                self.best_val_loss = val_losses["total_loss"]
-                self.patience_counter = 0
-            else:
-                self.patience_counter += 1
-                if self.patience_counter >= self.patience:
-                    progress_bar.write(
-                        f"Early stopping triggered after {epoch + 1} epochs"
-                    )
-                    break
-            self.save_checkpoint(epoch, val_losses["total_loss"])
-
-        # Save training history
-        self.plot_training_history()
+        if self.is_main_process():
+            self.plot_and_save_history()
+        logger.info("Training finished.")
         return self.history
+
+    def plot_and_save_history(self):
+        if not self.is_main_process():
+            return
+        fig, ax = plt.subplots(2, 1, figsize=(15, 12), sharex=True)
+
+        loss_keys = [k for k in self.history if "loss" in k]
+        metric_keys = [k for k in self.history if "metric" in k]
+
+        for key in loss_keys:
+            if self.history[key]["train"]:
+                ax[0].plot(self.history[key]["train"], label=f"Train {key}", alpha=0.8)
+            if self.history[key]["val"]:
+                val_epochs = range(
+                    self.start_epoch,
+                    self.start_epoch + len(self.history[key]["val"]) * self.log_epoch,
+                    self.log_epoch,
+                )
+                ax[0].plot(
+                    val_epochs,
+                    self.history[key]["val"],
+                    label=f"Val {key}",
+                    linestyle="--",
+                )
+        ax[0].set_ylabel("Loss")
+        ax[0].set_title("Training & Validation Loss")
+        ax[0].legend()
+        ax[0].grid(True, alpha=0.3)
+
+        if any(self.history[k]["val"] for k in metric_keys):
+            for key in metric_keys:
+                if self.history[key]["val"]:
+                    val_epochs = range(
+                        self.start_epoch,
+                        self.start_epoch
+                        + len(self.history[key]["val"]) * self.log_epoch,
+                        self.log_epoch,
+                    )
+                    ax[1].plot(
+                        val_epochs,
+                        self.history[key]["val"],
+                        label=f"Val {key}",
+                        linestyle="--",
+                    )
+            ax[1].set_ylabel("Metric Value")
+            ax[1].set_title("Validation Metrics")
+            ax[1].legend()
+            ax[1].grid(True, alpha=0.3)
+
+        ax[-1].set_xlabel("Epoch")
+        plt.tight_layout()
+        fig.savefig(self.output_dir / "training_history.png", dpi=300)
+        with open(self.output_dir / "training_history.yaml", "w") as f:
+            yaml.dump(self.history, f, indent=2)
+        plt.close(fig)

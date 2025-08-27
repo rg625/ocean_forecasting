@@ -26,12 +26,14 @@
 *.csv
 *.out
 *.err
+*.tex
 
 
 wget-log
 **/koopman_autoencoder/wandb/latest-run
 **/koopman_autoencoder/wandb/settings
 **/koopman_autoencoder/data/acdm/
+**/koopman_autoencoder/data/
 **/koopman_autoencoder/data/diff/
 **/koopman_autoencoder/data/jet/
 **/koopman_autoencoder/data/128_inc/

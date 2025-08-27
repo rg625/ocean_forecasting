@@ -1,0 +1,86 @@
+# Top-level run configuration
+output_dir: "model_outputs/128_inc_kl_1.0_mlp"
+ckpt: null
+# ckpt: '/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_mlp/dummy-bv245eop/checkpoints/epoch_80.pth'
+log_epoch: 20
+
+# Data configuration
+data:
+  dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
+  data_dir: "./data"
+  train_file: "acdm/128_inc/train.nc"
+  val_file: "acdm/128_inc/val.nc"
+  test_file: "acdm/128_inc/test.nc"
+  input_sequence_length: 2
+  max_sequence_length: 8
+  subsample: 2
+  variables:
+    v_x: 1
+    v_y: 1
+    p: 1
+  static_variables:
+    obstacle_mask: 1
+  normalization:
+    type: "MeanStdNormalizer"
+    sim: 0
+  quantile_range: [2.5, 97.5]
+  train_re: null
+  val_re: [900, 1000] # null
+  test_re: null # 490
+
+# Metric configuration
+metric:
+  mode: "SSIM"
+  variable_mode: "all"
+  variable_name: null
+
+# Model architecture configuration
+model:
+  height: 64
+  width: 128
+  hidden_dims: [64, 128, 64]
+  block_size: 2
+  kernel_size: 3
+  conv_kwargs:
+    padding: 1
+    padding_mode: "circular"
+  latent_dim: 256
+  re_embedding_dim: 256
+  re_cond_type: "adaln" # null, late_fusion, adaln
+  operator_mode: "mlp" # or "eigen", "mlp", "linear"
+  transformer:
+    num_layers: 2            # ↓ reduce model depth
+    nhead: 4                 # ↓ reduce per-head dim
+    ff_mult: 2               # ↓ reduce feed-forward hidden size
+    max_len: 1000
+    dropout: 0.0             # eliminate dropout for now
+  predict_re: True
+  re_grad_enabled: False
+  disturb_std: 0.01 # null
+
+# Training loop configuration
+training:
+  batch_size: 32
+  random_sequence_length: False
+  num_epochs: 1000
+  patience: 100
+  use_checkpoint: False
+  save_latest_every: 20
+  num_visual_batches: 1
+  precision: bfloat16
+
+# Learning rate scheduler configuration
+lr_scheduler:
+  lr: 5.0e-5
+  warmup: 100
+  decay: 900
+  final_lr: 1.0e-5
+
+# Loss function configuration
+loss:
+  alpha: 1.0
+  beta: 0.001
+  re_weight: null # 0.0
+  stability_weight: 0.001 # null
+  weighting_type: "uniform"
+  sigma_blur: null

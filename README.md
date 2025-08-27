@@ -29,7 +29,7 @@ ocean_forecasting/
 │   │   ├── __init__.py
 │   │   ├── autoencoder.py          # Model definition
 │   │   ├── checkpoint.py           # Gradient checkpointing
-│   │   ├── cnn.py                  # Base networks
+│   │   ├── networks.py                  # Base networks
 │   │   ├── dataloader.py           # Custom dataset and data loader
 │   │   ├── loss.py                 # Loss function
 │   │   ├── lr_schedule.py          # Custom learning rate scheduler

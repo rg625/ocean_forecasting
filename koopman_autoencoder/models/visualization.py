@@ -1,3 +1,5 @@
+# models/utils.py
+
 import numpy as np
 import matplotlib.pyplot as plt
 import wandb
@@ -32,7 +34,7 @@ def plot_comparison(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for var in x.keys():
-        if var in ["seq_length", "Re", "obstacle_mask"]:
+        if var in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]:
             continue
         x_var = x[var][0]  # shape: (T, H, W)
         x_recon_var = x_recon[var][0]  # shape: (T, H, W)
@@ -138,7 +140,7 @@ def plot_energy_spectrum(
     plt.figure(figsize=(12, 6))  # Adjusted size for better readability in W&B
 
     for var in variables:
-        if var in ["seq_length", "Re", "obstacle_mask"]:
+        if var in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]:
             continue
         # Compute isotropic energy spectrum for each variable
         k_bins, true_spec = compute_isotropic_energy_spectrum(true_fields[var])
@@ -180,7 +182,7 @@ def compute_re(
     Compute Reynolds number and log in W&B
     """
     Re_logs = {}
-    true_Re = true_fields["Re"].detach().cpu().numpy()
+    true_Re = true_fields["Re_target"].detach().cpu().numpy()
     v_x = pred_fields["v_x"]
     v_y = pred_fields["v_y"]
     v = torch.sqrt(v_x**2 + v_y**2).mean(dim=(1, 2, 3))
@@ -195,7 +197,7 @@ def compute_re(
         Re_logs[f"figures/{mode}/pred_Re"] = pred_Re[
             0
         ]  # indexed to ony show one sample per batch
-        Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re - pred_Re)
+        Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re[:, 0] - pred_Re)
         # Log to W&B
         if is_main_process():
             wandb.log(Re_logs)
@@ -228,13 +230,13 @@ def denormalize_and_visualize(
         {
             key: value[:, -1].unsqueeze(1) for key, value in input.items()
         },  # Slice each tensor
-        batch_size=input.batch_size,
+        batch_size=input.batch_size[0],
     )
     est_to_recon = TensorDict(
         {
             key: value.unsqueeze(1) for key, value in x_recon.items()
         },  # Slice each tensor
-        batch_size=input.batch_size,
+        batch_size=input.batch_size[0],
     )
     plot_comparison(
         x=true_to_recon,
@@ -259,11 +261,11 @@ def denormalize_and_visualize(
             key: value[:, -1] if value.dim() > 1 else None
             for key, value in target.items()
         },
-        batch_size=target.batch_size,
+        batch_size=target.batch_size[0],
     )
     pred_fields = TensorDict(
         {key: value[:, -1] for key, value in x_preds.items()},
-        batch_size=x_preds.batch_size,
+        batch_size=x_preds.batch_size[0],
     )
     plot_energy_spectrum(
         true_fields=true_fields,

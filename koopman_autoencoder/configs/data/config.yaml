@@ -1,12 +1,21 @@
 grid:
-  nx: 256                # Grid resolution in the x-direction
-  ny: 256                # Grid resolution in the y-direction
+  nx: 128                # Grid resolution in the x-direction
+  ny: 128                # Grid resolution in the y-direction (using a square grid)
 
 simulation:
   dt: 3600.0             # Time step in seconds
-  tmax: 864000000.0      # Maximum simulation time (in seconds, ~27.4 years)
-  save_interval: 86400.0 # Interval to save snapshots (in seconds, 1 day)
   model_type: "jet"     # Type of model ("eddy", "jet", or "barotropic")
 
+ensemble:
+  n_simulations: 100     # Total number of simulations to generate
+  simulation_tmax: 43200000.0 # Duration of EACH simulation (~500 days)
+  save_interval: 86400.0   # Interval to save snapshots (1 day), yields 500 snapshots per sim
+
+randomization:
+  # Define the ranges for randomizing parameters for each simulation
+  forcing_amp_range: [0.5e-12, 2.0e-12] # Min/max for forcing amplitude
+  wavenumber_range: [3, 6]               # Min/max for forcing wavenumber
+  initial_cond_amp_range: [0.5e-7, 2.0e-7] # Min/max for initial condition noise amplitude
+
 output:
-  output_dir: "./data/jet"   # Directory to save the generated dataset
+  output_dir: "./data/jet_ensemble"   # Directory to save the generated dataset
