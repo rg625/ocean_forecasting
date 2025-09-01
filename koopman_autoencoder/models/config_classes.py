@@ -60,6 +60,7 @@ class ModelConfig:
     # Explicitly control if the Reynolds loss regularizes the main model.
     re_grad_enabled: bool = False
     disturb_std: Optional[float] = None
+    residual: Optional[bool] = False
 
 
 @dataclass

@@ -115,6 +115,7 @@ def main(cfg: DictConfig):
             predict_re=cfg.model.predict_re,
             re_grad_enabled=cfg.model.re_grad_enabled,
             disturb_std=cfg.model.disturb_std,
+            residual=cfg.model.residual,
             **cfg.model.conv_kwargs,
         ).to(device)
         if is_ddp:

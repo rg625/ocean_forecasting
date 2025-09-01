@@ -41,4 +41,5 @@ wget-log
 **/koopman_autoencoder/data/128_reyVar/
 **/koopman_autoencoder/data/128_tra/
 **/koopman_autoencoder/data/acdm/128_tra/
+**/autoreg-pde-diffusin/
 **/wandb/

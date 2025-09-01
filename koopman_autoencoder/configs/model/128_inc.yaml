@@ -1,7 +1,7 @@
 # Top-level run configuration
-output_dir: "model_outputs/128_inc_kl_1.0_mlp"
+output_dir: "model_outputs/128_inc_kl_1.0_theoretical_mlp"
 ckpt: null
-# ckpt: '/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_mlp/dummy-bv245eop/checkpoints/epoch_80.pth'
+# ckpt: '/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_mlp/run-20250822_164415/checkpoints/epoch_320.pth'
 log_epoch: 20
 
 # Data configuration
@@ -25,7 +25,7 @@ data:
     sim: 0
   quantile_range: [2.5, 97.5]
   train_re: null
-  val_re: [900, 1000] # null
+  val_re: null
   test_re: null # 490
 
 # Metric configuration
@@ -49,14 +49,15 @@ model:
   re_cond_type: "adaln" # null, late_fusion, adaln
   operator_mode: "mlp" # or "eigen", "mlp", "linear"
   transformer:
-    num_layers: 2            # ↓ reduce model depth
-    nhead: 4                 # ↓ reduce per-head dim
-    ff_mult: 2               # ↓ reduce feed-forward hidden size
+    num_layers: 4
+    nhead: 8
+    ff_mult: 4
     max_len: 1000
     dropout: 0.0             # eliminate dropout for now
   predict_re: True
   re_grad_enabled: False
   disturb_std: 0.01 # null
+  residual: True
 
 # Training loop configuration
 training:
@@ -71,7 +72,7 @@ training:
 
 # Learning rate scheduler configuration
 lr_scheduler:
-  lr: 5.0e-5
+  lr: 1.0e-4
   warmup: 100
   decay: 900
   final_lr: 1.0e-5

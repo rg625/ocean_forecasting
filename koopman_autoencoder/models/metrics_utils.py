@@ -224,6 +224,9 @@ def exhaustive_predictions(model, dataset, input_len, output_len):
 
     logger.info("exhaustive_predictions completed successfully.")
 
+    logger.info(f"stacked_targets: {stacked_targets}")
+    logger.info(f"stacked_predictions: {stacked_predictions}")
+
     return stacked_targets, stacked_predictions
 
 
@@ -370,6 +373,8 @@ def exhaustive_diffusion_rollout(
                 result = model(
                     conditioning=cond, data=d[:, i - 1 : i]
                 )  # auto-regressive inference
+                # logger.info(f"d.shape: {d.shape}")
+                # logger.info(f"result.shape: {result.shape}")
                 result[:, :, -1:] = d[
                     :, i : i + 1, -1:
                 ]  # replace simparam prediction with true values
@@ -394,6 +399,9 @@ def exhaustive_diffusion_rollout(
     # Convert to TensorDict format with shape (time, H, W)
     pred_td = convert_to_tensordict_fields(all_pred, var_names)
     gt_td = convert_to_tensordict_fields(all_gt, var_names)
+    logger.info(pred_td)
+    logger.info(gt_td)
+
     return gt_td, pred_td
 
 
@@ -441,7 +449,7 @@ def run_full_eval_and_report_diffusion(
         vort_pred = compute_vorticity_diff(
             batched_predictions["v_x"].squeeze(), batched_predictions["v_y"].squeeze()
         )
-        batched_predictions["vort"] = vort_pred.unsqueeze(0)
+        batched_predictions["vort"] = vort_pred  # .unsqueeze(0)
 
         global_vort_min = vort_truth.min().item()
         global_vort_max = vort_truth.max().item()

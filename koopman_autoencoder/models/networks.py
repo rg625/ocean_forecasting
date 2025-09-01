@@ -590,6 +590,7 @@ class KoopmanOperator(nn.Module):
         mode: Literal["linear", "eigen", "mlp"] = "linear",
         assume_orthogonal_eigenvectors: bool = False,
         use_checkpoint: bool = False,
+        residual: Optional[bool] = False,
     ):
         super().__init__()
         if not isinstance(latent_dim, int) or latent_dim <= 0:
@@ -602,7 +603,8 @@ class KoopmanOperator(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.assume_orthogonal = assume_orthogonal_eigenvectors
         self.re_embedding_dim = re_embedding_dim
-        self.residual = False
+        self.residual = residual
+        self.delta_t_train = torch.tensor(0.1)
 
         # Instantiate the AdaLNMLP conditioner if an embedding dimension is provided.
         self.adaln_conditioner = (
@@ -611,6 +613,8 @@ class KoopmanOperator(nn.Module):
 
         if self.mode == "linear":
             self.koopman_linear = nn.Linear(latent_dim, latent_dim, bias=False)
+
+        # TODO: Add theoretical linear layer
 
         elif self.mode == "eigen":
             # Initialize eigenvalues to be stable (magnitudes <= 1.0)
@@ -664,7 +668,9 @@ class KoopmanOperator(nn.Module):
         recomposed_z = P @ scaled_z
         return recomposed_z.T
 
-    def forward(self, z: Tensor, re: Optional[Tensor] = None) -> Tensor:
+    def forward(
+        self, z: Tensor, re: Optional[Tensor] = None, delta_t: Optional[float] = None
+    ) -> Tensor:
         """
         Applies the full one-step evolution: condition, then operate.
 
@@ -686,7 +692,14 @@ class KoopmanOperator(nn.Module):
             out = self._forward_impl(z_conditioned)
 
         # 3. Residual connection: z_{t+1} = z + K(z)
-        return z_conditioned + out if self.residual else out
+        if self.residual:
+            if delta_t is not None:
+                return z_conditioned + delta_t * out
+            elif self.delta_t_train is not None:
+                return z_conditioned + self.delta_t_train * out
+            else:
+                return ValueError("No timestep was fed in")
+        return out
 
 
 class Re(nn.Module):

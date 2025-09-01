@@ -61,6 +61,7 @@ class KoopmanAutoencoder(nn.Module):
         predict_re: bool = False,
         re_grad_enabled: bool = False,
         disturb_std: float = 1e-2,
+        residual: Optional[bool] = False,
         **conv_kwargs,
     ):
         super().__init__()
@@ -115,6 +116,7 @@ class KoopmanAutoencoder(nn.Module):
             re_embedding_dim=re_embedding_dim,
             mode=operator_mode,
             use_checkpoint=use_checkpoint,
+            residual=residual,
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
