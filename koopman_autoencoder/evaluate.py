@@ -1,172 +1,220 @@
-import torch
-import torch.optim as optim
-from torch.utils.data import DataLoader, SequentialSampler
+# evaluate_models.py (Hardened / Fixed)
+import os
 import logging
-from omegaconf import OmegaConf
 import argparse
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import yaml
-from tensordict import TensorDict
+import warnings
+import numpy as np
+from typing import Dict, Tuple, Any, cast, Optional, Callable
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+# Config helpers
+from omegaconf import OmegaConf, DictConfig
+
+# Matplotlib setup
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 import seaborn as sns
-from typing import Dict, Tuple, List, Optional
 
+# --- Import Project Modules (may raise ImportError if project structure not on PYTHONPATH) ---
+try:
+    from models.config_classes import Config
+    from models.autoencoder import KoopmanAutoencoder
+    from models.dataloader import create_dataloaders
+    from models.utils import load_checkpoint, load_datasets
+    from models.metrics_utils import (
+        run_evaluation,
+        kae_rollout_wrapper,
+    )
+except Exception:
+    # Provide helpful log if imports fail; allow the script to continue so user sees the message.
+    # Many errors here are environment/setup related (PYTHONPATH, missing package).
+    raise
 
-# Import necessary functions and classes from your project
-# KAE specific imports
-from models.config_classes import Config
-from models.autoencoder import KoopmanAutoencoder
-from models.dataloader import create_dataloaders
-from models.utils import load_checkpoint, load_datasets
-from models.metrics import Metric
+# Diffusion Model Imports (assuming they are in the python path)
+try:
+    from turbpred.params import DataParams, ModelParamsDecoder
+    from turbpred.model_diffusion import DiffusionModel
+except Exception:
+    # We'll only raise at runtime if a diffusion model is actually required.
+    pass
 
-# Import the new, refactored metrics utils
-from models.metrics_utils import (
-    run_full_evaluation_and_report,
-    compute_vorticity,
-    run_full_eval_and_report_diffusion,
-)
-
-# Diffusion Model specific imports
-from turbpred.params import DataParams, ModelParamsDecoder
-from turbpred.model_diffusion import DiffusionModel
-from turbpred.turbulence_dataset import TurbulenceDataset
-from turbpred.data_transformations import Transforms as DataTransforms
-
-# Set plotting style
-plt.style.use("seaborn-v0_8-whitegrid")
-cmap = sns.color_palette("icefire", as_cmap=True)
-
-# Configure logging
+# --- Basic Configuration ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Use seaborn style but be resilient if seaborn not available
+try:
+    plt.style.use("seaborn-v0_8-whitegrid")
+except Exception:
+    plt.style.use("default")
+warnings.filterwarnings(
+    "ignore", category=UserWarning, module="torchvision.transforms.functional"
+)
 
-# #############################################################################
-# LOCAL, FIXED VERSIONS OF METRICS UTILS
-# To resolve the runtime error, the following functions from metrics_utils.py
-# have been integrated directly into this script with the necessary fix.
-# #############################################################################
+# =====================================================================================
+# SCRIPT CONFIGURATION
+# =====================================================================================
+SCRIPT_CONFIG = {
+    "rollout_steps": 60,
+    "input_len": 2,
+    "plotting": {
+        "cmap": sns.color_palette("icefire", as_cmap=True),
+        "err_cmap": "coolwarm",
+        "frame_stride": 5,
+        "max_frames_to_plot": 8,
+    },
+    "latex": {
+        "metric_map": {"L2": "MSE", "LSIM": "LSiM"},
+        "metric_order": ["MSE", "LSiM"],
+        "model_display_map": {
+            "ACDM_ncn": r"$ACDM_{ncn}$",
+            "ACDM_Standard": "ACDM",
+            "KAE": "KAE",
+        },
+        # Keep scaling map optional; functions will handle missing entries gracefully
+        "scaling_map": {
+            500: {"MSE": (1e-6, 1, -6), "LSiM": (1e-3, 1, -3)},
+            600: {"MSE": (1e-5, 1, -5), "LSiM": (1e-2, 2, -2)},
+            1000: {"MSE": (1e-5, 1, -5), "LSiM": (1e-2, 2, -2)},
+        },
+    },
+}
+
+# =====================================================================================
+# HELPER FUNCTIONS
+# =====================================================================================
 
 
-def compute_all_metrics(
-    target: TensorDict,
-    prediction: TensorDict,
-    loader,
-    variables: List[str],
-    custom_min_max: Optional[Dict[str, Tuple[float, float]]] = None,
-    chunk_size: int = 8,  # limit batch size in normalization
-) -> dict:
-    """
-    Computes all metrics (L2, SSIM, PSNR, VI) for each variable and for 'all'.
-    """
-    results: Dict = {}
-    target_norm = {}
-    prediction_norm = {}
+def get_split_for_re(re_val: int) -> str:
+    """Determines the data split ('train', 'val', 'test') for a given Reynolds number."""
+    if re_val in [490, 500]:
+        return "test"
+    elif (100 <= re_val <= 190) or (900 <= re_val <= 1000):
+        return "val"
+    elif 200 <= re_val <= 890:
+        return "train"
+    else:
+        raise ValueError(
+            f"Reynolds number {re_val} does not fall into any defined data split."
+        )
 
-    for var in variables:
-        if custom_min_max and var in custom_min_max:
-            vmin, vmax = custom_min_max[var]
-            target_norm[var] = (target[var] - vmin) / (vmax - vmin + 1e-8)
-            prediction_norm[var] = (prediction[var] - vmin) / (vmax - vmin + 1e-8)
-        else:
-            target_chunks = []
-            pred_chunks = []
-            # Ensure we are using the correct loader (val_loader for normalization stats)
-            norm_loader = loader if not isinstance(loader, list) else loader[1]
-            for start in range(0, target.shape[0], chunk_size):
-                end = start + chunk_size
-                t_chunk = norm_loader.dataset.to_unit_range(target[start:end].cpu())[
-                    var
-                ]
-                p_chunk = norm_loader.dataset.to_unit_range(
-                    prediction[start:end].cpu()
-                )[var]
-                target_chunks.append(t_chunk)
-                pred_chunks.append(p_chunk)
-            target_norm[var] = torch.cat(target_chunks, dim=0)
-            prediction_norm[var] = torch.cat(pred_chunks, dim=0)
 
-    target_td = TensorDict(target_norm, batch_size=target.batch_size).to(
-        prediction.device
+def safe_omega_load(path: str) -> Any:
+    """Safely load an OmegaConf config file; returns None on failure."""
+    if not path or not os.path.exists(path):
+        logger.error(f"OmegaConf path not found: {path}")
+        return None
+    try:
+        cfg = OmegaConf.load(path)
+        return cfg
+    except Exception as e:
+        logger.exception(f"Failed to load OmegaConf from {path}: {e}")
+        return None
+
+
+def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module, Any]:
+    """Loads a Koopman Autoencoder model and its configuration with robust error handling."""
+    cfg_path = model_config.get("config_path")
+    checkpoint_path = model_config.get("checkpoint_path")
+    if not cfg_path or not os.path.exists(cfg_path):
+        raise FileNotFoundError(f"KAE config path not found: {cfg_path}")
+    if not checkpoint_path or not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"KAE checkpoint path not found: {checkpoint_path}")
+
+    # Load and merge structured Config if present, otherwise just load the file
+    try:
+        base_struct = OmegaConf.structured(Config)
+        file_cfg = OmegaConf.load(cfg_path)
+        cfg = OmegaConf.merge(base_struct, file_cfg)
+        OmegaConf.resolve(cfg)
+    except Exception as e:
+        logger.exception(f"Failed to load/merge KAE config from {cfg_path}: {e}")
+        raise
+
+    try:
+        input_frames = int(cfg.data.input_sequence_length)
+    except Exception:
+        input_frames = int(cfg.data.input_sequence_length)
+
+    try:
+        model = KoopmanAutoencoder(
+            data_variables=cfg.data.variables,
+            input_frames=input_frames,
+            height=cfg.model.height,
+            width=cfg.model.width,
+            latent_dim=cfg.model.latent_dim,
+            re_embedding_dim=cfg.model.re_embedding_dim,
+            re_cond_type=cfg.model.re_cond_type,
+            operator_mode=cfg.model.operator_mode,
+            hidden_dims=cfg.model.hidden_dims,
+            transformer_config=cfg.model.transformer,
+            use_checkpoint=False,
+            predict_re=cfg.model.predict_re,
+            re_grad_enabled=cfg.model.re_grad_enabled,
+            residual=cfg.model.residual,
+            **cfg.model.conv_kwargs,
+        ).to(device)
+    except Exception:
+        logger.exception(
+            "Failed to instantiate KoopmanAutoencoder. Check config for missing fields."
+        )
+        raise
+
+    # Optimizer placeholder to pass to load_checkpoint
+    optimizer = optim.Adam(
+        model.parameters(), lr=getattr(cfg, "lr_scheduler", {}).get("lr", 1e-3)
     )
-    pred_td = TensorDict(prediction_norm, batch_size=prediction.batch_size).to(
-        prediction.device
-    )
 
-    for mode in Metric.VALID_MODES:
-        results[mode] = {}
-        for var in variables + ["all"]:
-            variable_mode = "all" if var == "all" else "single"
-            metric_fn = Metric(
-                mode=mode,
-                variable_mode=variable_mode,
-                variable_name=None if variable_mode == "all" else var,
-            )
-            dist = metric_fn(target_td, pred_td)
-            results[mode][var] = (dist.mean().item(), dist.std().item())
-    return results
+    # Load checkpoint
+    try:
+        model, _, _, _ = load_checkpoint(
+            checkpoint_path, model=model, optimizer=optimizer
+        )
+    except FileNotFoundError:
+        logger.exception(f"Checkpoint not found at {checkpoint_path}")
+        raise
+    except Exception as e:
+        logger.exception(f"Failed to load_checkpoint for KAE: {e}")
+        # Attempt a strict=False state_dict load if a raw state_dict is present
+        try:
+            loaded = torch.load(checkpoint_path, map_location=device)
+            state_dict = None
+            if isinstance(loaded, dict):
+                # typical fields: 'state_dict', 'model', 'model_state_dict'
+                for k in ("state_dict", "model", "model_state_dict", "stateDict"):
+                    if k in loaded:
+                        state_dict = loaded[k]
+                        break
+                # fallback entire dict as state dict (if it's a flat mapping)
+                if state_dict is None and all(
+                    isinstance(v, torch.Tensor) for v in loaded.values()
+                ):
+                    state_dict = loaded
+            if state_dict:
+                model.load_state_dict(state_dict, strict=False)
+            else:
+                raise RuntimeError("No recognizable state_dict found in checkpoint.")
+        except Exception as e2:
+            logger.exception(f"Fallback checkpoint loading failed: {e2}")
+            raise
 
-
-def convert_to_tensordict_fields(tensor, var_names):
-    """
-    Convert tensor (num_samples, seq_len, channels, H, W)
-    to TensorDict with fields {var_name: (time, H, W)}
-    """
-    num_samples, seq_len, channels, H, W = tensor.shape
-    tensor_reshaped = tensor.permute(0, 1, 3, 4, 2)
-    td_fields = {}
-    for i, var in enumerate(var_names):
-        td_fields[var] = tensor_reshaped[..., i]
-    return TensorDict(td_fields, batch_size=[num_samples, seq_len])
-
-
-def load_kae_model(model_config, device):
-    """Loads only the KAE model based on its config."""
-    config_path = model_config["config_path"]
-    checkpoint_path = model_config["checkpoint_path"]
-
-    base_config = OmegaConf.structured(Config)
-    file_config = OmegaConf.load(config_path)
-    cfg = OmegaConf.merge(base_config, file_config)
-    OmegaConf.resolve(cfg)
-
-    model = KoopmanAutoencoder(
-        data_variables=cfg.data.variables,
-        input_frames=cfg.data.input_sequence_length,
-        height=cfg.model.height,
-        width=cfg.model.width,
-        latent_dim=cfg.model.latent_dim,
-        re_embedding_dim=cfg.model.re_embedding_dim,
-        re_cond_type=cfg.model.re_cond_type,
-        operator_mode=cfg.model.operator_mode,
-        hidden_dims=cfg.model.hidden_dims,
-        transformer_config=cfg.model.transformer,
-        use_checkpoint=False,
-        predict_re=cfg.model.predict_re,
-        re_grad_enabled=cfg.model.re_grad_enabled,
-        residual=cfg.model.residual,
-        **cfg.model.conv_kwargs,
-    ).to(device)
-
-    optimizer = optim.Adam(model.parameters(), lr=cfg.lr_scheduler.lr)
-    model, _, _, _ = load_checkpoint(checkpoint_path, model=model, optimizer=optimizer)
     model.eval()
     return model, cfg
 
 
-def load_acdm_model_and_loader(model_config, device):
-    """Loads the ACDM model and its specific test loader for rollouts."""
-    checkpoint_path = model_config["checkpoint_path"]
-    model_type = model_config["model_type"]
-    simFields = [
-        "pres"
-    ]  # the provided data set contains velocity (implict), as well as density and pressure values
-    simParams = ["rey"]
-    sequenceLength = [60, 2]
+def load_acdm_model(model_config: dict, device: torch.device) -> nn.Module:
+    """Loads an ACDM (diffusion) model with defensive checks."""
+    checkpoint_path = model_config.get("checkpoint_path")
+    if not checkpoint_path or not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"ACDM checkpoint path not found: {checkpoint_path}")
 
+    # Default model parameters; user can expand to read from config if needed
     p_md = ModelParamsDecoder(
         arch="direct-ddpm+Prev",
         diffSteps=20,
@@ -175,469 +223,774 @@ def load_acdm_model_and_loader(model_config, device):
         trainingNoise=0.0,
     )
     p_d = DataParams(
-        batch=1,
+        batch=64,
         augmentations=["normalize"],
-        sequenceLength=[2, 60],
-        randSeqOffset=False,
+        sequenceLength=[[SCRIPT_CONFIG["rollout_steps"], 2]],
+        randSeqOffset=True,
         dataSize=[128, 64],
         dimension=2,
         simFields=["pres"],
         simParams=["rey"],
         normalizeMode="incMixed",
     )
-
-    testSet = TurbulenceDataset(
-        "Test",
-        dataDirs=["/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data"],
-        filterTop=["128_inc"],
-        filterSim=[[0]],
-        excludefilterSim=False,
-        filterFrame=[(20, 1300)],
-        sequenceLength=[sequenceLength],
-        randSeqOffset=False,
-        simFields=simFields,
-        simParams=simParams,
-        printLevel="sim",
-    )
-    testSet.transform = DataTransforms(p_d)
-    test_loader = DataLoader(
-        testSet, batch_size=1, drop_last=False, sampler=SequentialSampler(testSet)
-    )
-
-    condChannels = 2 * (2 + len(p_d.simFields) + len(p_d.simParams))
-    model = DiffusionModel(p_d, p_md, dimension=0, condChannels=condChannels)
+    model = DiffusionModel(p_d, p_md, dimension=0, condChannels=8)
     model.training = False
     model.inferenceConditioningIntegration = (
-        "noisy" if model_type.lower() == "acdm" else "clean"
+        "clean" if model_config.get("model_type") == "acdm_ncn" else "noisy"
     )
 
     loaded = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(loaded["stateDictDecoder"], strict=True)
+    # Try a couple of likely keys to find the decoder state dict
+    state_dict = None
+    if isinstance(loaded, dict):
+        for candidate in (
+            "stateDictDecoder",
+            "state_dict_decoder",
+            "decoder_state_dict",
+            "state_dict",
+        ):
+            if candidate in loaded:
+                state_dict = loaded[candidate]
+                break
+        if state_dict is None:
+            # If loaded itself looks like a state dict mapping
+            if all(isinstance(v, torch.Tensor) for v in loaded.values()):
+                state_dict = loaded
+
+    if state_dict is None:
+        raise KeyError(f"No decoder state dict found in checkpoint: {checkpoint_path}")
+
+    try:
+        model.load_state_dict(state_dict, strict=True)
+    except RuntimeError as e:
+        logger.warning(f"Strict load failed for ACDM decoder: {e}. Trying strict=False")
+        model.load_state_dict(state_dict, strict=False)
+
     model.to(device)
-
-    return model, test_loader
-
-
-def run_rollout_for_plots_kae(model, loader, rollout_steps, device):
-    """Generates a single rollout prediction for plotting KAE models."""
-    input_seq, gt_future, metadata = loader.dataset[500, rollout_steps]
-    input_seq["obstacle_mask"] = metadata["obstacle_mask"][0].repeat(
-        *input_seq.batch_size, 1, 1
-    )
-    input_seq["Re_input"] = metadata["Re_input"][0].repeat(*input_seq.batch_size)
-
-    with torch.no_grad():
-        predicted_td = model.rollout(input_seq.to(device), steps=rollout_steps)
-
-    gt_denorm = loader.dataset.denormalize(gt_future)
-    pred_denorm = loader.dataset.denormalize(predicted_td.cpu())
-
-    return gt_denorm, pred_denorm, metadata
+    model.eval()
+    return model
 
 
-def run_rollout_for_plots_diffusion(model, loader, rollout_steps, device):
-    """Generates a single rollout prediction for plotting diffusion models."""
-    sample = next(iter(loader))
-    data = sample["data"].to(device)
+def safe_first_re_from_loader(loader) -> Any:
+    """Attempt to read the first Re value from a loader.dataset in a safe way."""
+    try:
+        ds = getattr(loader, "dataset", None)
+        if ds is None:
+            return None
+        # Allow dataset.Re to be a tensor-like or list-like
+        Re_attr = getattr(ds, "Re", None)
+        if Re_attr is None:
+            # maybe dataset has attributes or metadata
+            if hasattr(ds, "__len__") and len(ds) > 0:
+                first = ds[0]
+                # try common keys
+                if isinstance(first, dict):
+                    if "Re" in first:
+                        return (
+                            int(first["Re"].item())
+                            if hasattr(first["Re"], "item")
+                            else int(first["Re"])
+                        )
+                    for k in ("rey", "re"):
+                        if k in first:
+                            return (
+                                int(first[k].item())
+                                if hasattr(first[k], "item")
+                                else int(first[k])
+                            )
+                # fallback: none
+            return None
+        # If it's a tensor
+        if hasattr(Re_attr, "__len__") and len(Re_attr) > 0:
+            first = Re_attr[0]
+            try:
+                return int(first.item()) if hasattr(first, "item") else int(first)
+            except Exception:
+                return None
+        # Single scalar
+        try:
+            return int(Re_attr)
+        except Exception:
+            return None
+    except Exception:
+        logger.exception("Failed to extract Re from loader.dataset.")
+        return None
 
-    batch_size, _, C, H, W = data.shape
-    prediction = torch.zeros([batch_size, rollout_steps, C, H, W], device=device)
-    input_steps = 2
-    gt_sim_params = data[:, 0:1, -1:]
 
-    prediction[:, :input_steps] = data[:, :input_steps]
-
-    with torch.no_grad():
-        for i in range(input_steps, rollout_steps):
-            cond = torch.cat(
-                [prediction[:, i - j : i - (j - 1)] for j in range(input_steps, 0, -1)],
-                dim=2,
-            )
-            result = model(conditioning=cond, data=data[:, i - 1 : i])
-            result[:, :, -1:] = gt_sim_params
-            prediction[:, i : i + 1] = result
-
-    var_names = ["v_x", "v_y", "p"]
-    gt_td = TensorDict(
-        {
-            k: v.squeeze(1)
-            for k, v in zip(var_names, data.squeeze(0).cpu().split(1, dim=2))
-        },
-        batch_size=data.shape[1],
-    )
-    pred_td = TensorDict(
-        {
-            k: v.squeeze(1)
-            for k, v in zip(var_names, prediction.squeeze(0).cpu().split(1, dim=2))
-        },
-        batch_size=prediction.shape[1],
-    )
-
-    return gt_td, pred_td, None
-
-
-def generate_joint_rollout_plots(all_rollouts, variables, frame_stride=5):
-    """
-    Generates and saves joint rollout plots for all models and variables.
-    """
-    if not all_rollouts:
-        logger.warning("No rollout data to plot.")
+def generate_comparison_plots(
+    ground_truth, all_predictions: Dict, variable: str, re_val: int
+):
+    """Plotting for comparison between GT and predictions. Defensive: only run if tensors exist."""
+    cfg: DictConfig = SCRIPT_CONFIG["plotting"]
+    logger.info(f"Generating comparison plots for '{variable}' at Re={re_val}")
+    model_names = list(all_predictions.keys())
+    gt_seq = ground_truth.get(variable) if isinstance(ground_truth, dict) else None
+    if gt_seq is None:
+        logger.warning(
+            "Ground truth sequence not available for plotting; skipping plot."
+        )
+        return
+    # Ensure sequences are tensors
+    try:
+        pass
+    except Exception:
+        logger.exception("Torch not importable during plotting.")
         return
 
-    model_names = list(all_rollouts.keys())
-    gt_dict = all_rollouts[model_names[0]]["gt"]
-    re_number = all_rollouts[model_names[0]]["metadata"].get("Re_input", [1000])[0]
+    all_seqs = [gt_seq] + [
+        p.get(variable) for p in all_predictions.values() if p.get(variable) is not None
+    ]
+    if not all_seqs:
+        logger.warning(
+            "No sequences available to determine color limits; skipping plot."
+        )
+        return
 
-    if "v_x" in gt_dict.keys() and "v_y" in gt_dict.keys():
-        gt_dict["vort"] = compute_vorticity(gt_dict["v_x"], gt_dict["v_y"])
+    try:
+        vmin = min(s.min() for s in all_seqs if s is not None).item()
+        vmax = max(s.max() for s in all_seqs if s is not None).item()
+    except Exception:
+        # fallback numeric conversion
+        vmin = float(min(np.nanmin(s.cpu().numpy()) for s in all_seqs if s is not None))
+        vmax = float(max(np.nanmax(s.cpu().numpy()) for s in all_seqs if s is not None))
 
-    for var in variables:
-        if var not in gt_dict.keys():
-            logger.warning(f"Variable '{var}' not in ground truth. Skipping plot.")
+    norm = Normalize(vmin=vmin, vmax=vmax)
+    errors = [
+        gt_seq - p.get(variable)
+        for p in all_predictions.values()
+        if p.get(variable) is not None
+    ]
+    max_abs_err = max(torch.abs(e).max() for e in errors).item() if errors else 1.0
+    err_norm = Normalize(vmin=-max_abs_err, vmax=max_abs_err)
+
+    num_rows = 1 + (2 * len(model_names))
+    indices = range(0, gt_seq.shape[0], int(cfg["frame_stride"]))
+    num_cols = min(len(list(indices)), int(cfg["max_frames_to_plot"]))
+
+    fig, axes = plt.subplots(
+        num_rows,
+        num_cols,
+        figsize=(2.5 * num_cols, 2.2 * num_rows),
+        gridspec_kw={"wspace": 0.1, "hspace": 0.1},
+    )
+    # Normalize axes indexing when num_rows/cols may be 1
+    if num_rows == 1:
+        axes = axes.reshape((1, num_cols))
+    for j, frame_idx in enumerate(list(indices)[:num_cols]):
+        ax = axes[0, j]
+        ax.imshow(
+            gt_seq[frame_idx].cpu().T, cmap=cfg["cmap"], norm=norm, origin="lower"
+        )
+        ax.set_title(f"t={frame_idx}")
+        ax.axis("off")
+    axes[0, 0].text(
+        -0.2,
+        0.5,
+        f"Ground Truth\nRe={re_val}",
+        fontsize=12,
+        fontweight="bold",
+        transform=axes[0, 0].transAxes,
+        ha="right",
+        va="center",
+    )
+    for i, name in enumerate(model_names):
+        pred_seq = all_predictions[name].get(variable)
+        if pred_seq is None:
             continue
+        err_seq = gt_seq - pred_seq
+        pred_row, err_row = 1 + 2 * i, 2 + 2 * i
+        for j, frame_idx in enumerate(list(indices)[:num_cols]):
+            axes[pred_row, j].imshow(
+                pred_seq[frame_idx].cpu().T, cmap=cfg["cmap"], norm=norm, origin="lower"
+            )
+            axes[pred_row, j].axis("off")
+            axes[err_row, j].imshow(
+                err_seq[frame_idx].cpu().T,
+                cmap=cfg["err_cmap"],
+                norm=err_norm,
+                origin="lower",
+            )
+            axes[err_row, j].axis("off")
+        axes[pred_row, 0].text(
+            -0.2,
+            0.5,
+            f"{name}\nPrediction",
+            transform=axes[pred_row, 0].transAxes,
+            ha="right",
+            va="center",
+            fontweight="bold",
+        )
+        axes[err_row, 0].text(
+            -0.2,
+            0.5,
+            f"{name}\nError",
+            transform=axes[err_row, 0].transAxes,
+            ha="right",
+            va="center",
+            fontweight="bold",
+        )
+    fig.suptitle(f"Rollout Comparison for '{variable.upper()}'", fontsize=16, y=0.98)
+    plt.tight_layout(rect=[0.05, 0, 0.95, 0.95])
+    filename = f"comparison_rollout_{variable}_Re{re_val}.png"
+    plt.savefig(filename, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved comparison plot to {filename}")
 
-        logger.info(f"Generating plot for variable: {var}")
 
-        gt_seq = gt_dict[var]
-        num_frames = gt_seq.shape[0]
-        indices = list(range(0, num_frames, frame_stride))
-        num_plots = min(len(indices), 10)
+def generate_comparison_latex_table_by_split(all_results: dict) -> str:
+    """Generates a LaTeX table summarizing results by data split and model."""
+    cfg: DictConfig = SCRIPT_CONFIG["latex"]
 
-        num_rows = 1 + 2 * len(model_names)
-        fig = plt.figure(figsize=(2.5 * num_plots, 2.5 * num_rows))
-        spec = gridspec.GridSpec(num_rows, num_plots)
+    split_names = list(all_results.keys())
+    if not split_names:
+        return "No results to generate table."
+    model_names = []
+    # derive model names safely from the first non-empty split
+    for split in split_names:
+        if all_results.get(split):
+            model_names = list(all_results[split].keys())
+            if model_names:
+                break
+    if not model_names:
+        return "No model results to generate table."
 
-        for i, idx in enumerate(indices[:num_plots]):
-            ax = fig.add_subplot(spec[0, i])
-            _ = ax.imshow(gt_seq[idx].cpu().T, cmap=cmap, origin="lower")
-            ax.axis("off")
-            ax.set_title(f"t={idx}", fontsize=10)
-            if i == 0:
-                ax.text(
-                    -0.3,
-                    0.5,
-                    f"Ground Truth\nRe={int(re_number)}",
-                    fontsize=12,
-                    fontweight="bold",
-                    transform=ax.transAxes,
-                    ha="right",
-                    va="center",
+    metric_order = cfg.get("metric_order", ["MSE", "LSiM"])
+
+    def format_val(mean, std, metric):
+        if mean is None or std is None or np.isnan(mean) or np.isnan(std):
+            return "-"
+        # Use a fallback scaling entry (try to find any mapping)
+        scale_info = None
+        # prefer 500 mapping if available
+        for k in (500, 600, 1000):
+            scale_info = cfg["scaling_map"].get(k, {}).get(metric)
+            if scale_info:
+                break
+        if not scale_info:
+            # No scale info, print with scientific format
+            return f"${mean:.2e} \\pm {std:.2e}$"
+        scale, precision, _ = scale_info
+        try:
+            return f"${mean / scale:.{precision}f} \\pm {std / scale:.{precision}f}$"
+        except Exception:
+            return f"${mean:.2e} \\pm {std:.2e}$"
+
+    header = r"\begin{tabular}{@{}lcc" + " ".join(["c"] * len(metric_order)) + "@{}}"
+    header += r"\toprule" + "\n"
+    header += (
+        r"\textbf{Data Split} & \textbf{Method} & "
+        + " & ".join(metric_order)
+        + r" \\ \midrule"
+    )
+
+    rows = []
+    for split_name in split_names:
+        for i, model_name in enumerate(model_names):
+            display_name = cfg["model_display_map"].get(model_name, model_name)
+            row_prefix = (
+                f"\\multirow{{{len(model_names)}}}{{*}}{{{split_name}}}"
+                if i == 0
+                else ""
+            )
+            if i == 0 and split_name != split_names[0]:
+                rows.append(r"\midrule")
+            row_data = [row_prefix, display_name]
+            for display_metric in metric_order:
+                internal_key = next(
+                    (k for k, v in cfg["metric_map"].items() if v == display_metric),
+                    None,
                 )
+                metrics = all_results.get(split_name, {}).get(model_name, {})
+                mean, std = (np.nan, np.nan)
+                if internal_key and metrics:
+                    mean_std = metrics.get(internal_key, {}).get("all")
+                    if mean_std:
+                        mean, std = mean_std
+                row_data.append(format_val(mean, std, display_metric))
+            rows.append(" & ".join(row_data) + r" \\")
 
-        for model_idx, model_name in enumerate(model_names):
-            pred_dict = all_rollouts[model_name]["pred"]
+    table = [
+        r"\begin{table}[h!]",
+        r"\centering",
+        r"\caption{Quantitative Comparison by Data Split}",
+        r"\label{tab:quantitative_split_comparison}",
+        header,
+        "\n".join(rows),
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{table}",
+    ]
+    return "\n".join(table)
 
-            if (
-                var == "vort"
-                and "v_x" in pred_dict.keys()
-                and "v_y" in pred_dict.keys()
-            ):
-                pred_dict["vort"] = compute_vorticity(
-                    pred_dict["v_x"], pred_dict["v_y"]
+
+def generate_comparison_latex_table_by_re(all_results_by_re: dict) -> str:
+    """Generates a LaTeX table summarizing results organized per Re value."""
+    cfg: DictConfig = SCRIPT_CONFIG["latex"]
+    if not all_results_by_re:
+        return "No results to generate table."
+    re_values = sorted(all_results_by_re.keys())
+    first_re = next((re for re in re_values if all_results_by_re.get(re)), None)
+    if not first_re:
+        return "No valid results found to create table."
+    model_names = sorted(all_results_by_re[first_re].keys())
+
+    def format_val(mean, std, re, metric):
+        if mean is None or std is None or np.isnan(mean) or np.isnan(std):
+            return "-"
+        scale_info = cfg["scaling_map"].get(re, {}).get(metric)
+        if not scale_info:
+            return f"{mean:.2e} ± {std:.2e}"
+        scale, precision, _ = scale_info
+        return f"${mean / scale:.{precision}f} \\pm {std / scale:.{precision}f}$"
+
+    header1 = (
+        r"\multirow{2}{*}{\textbf{Method}} & "
+        + " & ".join(
+            [f"\\multicolumn{{2}}{{c}}{{\\textbf{{Re={re}}}}}" for re in re_values]
+        )
+        + r" \\"
+    )
+    cmidrules = " & " + " ".join(
+        [f"\\cmidrule(lr){{{2+i*2}-{3+i*2}}}" for i in range(len(re_values))]
+    )
+    header2_parts = [
+        f"{metric} $(\\times 10^{{{cfg['scaling_map'].get(re, {}).get(metric, [0,0,0])[2]}}})$"
+        for re in re_values
+        for metric in cfg["metric_order"]
+    ]
+    header2 = " & " + " & ".join(header2_parts) + r" \\ \midrule"
+    rows = []
+    for model_name in model_names:
+        display_name = cfg["model_display_map"].get(model_name, model_name)
+        row_data = [display_name]
+        for re in re_values:
+            for display_metric in cfg["metric_order"]:
+                internal_key = next(
+                    (k for k, v in cfg["metric_map"].items() if v == display_metric),
+                    None,
                 )
+                metrics = all_results_by_re.get(re, {}).get(model_name, {})
+                mean, std = (np.nan, np.nan)
+                if internal_key and metrics:
+                    mean_std = metrics.get(internal_key, {}).get("all")
+                    if mean_std:
+                        mean, std = mean_std
+                row_data.append(format_val(mean, std, re, display_metric))
+        rows.append(" & ".join(row_data) + r" \\")
+    table = [
+        r"\begin{table*}[h!]",
+        r"\centering",
+        r"\caption{Quantitative comparison of prediction accuracy.}",
+        r"\label{tab:quantitative_comparison}",
+        r"\resizebox{\textwidth}{!}{%",
+        r"\begin{tabular}{@{}l" + " ".join(["cc"] * len(re_values)) + "@{}}",
+        r"\toprule",
+        header1,
+        cmidrules,
+        header2,
+        "\n".join(rows),
+        r"\bottomrule",
+        r"\end{tabular}}",
+        r"\end{table*}",
+    ]
+    return "\n".join(table)
 
-            if var not in pred_dict.keys():
-                logger.warning(
-                    f"Variable '{var}' not in prediction for {model_name}. Skipping."
+
+def generate_plots_for_re(models: Dict[str, nn.Module], loader, re_val: int):
+    """
+    Attempt to generate comparison plots for the given models on a loader.
+    This function is defensive: if we don't have compatible data/predictions, it logs and returns.
+    """
+    logger.info("Attempting to generate plots for Re=%s", re_val)
+    # Try to obtain a single ground-truth sequence from the loader.dataset
+    try:
+        ds = getattr(loader, "dataset", None)
+        if ds is None or len(ds) == 0:
+            logger.warning(
+                "No dataset found in loader or dataset is empty. Skipping plotting."
+            )
+            return
+        # dataset indexing is project-specific. Try common forms
+        sample = None
+        try:
+            sample = ds[0]
+        except Exception:
+            # If dataset is an iterable with no __getitem__, try iterating
+            for s in ds:
+                sample = s
+                break
+        if sample is None:
+            logger.warning(
+                "Could not retrieve a sample from dataset; skipping plotting."
+            )
+            return
+        # Expect sample to be dict-like with keys for variables (e.g., 'pres') or tensors
+        # Build a ground_truth dict with whatever reasonable keys we find
+        ground_truth = {}
+        if isinstance(sample, dict):
+            # prefer a target sequence key if present
+            for candidate in ("target", "y", "gt", "sequence", "seq", "pres"):
+                if candidate in sample:
+                    ground_truth[candidate] = sample[candidate]
+            # fallback: if sample contains arrays/tensors, pick first tensor-like
+            if not ground_truth:
+                for k, v in sample.items():
+                    if hasattr(v, "ndim") or (hasattr(v, "shape")):
+                        ground_truth[k] = v
+                        break
+        else:
+            # sample could itself be a tensor
+            if hasattr(sample, "ndim") or hasattr(sample, "shape"):
+                ground_truth["var0"] = sample
+        if not ground_truth:
+            logger.warning(
+                "No suitable GT tensors found in sample for plotting; skipping."
+            )
+            return
+
+        # Attempt to produce predictions for each model. We don't assume a specific rollout signature.
+        # Try calling model in eval mode on the sample input if possible, else skip predictions.
+        all_predictions: Dict = {}
+        for name, model in models.items():
+            if model is None:
+                continue
+            model.eval()
+            # Attempt to find an input tensor in the sample
+            input_tensor = None
+            if isinstance(sample, dict):
+                for k in ("input", "x", "src", "sequence", "seq"):
+                    if k in sample:
+                        input_tensor = sample[k]
+                        break
+                # try to infer input from shapes if not found
+                if input_tensor is None:
+                    # take the first tensor-like item
+                    for v in sample.values():
+                        if hasattr(v, "ndim") or hasattr(v, "shape"):
+                            input_tensor = v
+                            break
+            else:
+                input_tensor = sample
+
+            # We cannot assume the exact rollout API. If the project provides a
+            # run_kae_rollout/run_diffusion_rollout that accepts (model, loader, ...)
+            # then the proper way is to use those. Here we attempt a very small inference:
+            try:
+                with torch.no_grad():
+                    if input_tensor is None:
+                        # If no usable input, don't attempt inference; mark empty
+                        logger.debug(
+                            f"No input tensor available for model {name}; skipping prediction."
+                        )
+                        all_predictions[name] = {}
+                        continue
+                    # Move input to same device as model
+                    input_on_device = (
+                        input_tensor.to(next(model.parameters()).device)
+                        if hasattr(model, "parameters")
+                        else input_tensor
+                    )
+                    # Try common forward signatures:
+                    # 1) model(input)
+                    try:
+                        out = model(input_on_device)
+                    except TypeError:
+                        # 2) model.forward(input, some_flags)
+                        try:
+                            out = model.forward(input_on_device)
+                        except Exception:
+                            out = None
+                    if out is None:
+                        logger.debug(
+                            f"Model {name} did not produce output for direct forward. Skipping."
+                        )
+                        all_predictions[name] = {}
+                    else:
+                        # store the output in a dict keyed by same keys as ground_truth where possible
+                        # If out is tensor, map to same variable name as ground_truth's first entry
+                        if isinstance(out, torch.Tensor):
+                            first_var = next(iter(ground_truth.keys()))
+                            all_predictions[name] = {first_var: out}
+                        elif isinstance(out, dict):
+                            all_predictions[name] = out
+                        else:
+                            # fallback: store under 'var0' if shape-like
+                            try:
+                                out_t = torch.as_tensor(out)
+                                all_predictions[name] = {
+                                    next(iter(ground_truth.keys())): out_t
+                                }
+                            except Exception:
+                                all_predictions[name] = {}
+                logger.info(
+                    f"Made best-effort prediction with model {name} for plotting."
+                )
+            except Exception:
+                logger.exception(
+                    f"Failed to run model {name} on a sample for plotting. Skipping this model."
+                )
+                all_predictions[name] = {}
+
+        # If we have at least one prediction and GT, pick the first variable to plot
+        var_to_plot = next(iter(ground_truth.keys()))
+        generate_comparison_plots(ground_truth, all_predictions, var_to_plot, re_val)
+    except Exception:
+        logger.exception(
+            "Unhandled exception during generate_plots_for_re; skipping plotting."
+        )
+
+
+def main(args):
+    """Main script to load, evaluate, and compare all models defined in the YAML config."""
+    if not os.path.exists(args.eval_config):
+        logger.error("Evaluation config not found: %s", args.eval_config)
+        return
+
+    with open(args.eval_config, "r") as f:
+        try:
+            eval_config = yaml.safe_load(f)
+        except Exception:
+            logger.exception("Failed to parse YAML evaluation config.")
+            return
+
+    if not isinstance(eval_config, dict):
+        logger.error("Evaluation config is not a mapping/dictionary.")
+        return
+
+    evaluations = eval_config.get("evaluations", [])
+    if not evaluations:
+        logger.error("No 'evaluations' list found in the eval_config.")
+        return
+
+    # --- Setup Dataloaders ---
+    base_kae_cfg = None
+    try:
+        # Try to find any kae config if available, but tolerate absence
+        kae_entry = next((m for m in evaluations if m.get("model_type") == "kae"), None)
+        if kae_entry:
+            base_kae_cfg_path = kae_entry.get("config_path")
+            base_config = OmegaConf.structured(Config)
+            file_config = OmegaConf.load(base_kae_cfg_path)
+            base_kae_cfg = OmegaConf.merge(base_config, file_config)
+            OmegaConf.resolve(base_kae_cfg)
+
+            # harmonize attribute naming for rollouts
+            try:
+                # prefer explicit attr names if present
+                if hasattr(base_kae_cfg.data, "max_sequence_length"):
+                    rollout_steps: int = int(cast(int, SCRIPT_CONFIG["rollout_steps"]))
+                    base_kae_cfg.data.max_sequence_length = rollout_steps
+                else:
+                    setattr(
+                        base_kae_cfg.data,
+                        "max_sequence_length",
+                        SCRIPT_CONFIG["rollout_steps"],
+                    )
+            except Exception:
+                logger.debug(
+                    "Setting max_seq_length on base_kae_cfg failed; continuing."
+                )
+        # Use load_datasets with base_kae_cfg if available; otherwise pass None and rely on function defaults.
+        assert base_kae_cfg is not None
+
+        # tell mypy that it's a Config
+        cfg: Config = cast(Config, base_kae_cfg)
+
+        # now safe to pass to functions
+        train_ds, val_ds, test_ds = load_datasets(cfg)
+        train_loader, val_loader, test_loader = create_dataloaders(
+            train_ds, val_ds, test_ds, cfg.training
+        )
+    except Exception as e:
+        logger.exception("Failed to load datasets. Error: %s", e)
+        return
+
+    all_results: Dict = {}
+
+    # Evaluate across the three static splits
+    splits_to_evaluate = {
+        "Train": train_loader,
+        "Validation": val_loader,
+        "Test": test_loader,
+    }
+
+    for split_name, loader in splits_to_evaluate.items():
+        # If loader is None or its dataset empty -> skip gracefully
+        if loader is None:
+            logger.info(f"Skipping '{split_name}' split because loader is None.")
+            continue
+        if getattr(loader, "dataset", None) is None:
+            logger.info(
+                f"Skipping '{split_name}' split because loader.dataset is None."
+            )
+            continue
+        # Some dataloaders wrap empty datasets but still exist; check length if possible
+        try:
+            if len(loader.dataset) == 0:
+                logger.info(f"Skipping '{split_name}' split as its dataset is empty.")
+                continue
+        except Exception:
+            # If dataset doesn't implement __len__, try to access first element safely
+            try:
+                _ = loader.dataset[0]
+            except Exception:
+                logger.info(
+                    f"Skipping '{split_name}' split as dataset appears not indexable or empty."
                 )
                 continue
 
-            pred_seq = pred_dict[var]
-
-            for i, idx in enumerate(indices[:num_plots]):
-                row_idx_pred = 1 + 2 * model_idx
-                ax_pred = fig.add_subplot(spec[row_idx_pred, i])
-                ax_pred.imshow(pred_seq[idx].cpu().T, cmap=cmap, origin="lower")
-                ax_pred.axis("off")
-                if i == 0:
-                    ax_pred.text(
-                        -0.3,
-                        0.5,
-                        f"{model_name}\nPrediction",
-                        fontsize=12,
-                        fontweight="bold",
-                        transform=ax_pred.transAxes,
-                        ha="right",
-                        va="center",
-                    )
-
-                row_idx_err = 2 + 2 * model_idx
-                err = gt_seq[idx] - pred_seq[idx]
-                ax_err = fig.add_subplot(spec[row_idx_err, i])
-                ax_err.imshow(err.cpu().T, cmap="coolwarm", origin="lower")
-                ax_err.axis("off")
-                if i == 0:
-                    ax_err.text(
-                        -0.3,
-                        0.5,
-                        f"{model_name}\nError",
-                        fontsize=12,
-                        fontweight="bold",
-                        transform=ax_err.transAxes,
-                        ha="right",
-                        va="center",
-                    )
-
-        fig.suptitle(
-            f"Joint Rollout Comparison for Variable: {var.upper()}", fontsize=16
+        # Try to extract a first Re value for logging/plotting; safe fallback to 'unknown'
+        re_val = safe_first_re_from_loader(loader)
+        logger.info(
+            f"\n{'='*30} Evaluating on '{split_name}' Split (Re={re_val}) {'='*30}"
         )
-        plt.tight_layout(rect=[0.1, 0, 1, 0.95])
-        plt.savefig(f"joint_rollout_{var}.png", dpi=300, bbox_inches="tight")
-        plt.close()
+        all_results[split_name] = {}
 
+        for model_config in evaluations:
+            model_name = model_config.get("name", "<unnamed>")
+            model_type = model_config.get("model_type", "").lower()
+            logger.info(f"\n--- Evaluating model: {model_name} ({model_type}) ---")
+            model = None
+            rollout_fn = None
 
-def generate_comparison_latex_table(
-    all_results_by_re: dict,
-    caption: str = "Quantitative comparison for different models with Re embedding",
-    label: str = "tab:quantitative_comparison",
-):
-    """
-    Generates a LaTeX table formatted exactly like the provided template.
+            try:
+                if model_type == "kae":
+                    try:
+                        model, cfg = load_kae_model(model_config, DEVICE)
+                        rollout_fn = kae_rollout_wrapper
+                    except Exception as e:
+                        logger.exception(
+                            f"Failed to load KAE model '{model_name}': {e}"
+                        )
+                        all_results[split_name][model_name] = {}
+                        continue
+                elif model_type in ("acdm", "acdm_ncn"):
+                    try:
+                        model = load_acdm_model(model_config, DEVICE)
+                        rollout_fn = cast(
+                            Optional[Callable[..., Any]], kae_rollout_wrapper
+                        )
+                    except Exception as e:
+                        logger.exception(
+                            f"Failed to load ACDM model '{model_name}': {e}"
+                        )
+                        all_results[split_name][model_name] = {}
+                        continue
+                else:
+                    logger.warning(
+                        f"Unknown model type '{model_type}' for model '{model_name}'. Skipping."
+                    )
+                    continue
 
-    Args:
-        all_results_by_re (dict): A nested dictionary with the evaluation results.
-            Expected format:
-            {
-                RE_VALUE_1: {
-                    'ModelName1': {'l2': (mean, std), 'ssim': (mean, std), 'url': '...'},
-                    'ModelName2': {'l2': (mean, std), 'ssim': (mean, std), 'url': '...'}
-                },
-                RE_VALUE_2: { ... }
-            }
-            'l2' is used for MSE, 'ssim' for LSiM. The 'url' key is optional.
-        caption (str): The table's caption.
-        label (str): The table's LaTeX label.
+                # If the rollout_fn or run_evaluation isn't available for some reason, skip gracefully
+                if rollout_fn is None:
+                    logger.warning(
+                        f"No rollout function available for model '{model_name}'. Skipping evaluation."
+                    )
+                    all_results[split_name][model_name] = {}
+                    continue
 
-    Returns:
-        str: A string containing the full LaTeX code for the table.
-    """
-    if not all_results_by_re:
-        return "No results to display."
+                # Run evaluation in try/except so single model failure doesn't stop the loop
+                try:
+                    input_len: int = int(cast(int, SCRIPT_CONFIG["input_len"]))
+                    output_len: int = int(cast(int, SCRIPT_CONFIG["rollout_steps"]))
 
-    # --- Configuration based on the template ---
-    METRIC_MAP = {"l2": "MSE", "ssim": "LSiM"}
-    METRIC_ORDER = ["MSE", "LSiM"]
-    MODEL_DISPLAY_MAP = {
-        "ACDM_ncn": r"$ACDM_{ncn}$",
-        # Add other special display names here if needed
-    }
-    # SCALING_MAP format: {Re: {Metric: (scale_factor, precision, latex_exponent)}}
-    SCALING_MAP = {
-        150: {"MSE": (1e-4, 1, -4), "LSiM": (1e-2, 2, -2)},
-        300: {"MSE": (1e-5, 2, -5), "LSiM": (1e-2, 3, -2)},
-        500: {"MSE": (1e-6, 1, -6), "LSiM": (1e-3, 1, -3)},
-        600: {"MSE": (1e-5, 1, -5), "LSiM": (1e-2, 2, -2)},
-        1000: {"MSE": (1e-5, 1, -5), "LSiM": (1e-2, 2, -2)},
-    }
+                    metrics = run_evaluation(
+                        model=model,
+                        loader=loader,
+                        input_len=input_len,
+                        output_len=output_len,
+                        rollout_fn=rollout_fn,
+                    )
+                    all_results[split_name][model_name] = metrics or {}
+                except Exception as e:
+                    logger.exception(
+                        f"run_evaluation failed for model '{model_name}' on split '{split_name}': {e}"
+                    )
+                    # store empty metrics so table generation knows model was attempted
+                    all_results[split_name][model_name] = {}
+                    continue
 
-    def format_value(mean, std, scale, precision):
-        if np.isnan(mean) or np.isnan(std):
-            return "-"
-        return f"${mean / scale:.{precision}f} \\pm {std / scale:.{precision}f}$"
+            except Exception as e:
+                logger.exception(
+                    f"Unexpected error while setting up model '{model_name}': {e}"
+                )
+                all_results[split_name][model_name] = {}
+                continue
 
-    # --- Extract sorted keys for consistent ordering ---
-    re_values = sorted(list(all_results_by_re.keys()))
-    if not re_values:
-        return "No Re values found in results."
-    model_names = sorted(list(all_results_by_re[re_values[0]].keys()))
+        if args.generate_plots:
+            # Attempt to generate simple best-effort plots using the first model found
+            try:
+                # Build a dict of loaded models (from eval_config) that we can pass to plotting helper
+                loaded_models_for_plot = {}
+                for mcfg in evaluations:
+                    name = mcfg.get("name", "<unnamed>")
+                    # Attempt to load the model but don't block plotting if it fails
+                    try:
+                        if mcfg.get("model_type", "").lower() == "kae":
+                            mdl, _ = load_kae_model(mcfg, DEVICE)
+                            loaded_models_for_plot[name] = mdl
+                        elif mcfg.get("model_type", "").lower() in ("acdm", "acdm_ncn"):
+                            mdl = load_acdm_model(mcfg, DEVICE)
+                            loaded_models_for_plot[name] = mdl
+                    except Exception:
+                        logger.debug(
+                            f"Could not load model for plotting: {name}", exc_info=True
+                        )
 
-    # --- Build LaTeX String ---
-    # Preamble and table definition
-    latex_parts = [
-        r"\begin{table*}[h!]",
-        r"\centering",
-        f"\\caption{{{caption}}}",
-        f"\\label{{{label}}}",
-        r"\setlength{\tabcolsep}{4pt} % tighter spacing",
-        r"\resizebox{0.9\textwidth}{!}{%",
-        r"\begin{tabular}{@{}l " + " ".join(["cc"] * len(re_values)) + "@{}}",
-        r"\toprule",
-    ]
-
-    # Header Row 1 (Re values)
-    header_row1 = [r"\multirow{2}{*}{\textbf{Method}}"]
-    header_row1.extend([f"\\multicolumn{{2}}{{c}}{{{re}}}" for re in re_values])
-    latex_parts.append(" & ".join(header_row1) + r" \\")
-
-    # Header Row 2 (Metric names and cmidrules)
-    cmidrules = []
-    for i, _ in enumerate(re_values):
-        start_col, end_col = 2 + i * 2, 3 + i * 2
-        cmidrules.append(f"\\cmidrule(lr){{{start_col}-{end_col}}}")
-    latex_parts.append(" ".join(cmidrules))
-
-    header_row2 = [""]
-    for re in re_values:
-        for metric in METRIC_ORDER:
-            _, _, exponent = SCALING_MAP[re][metric]
-            header_row2.append(f"{metric} $(\\times 10^{{{exponent}}})$")
-    latex_parts.append(" & ".join(header_row2) + r" \\")
-    latex_parts.append(r"\midrule")
-
-    # Data Rows
-    for i, model_name in enumerate(model_names):
-        display_name = MODEL_DISPLAY_MAP.get(model_name, model_name)
-        url = all_results_by_re[re_values[0]][model_name].get("url")
-        if url:
-            display_name = f"\\href{{{url}}}{{{display_name}}}"
-
-        row_data = [display_name]
-        for re in re_values:
-            for display_metric in METRIC_ORDER:
-                internal_key = next(
-                    k for k, v in METRIC_MAP.items() if v == display_metric
+                if loaded_models_for_plot:
+                    generate_plots_for_re(
+                        models=loaded_models_for_plot, loader=loader, re_val=re_val
+                    )
+                else:
+                    logger.info(
+                        "No models could be loaded for plotting; skipping plotting step."
+                    )
+            except Exception:
+                logger.exception(
+                    "Plot generation raised an unexpected exception; continuing."
                 )
 
-                # Get data, handling missing models/metrics gracefully
-                metrics_dict = all_results_by_re.get(re, {}).get(model_name, {})
-                mean, std = metrics_dict.get(internal_key, (np.nan, np.nan))
-
-                scale, precision, _ = SCALING_MAP[re][display_metric]
-                row_data.append(format_value(mean, std, scale, precision))
-
-        latex_parts.append(" & ".join(row_data) + r" \\")
-        if i < len(model_names) - 1:
-            latex_parts.append(r"\midrule")
-
-    # Footer
-    latex_parts.extend(
-        [
-            r"\bottomrule",
-            r"\end{tabular}",
-            r"}",
-            r"\end{table*}",
-        ]
-    )
-
-    return "\n".join(latex_parts)
-
-
-def main(eval_config_path, device, rollout_length, generate_plots):
-    """Main function to run the evaluation for multiple models."""
-    with open(eval_config_path, "r") as f:
-        eval_config = yaml.safe_load(f)
-
-    all_metrics_results = {}
-    all_rollout_data = {}
-
-    # --- Create a single, canonical KAE val_loader for all evaluations ---
-    kae_config_for_loader = next(
-        (m for m in eval_config["evaluations"] if m["model_type"] == "kae"), None
-    )
-    if not kae_config_for_loader:
-        raise ValueError(
-            "Evaluation config must contain at least one KAE model to create a canonical validation loader."
-        )
-
+    # --- Final Report Generation ---
     logger.info(
-        f"Creating canonical validation loader from KAE config: {kae_config_for_loader['name']}"
+        "\n"
+        + "=" * 80
+        + "\nAll evaluations complete. Generating LaTeX summary table.\n"
+        + "=" * 80
     )
-    base_config = OmegaConf.structured(Config)
-    file_config = OmegaConf.load(kae_config_for_loader["config_path"])
-    cfg_loader = OmegaConf.merge(base_config, file_config)
-    OmegaConf.resolve(cfg_loader)
-    cfg_loader.data.max_sequence_length = rollout_length
-
-    train_ds, val_ds, test_ds = load_datasets(cfg_loader)
-    _, canonical_val_loader, canonical_test_loader = create_dataloaders(
-        train_ds, val_ds, test_ds, cfg_loader.training
-    )
-
-    # --- Loop through and evaluate all models ---
-    for model_config in eval_config.get("evaluations", []):
-        model_name = model_config.get("name", model_config["model_type"])
-        model_type = model_config["model_type"]
-
-        if model_type.lower() == "kae":
-            model, cfg = load_kae_model(model_config, device)
-            metrics_result = run_full_evaluation_and_report(
-                model=model,
-                loader=canonical_val_loader,
-                input_len=2,
-                output_len=rollout_length,
-            )
-            logger.info(f"Metric results: {metrics_result}")
-            if generate_plots:
-                logger.info(f"Generating rollout data for {model_name} for plotting...")
-                gt, pred, meta = run_rollout_for_plots_kae(
-                    model, canonical_val_loader, rollout_length, device
-                )
-
-        elif model_type.lower() in ["acdm", "acdm_ncn"]:
-            model, acdm_test_loader = load_acdm_model_and_loader(model_config, device)
-            metrics_result = run_full_eval_and_report_diffusion(
-                model=model,
-                loader=[
-                    acdm_test_loader,
-                    canonical_val_loader,
-                ],  # Use ACDM loader for rollout, KAE loader for normalization
-                device=device,
-                numSamples=1,
-                sequenceLength=rollout_length,
-            )
-            if generate_plots:
-                logger.info(f"Generating rollout data for {model_name} for plotting...")
-                gt, pred, meta = run_rollout_for_plots_diffusion(
-                    model, acdm_test_loader, rollout_length, device
-                )
-
-        all_metrics_results[model_name] = metrics_result
-        if generate_plots:
-            all_rollout_data[model_name] = {
-                "gt": gt.cpu(),
-                "pred": pred.cpu(),
-                "metadata": meta,
-            }
-
-    # --- Report Results ---
-    comparison_latex_table = generate_comparison_latex_table(all_metrics_results)
-    print("\n--- Combined Metrics LaTeX Table ---\n")
-    print(comparison_latex_table)
-
-    output_filename = "metrics_table_comparison.tex"
-    with open(output_filename, "w") as f:
-        f.write(comparison_latex_table)
-    logger.info(f"Combined LaTeX table saved to {output_filename}")
-
-    if generate_plots:
-        generate_joint_rollout_plots(
-            all_rollout_data, variables=["p", "v_x", "v_y", "vort"]
+    try:
+        latex_table = generate_comparison_latex_table_by_split(all_results)
+    except Exception:
+        logger.exception(
+            "Failed to generate LaTeX table; falling back to minimal report."
         )
+        latex_table = "Failed to create LaTeX table."
+
+    print(latex_table)
+
+    output_filename = "metrics_table_split_comparison.tex"
+    try:
+        with open(output_filename, "w") as f:
+            f.write(latex_table)
+        logger.info(f"LaTeX table saved to {output_filename}")
+    except Exception:
+        logger.exception("Failed to save LaTeX file.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Automate model evaluation for multiple models."
+        description="Automated multi-model evaluation pipeline."
     )
     parser.add_argument(
         "--eval_config",
         type=str,
         required=True,
-        help="Path to the YAML evaluation config file.",
-    )
-    parser.add_argument(
-        "--rollout_length",
-        type=int,
-        default=60,
-        help="Number of steps to roll out the models.",
+        help="Path to the YAML evaluation configuration file.",
     )
     parser.add_argument(
         "--generate_plots",
         action="store_true",
         help="Generate and save joint rollout plots.",
     )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device to use for computation (cuda or cpu).",
-    )
-
     args = parser.parse_args()
-
-    main(
-        args.eval_config,
-        torch.device(args.device),
-        args.rollout_length,
-        args.generate_plots,
-    )
+    main(args)

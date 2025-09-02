@@ -2,8 +2,9 @@
 
 import torch
 from tensordict import TensorDict, stack as stack_tensordict
-from typing import Dict, Tuple, List, Optional, Callable
+from typing import Protocol, Dict, Tuple, List, Optional, Any
 import logging
+from models.dataloader import QGDatasetBase
 
 # --- Basic Configuration ---
 logging.basicConfig(
@@ -20,6 +21,17 @@ DIFFUSION_STD = {"v_x": 0.206128, "v_y": 0.206128, "p": 0.003942, "rey": 262.678
 # =====================================================================================
 # SECTION 1: CORE METRIC & DERIVED VARIABLE COMPUTATION
 # =====================================================================================
+
+
+class RolloutFn(Protocol):
+    def __call__(
+        self,
+        model: Any,
+        input_seq: TensorDict,
+        metadata: dict,
+        rollout_steps: int,
+        dataset: Any = None,
+    ) -> TensorDict: ...
 
 
 def compute_vorticity(
@@ -205,6 +217,16 @@ def run_kae_rollout(
     )  # Remove batch dim
 
 
+def kae_rollout_wrapper(
+    model, input_seq, metadata: dict, rollout_steps: int, dataset=None
+):
+    """
+    Wraps run_kae_rollout to match the signature of run_diffusion_rollout.
+    The `metadata` and `dataset` arguments are ignored for KAE.
+    """
+    return run_kae_rollout(model, input_seq, rollout_steps)
+
+
 def run_diffusion_rollout(
     model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
 ) -> TensorDict:
@@ -262,10 +284,10 @@ def run_diffusion_rollout(
 
 def generate_predictions_for_dataset(
     model: torch.nn.Module,
-    dataset,
-    rollout_fn: Callable,
+    dataset: QGDatasetBase,
     input_len: int,
     output_len: int,
+    rollout_fn: RolloutFn,
 ) -> Tuple[TensorDict, TensorDict]:
     """
     Iterates through a dataset to generate model predictions for all samples.
@@ -276,7 +298,6 @@ def generate_predictions_for_dataset(
         try:
             input_seq, ground_truth_future, metadata = dataset[idx]
 
-            # --- FIX STARTS HERE ---
             # Add required metadata to the input TensorDict for the model.
             # This is necessary for models that use conditioning (e.g., on Re or obstacles).
             if "Re_input" in metadata:
@@ -289,14 +310,11 @@ def generate_predictions_for_dataset(
                 input_seq["obstacle_mask"] = metadata["obstacle_mask"][0].repeat(
                     *input_seq.batch_size, 1, 1
                 )
-            # --- FIX ENDS HERE ---
-
-            if "diffusion" in rollout_fn.__name__:
-                predicted_future = rollout_fn(
-                    model, input_seq, metadata, output_len, dataset
-                )
-            else:
-                predicted_future = rollout_fn(model, input_seq, output_len)
+            if rollout_fn is None:
+                raise ValueError("rollout_fn must be provided")
+            predicted_future = rollout_fn(
+                model, input_seq, metadata, output_len, dataset
+            )
 
             denormalized_gt = dataset.denormalize(ground_truth_future.clone())
 
@@ -326,9 +344,9 @@ def generate_predictions_for_dataset(
 def run_evaluation(
     model: torch.nn.Module,
     loader,
-    rollout_fn: Callable,
     input_len: int,
     output_len: int,
+    rollout_fn: RolloutFn,
 ) -> Dict:
     """
     Orchestrates the entire evaluation pipeline for a given model.
@@ -336,17 +354,18 @@ def run_evaluation(
     2. Computes derived quantities (e.g., vorticity).
     3. Calculates and returns all metrics.
     """
+    rollout_name = rollout_fn.__name__ if rollout_fn is not None else "<undefined>"
     logger.info(
-        f"Starting evaluation for model '{model.__class__.__name__}' using '{rollout_fn.__name__}'..."
+        f"Starting evaluation for model '{model.__class__.__name__}' using '{rollout_name}'..."
     )
 
     # --- 1. Generate Predictions ---
     targets, predictions = generate_predictions_for_dataset(
         model=model,
         dataset=loader.dataset,
-        rollout_fn=rollout_fn,
         input_len=input_len,
         output_len=output_len,
+        rollout_fn=rollout_fn,
     )
 
     if targets.is_empty():
