@@ -9,6 +9,9 @@ from torch import Tensor
 import torch
 import torch.distributed as dist
 import seaborn as sns
+from matplotlib import gridspec
+
+plt.style.use("seaborn-v0_8-whitegrid")
 
 cmap = sns.color_palette("icefire", as_cmap=True)
 
@@ -280,3 +283,241 @@ def denormalize_and_visualize(
         output_dir=output_dir,
         mode=mode,
     )
+
+
+def plot_joint_rollout(
+    gt_dict, pred_dict, diff_pred_dict, variable_name, frame_stride=5, re=1000
+):
+    """
+    Plots the rollout comparison between ground truth and predicted sequence for a given variable.
+
+    Args:
+        gt_dict (TensorDict): TensorDict of ground truth tensors [T, H, W] per variable.
+        pred_dict (TensorDict): TensorDict of predicted tensors [T, H, W] per variable.
+        variable_name (str): The key for the variable to visualize.
+        frame_stride (int): Step between frames to plot.
+    """
+    # Remove batch dimension if present
+    if gt_dict.batch_dims == 1 and gt_dict.batch_size[0] == 1:
+        gt_dict = gt_dict.squeeze(0)
+    if pred_dict.batch_dims == 1 and pred_dict.batch_size[0] == 1:
+        pred_dict = pred_dict.squeeze(0)
+    if diff_pred_dict.batch_dims == 1 and diff_pred_dict.batch_size[0] == 1:
+        diff_pred_dict = diff_pred_dict.squeeze(0)
+    gt = gt_dict[variable_name]  # shape: [T, H, W]
+    pred = pred_dict[variable_name]  # shape: [T, H, W]
+    diff_pred = diff_pred_dict[variable_name]  # shape: [T, H, W]
+
+    print(f"Stats for variable: {variable_name}")
+    print(
+        f"GT   | Min: {gt.min():.4f}, Max: {gt.max():.4f}, Mean: {gt.mean():.4f}, Std: {gt.std():.4f}"
+    )
+    print(
+        f"Pred | Min: {pred.min():.4f}, Max: {pred.max():.4f}, Mean: {pred.mean():.4f}, Std: {pred.std():.4f}"
+    )
+    print(
+        f"Diff Pred | Min: {diff_pred.min():.4f}, Max: {diff_pred.max():.4f}, Mean: {diff_pred.mean():.4f}, Std: {diff_pred.std():.4f}"
+    )
+
+    num_frames = min(gt.shape[0], pred.shape[0])
+    indices = list(range(0, num_frames, frame_stride))
+    num_plots = min(len(indices), 15)
+
+    fig = plt.figure(figsize=(1.8 * num_plots, 7.5))
+    spec = gridspec.GridSpec(5, num_plots + 1, width_ratios=[1] * num_plots + [0.05])
+
+    for i, idx in enumerate(indices[:num_plots]):
+        # ----- Ground Truth -----
+        ax_gt = fig.add_subplot(spec[0, i])
+        im_gt = ax_gt.imshow(gt[idx].cpu(), cmap=cmap)
+        ax_gt.axis("off")
+        plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
+        ax_gt.set_title(f"t={idx}", fontsize=10)
+
+        # Add row label only above the first frame
+        if i == 0:
+            ax_gt.text(
+                -0.2,
+                1.5,
+                f"Ground Truth, Re = {re}",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_gt.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+        # ----- KAE Prediction -----
+        ax_pred = fig.add_subplot(spec[1, i])
+        im_pred = ax_pred.imshow(pred[idx].cpu(), cmap=cmap)
+        ax_pred.axis("off")
+        plt.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
+
+        if i == 0:
+            ax_pred.text(
+                -0.2,
+                1.1,
+                "KAE Prediction",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_pred.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+        # ----- Diff Prediction -----
+        ax_diff_pred = fig.add_subplot(spec[2, i])
+        im_diff_pred = ax_diff_pred.imshow(diff_pred[idx].cpu(), cmap=cmap)
+        ax_diff_pred.axis("off")
+        plt.colorbar(im_diff_pred, ax=ax_diff_pred, fraction=0.046, pad=0.04)
+
+        if i == 0:
+            ax_diff_pred.text(
+                -0.2,
+                1.1,
+                "Diff Prediction",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_diff_pred.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+        # ----- KAE Error -----
+        err = gt[idx] - pred[idx]
+        ax_err = fig.add_subplot(spec[3, i])
+        im_err = ax_err.imshow(err.cpu(), cmap=cmap)
+        ax_err.axis("off")
+        plt.colorbar(im_err, ax=ax_err, fraction=0.046, pad=0.04)
+
+        if i == 0:
+            ax_err.text(
+                -0.2,
+                1.1,
+                "KAE Error",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_err.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+        # ----- Diff Error -----
+        diff_err = gt[idx] - diff_pred[idx]
+        ax_diff_err = fig.add_subplot(spec[4, i])
+        im_diff_err = ax_diff_err.imshow(diff_err.cpu(), cmap=cmap)
+        ax_diff_err.axis("off")
+        plt.colorbar(im_diff_err, ax=ax_diff_err, fraction=0.046, pad=0.04)
+
+        if i == 0:
+            ax_diff_err.text(
+                -0.2,
+                1.1,
+                "Diff Error",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_diff_err.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+    fig.suptitle(f"Joint Rollout for Variable: {variable_name}", fontsize=16)
+    plt.tight_layout(rect=[0, 0.4, 0.98, 0.95])
+    plt.show()
+
+
+def plot_rollout(gt_dict, pred_dict, variable_name, frame_stride=5):
+    """
+    Plots the rollout comparison between ground truth and predicted sequence for a given variable.
+
+    Args:
+        gt_dict (TensorDict): TensorDict of ground truth tensors [T, H, W] per variable.
+        pred_dict (TensorDict): TensorDict of predicted tensors [T, H, W] per variable.
+        variable_name (str): The key for the variable to visualize.
+        frame_stride (int): Step between frames to plot.
+    """
+    # Remove batch dimension if present
+    if gt_dict.batch_dims == 1 and gt_dict.batch_size[0] == 1:
+        gt_dict = gt_dict.squeeze(0)
+    if pred_dict.batch_dims == 1 and pred_dict.batch_size[0] == 1:
+        pred_dict = pred_dict.squeeze(0)
+
+    gt = gt_dict[variable_name]  # shape: [T, H, W]
+    pred = pred_dict[variable_name]  # shape: [T, H, W]
+
+    print(f"Stats for variable: {variable_name}")
+    print(
+        f"GT   | Min: {gt.min():.4f}, Max: {gt.max():.4f}, Mean: {gt.mean():.4f}, Std: {gt.std():.4f}"
+    )
+    print(
+        f"Pred | Min: {pred.min():.4f}, Max: {pred.max():.4f}, Mean: {pred.mean():.4f}, Std: {pred.std():.4f}"
+    )
+
+    num_frames = min(gt.shape[0], pred.shape[0])
+    indices = list(range(0, num_frames, frame_stride))
+    num_plots = min(len(indices), 15)
+
+    fig = plt.figure(figsize=(1.8 * num_plots, 7.5))
+    spec = gridspec.GridSpec(3, num_plots + 1, width_ratios=[1] * num_plots + [0.05])
+
+    for i, idx in enumerate(indices[:num_plots]):
+        # ----- Ground Truth -----
+        ax_gt = fig.add_subplot(spec[0, i])
+        im_gt = ax_gt.imshow(gt[idx].cpu(), cmap=cmap)
+        ax_gt.axis("off")
+        plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
+        ax_gt.set_title(f"t={idx}", fontsize=10)
+
+        # Add row label only above the first frame
+        if i == 0:
+            ax_gt.text(
+                -0.2,
+                1.5,
+                "Ground Truth",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_gt.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+        # ----- Prediction -----
+        ax_pred = fig.add_subplot(spec[1, i])
+        im_pred = ax_pred.imshow(pred[idx].cpu(), cmap=cmap)
+        ax_pred.axis("off")
+        plt.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
+
+        if i == 0:
+            ax_pred.text(
+                -0.2,
+                1.1,
+                "Prediction",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_pred.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+        # ----- Error -----
+        err = gt[idx] - pred[idx]
+        ax_err = fig.add_subplot(spec[2, i])
+        im_err = ax_err.imshow(err.cpu(), cmap=cmap)
+        ax_err.axis("off")
+        plt.colorbar(im_err, ax=ax_err, fraction=0.046, pad=0.04)
+
+        if i == 0:
+            ax_err.text(
+                -0.2,
+                1.1,
+                "Error",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax_err.transAxes,
+                ha="left",
+                va="bottom",
+            )
+
+    fig.suptitle(f"Koopman AE Rollout for Variable: {variable_name}", fontsize=16)
+    plt.tight_layout(rect=[0, 0.4, 0.98, 0.95])
+    plt.show()

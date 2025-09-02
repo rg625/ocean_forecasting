@@ -86,7 +86,9 @@ def get_normalizer(cfg: Config) -> AbstractNormalizer:
         raise ValueError(f"Unknown normalization type: '{norm_type}'")
 
 
-def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
+def load_datasets(
+    cfg: Config, ignore_re: Optional[bool] = False
+) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
     """
     Loads the training, validation, and test datasets based on the provided config.
     """
@@ -105,7 +107,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=cfg.data.train_re,
+            select_re=None if ignore_re else cfg.data.train_re,
             **common_args,
         )
         val_dataset = DatasetClass(
@@ -115,7 +117,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=cfg.data.val_re,
+            select_re=None if ignore_re else cfg.data.val_re,
             **common_args,
         )
         test_dataset = DatasetClass(
@@ -125,7 +127,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=cfg.data.test_re,
+            select_re=None if ignore_re else cfg.data.test_re,
             **common_args,
         )
 

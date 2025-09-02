@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from omegaconf import DictConfig, ListConfig
 
 from tensordict import TensorDict, stack as stack_tensordict
-from torch.utils.data import Dataset, DataLoader, Sampler
+from torch.utils.data import Dataset, DataLoader, Sampler, Subset
 from torch.utils.data.distributed import DistributedSampler
 
 logging.basicConfig(
@@ -369,13 +369,27 @@ class QGDatasetMultiSim(QGDatasetBase):
                         "select_re was specified, but 'Re' not found in dataset."
                     )
 
-                if isinstance(self.select_re, (float, int)):
+                mask = torch.zeros_like(self.Re, dtype=torch.bool)
+
+                # --- CHANGE: Added ListConfig to the type checks ---
+                if isinstance(self.select_re, (list, tuple, ListConfig)) and all(
+                    isinstance(item, (list, tuple, ListConfig))
+                    for item in self.select_re
+                ):
+                    logger.info(
+                        f"Filtering simulations with Reynolds number in intervals: {self.select_re}"
+                    )
+                    for re_range in self.select_re:
+                        re_min, re_max = re_range
+                        mask |= (self.Re >= re_min) & (self.Re <= re_max)
+
+                elif isinstance(self.select_re, (float, int)):
                     logger.info(
                         f"Filtering simulations with Reynolds number == {self.select_re}"
                     )
                     mask = self.Re == self.select_re
+
                 elif isinstance(self.select_re, (list, tuple, ListConfig)):
-                    # Check for a two-element list/tuple to treat as an interval [min, max]
                     if len(self.select_re) == 2 and all(
                         isinstance(v, (float, int)) for v in self.select_re
                     ):
@@ -384,13 +398,13 @@ class QGDatasetMultiSim(QGDatasetBase):
                             f"Filtering simulations with Reynolds number in interval [{re_min}, {re_max}]"
                         )
                         mask = (self.Re >= re_min) & (self.Re <= re_max)
-                    else:  # Otherwise, treat as a list of discrete values
+                    else:
                         logger.info(
                             f"Filtering simulations with Reynolds numbers in list: {self.select_re}"
                         )
                         mask = torch.isin(self.Re, torch.tensor(list(self.select_re)))
+
                 else:
-                    # This now correctly handles unsupported types
                     raise ValueError(
                         f"Invalid type for 'select_re': {type(self.select_re)}"
                     )
@@ -548,6 +562,38 @@ class QGDatasetMultiSim(QGDatasetBase):
 
         # This returns the standard 3-tuple
         return input_seq, target_seq, metadata
+
+    def create_subset_for_re(self, re_val: int) -> Subset:
+        """
+        Creates a torch.utils.data.Subset containing only the samples for a specific Reynolds number.
+        """
+        if self.Re is None:
+            raise ValueError(
+                "Cannot create subset for Re because 'Re' was not found in the dataset."
+            )
+
+        logger.info(f"Creating a subset for Re = {re_val}...")
+
+        # Find which simulation indices correspond to the desired Reynolds number
+        # Note: self.Re is 1D tensor of size [num_sims]
+        sim_indices_with_re = (self.Re == re_val).nonzero(as_tuple=True)[0]
+
+        if len(sim_indices_with_re) == 0:
+            logger.warning(
+                f"No simulations found for Re = {re_val} in this dataset split. Returning an empty subset."
+            )
+            return Subset(self, [])
+
+        # Find all master_index entries that belong to these simulation indices
+        # self.master_index is a list of (sim_idx, time_idx) tuples
+        subset_indices = [
+            i
+            for i, (sim_idx, _) in enumerate(self.master_index)
+            if sim_idx in sim_indices_with_re
+        ]
+
+        logger.info(f"Found {len(subset_indices)} samples for Re = {re_val}.")
+        return Subset(self, subset_indices)
 
 
 # --- Overfitting Dataset ---
