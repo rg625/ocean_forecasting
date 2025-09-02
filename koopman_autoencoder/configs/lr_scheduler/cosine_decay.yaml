@@ -1,0 +1,7 @@
+# configs/metric/cosine_decay.yaml
+# base config for cosine decay
+
+lr: 1.0e-4
+warmup: 100
+decay: 900
+final_lr: 1.0e-5

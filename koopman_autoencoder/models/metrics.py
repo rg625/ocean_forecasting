@@ -143,6 +143,9 @@ class Metric(nn.Module):
         # Move to CPU and convert to numpy once for efficiency
         ref_np = ref.cpu().numpy()
         other_np = other.cpu().numpy()
+        # Clip values to valid [0, 1] range to avoid overflow warnings
+        ref_np = np.clip(ref_np, 0.0, 1.0)
+        other_np = np.clip(other_np, 0.0, 1.0)
 
         distances = np.zeros((B, T), dtype=np.float32)
 
@@ -166,8 +169,16 @@ class Metric(nn.Module):
                     distances[i, j] = -psnr
                 elif self.mode == "VI":
                     # VI requires integer inputs
-                    r_int = (r * 255).astype(np.uint8)
-                    o_int = (o * 255).astype(np.uint8)
+                    # Clip to [0,1] and replace NaN/inf with 0
+                    r_safe = np.nan_to_num(
+                        np.clip(r, 0.0, 1.0), nan=0.0, posinf=1.0, neginf=0.0
+                    )
+                    o_safe = np.nan_to_num(
+                        np.clip(o, 0.0, 1.0), nan=0.0, posinf=1.0, neginf=0.0
+                    )
+
+                    r_int = (r_safe * 255).astype(np.uint8)
+                    o_int = (o_safe * 255).astype(np.uint8)
                     distances[i, j] = np.mean(
                         sk_metrics.variation_of_information(r_int, o_int)
                     )

@@ -224,7 +224,9 @@ def kae_rollout_wrapper(
     Wraps run_kae_rollout to match the signature of run_diffusion_rollout.
     The `metadata` and `dataset` arguments are ignored for KAE.
     """
-    return run_kae_rollout(model, input_seq, rollout_steps)
+    return run_kae_rollout(
+        model=model, input_seq=input_seq, rollout_steps=rollout_steps
+    )
 
 
 def run_diffusion_rollout(

@@ -1,0 +1,24 @@
+# configs/data/eval.yaml
+# config for data loading in model evaluations
+
+dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
+data_dir: "./data"
+train_file: "acdm/128_inc/train.nc"
+val_file: "acdm/128_inc/val.nc"
+test_file: "acdm/128_inc/test.nc"
+input_sequence_length: 2
+max_sequence_length: 8
+subsample: 2
+variables:
+  v_x: 1
+  v_y: 1
+  p: 1
+static_variables:
+  obstacle_mask: 1
+normalization:
+  type: "MeanStdNormalizer"
+  sim: 0
+quantile_range: [2.5, 97.5]
+train_re: 600
+val_re: 1000
+test_re: 500 # 490

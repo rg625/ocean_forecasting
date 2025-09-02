@@ -5,14 +5,14 @@ import argparse
 import yaml
 import warnings
 import numpy as np
-from typing import Dict, Tuple, Any, cast, Optional, Callable
+from typing import Dict, Tuple, Any, cast, Optional, Callable, Literal
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 # Config helpers
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import DictConfig
 
 # Matplotlib setup
 import matplotlib.pyplot as plt
@@ -24,10 +24,11 @@ try:
     from models.config_classes import Config
     from models.autoencoder import KoopmanAutoencoder
     from models.dataloader import create_dataloaders
-    from models.utils import load_checkpoint, load_datasets
+    from models.utils import load_checkpoint, load_datasets, load_config
     from models.metrics_utils import (
         run_evaluation,
         kae_rollout_wrapper,
+        run_diffusion_rollout,
     )
 except Exception:
     # Provide helpful log if imports fail; allow the script to continue so user sees the message.
@@ -105,37 +106,40 @@ def get_split_for_re(re_val: int) -> str:
         )
 
 
-def safe_omega_load(path: str) -> Any:
-    """Safely load an OmegaConf config file; returns None on failure."""
-    if not path or not os.path.exists(path):
-        logger.error(f"OmegaConf path not found: {path}")
-        return None
-    try:
-        cfg = OmegaConf.load(path)
-        return cfg
-    except Exception as e:
-        logger.exception(f"Failed to load OmegaConf from {path}: {e}")
-        return None
-
-
 def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module, Any]:
     """Loads a Koopman Autoencoder model and its configuration with robust error handling."""
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.join(script_dir, "configs")
+
+    # Relative paths as in YAML
     cfg_path = model_config.get("config_path")
     checkpoint_path = model_config.get("checkpoint_path")
-    if not cfg_path or not os.path.exists(cfg_path):
-        raise FileNotFoundError(f"KAE config path not found: {cfg_path}")
-    if not checkpoint_path or not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"KAE checkpoint path not found: {checkpoint_path}")
+
+    # Construct absolute paths only for existence check
+    abs_cfg_path = (
+        os.path.join(base_dir, cfg_path)
+        if cfg_path and not os.path.isabs(cfg_path)
+        else cfg_path
+    )
+    abs_checkpoint_path = (
+        os.path.join(script_dir, checkpoint_path)
+        if checkpoint_path and not os.path.isabs(checkpoint_path)
+        else checkpoint_path
+    )
+
+    # Check if files exist, but keep original relative paths for loading
+    if not abs_cfg_path or not os.path.exists(abs_cfg_path):
+        logger.warning(f"KAE config path not found, skipping model: {cfg_path}")
+        return None, None
+    if not abs_checkpoint_path or not os.path.exists(abs_checkpoint_path):
+        logger.warning(
+            f"KAE checkpoint path not found, skipping model: {checkpoint_path}"
+        )
+        return None, None
 
     # Load and merge structured Config if present, otherwise just load the file
-    try:
-        base_struct = OmegaConf.structured(Config)
-        file_cfg = OmegaConf.load(cfg_path)
-        cfg = OmegaConf.merge(base_struct, file_cfg)
-        OmegaConf.resolve(cfg)
-    except Exception as e:
-        logger.exception(f"Failed to load/merge KAE config from {cfg_path}: {e}")
-        raise
+    cfg = load_config(cfg_path)
 
     try:
         input_frames = int(cfg.data.input_sequence_length)
@@ -143,6 +147,17 @@ def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module,
         input_frames = int(cfg.data.input_sequence_length)
 
     try:
+        if cfg.model.re_cond_type not in (None, "late_fusion", "adaln"):
+            raise ValueError(f"Invalid re_cond_type: {cfg.model.re_cond_type}")
+        if cfg.model.operator_mode not in ("linear", "eigen", "mlp"):
+            raise ValueError(f"Invalid operator_mode: {cfg.model.operator_mode}")
+
+        # Cast to satisfy mypy
+        re_cond_type = cast(
+            Optional[Literal["late_fusion", "adaln"]], cfg.model.re_cond_type
+        )
+        operator_mode = cast(Literal["linear", "eigen", "mlp"], cfg.model.operator_mode)
+
         model = KoopmanAutoencoder(
             data_variables=cfg.data.variables,
             input_frames=input_frames,
@@ -150,8 +165,8 @@ def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module,
             width=cfg.model.width,
             latent_dim=cfg.model.latent_dim,
             re_embedding_dim=cfg.model.re_embedding_dim,
-            re_cond_type=cfg.model.re_cond_type,
-            operator_mode=cfg.model.operator_mode,
+            re_cond_type=re_cond_type,
+            operator_mode=operator_mode,
             hidden_dims=cfg.model.hidden_dims,
             transformer_config=cfg.model.transformer,
             use_checkpoint=False,
@@ -173,6 +188,8 @@ def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module,
 
     # Load checkpoint
     try:
+        if checkpoint_path is None:
+            raise FileNotFoundError("Checkpoint path is missing")
         model, _, _, _ = load_checkpoint(
             checkpoint_path, model=model, optimizer=optimizer
         )
@@ -769,10 +786,7 @@ def main(args):
         kae_entry = next((m for m in evaluations if m.get("model_type") == "kae"), None)
         if kae_entry:
             base_kae_cfg_path = kae_entry.get("config_path")
-            base_config = OmegaConf.structured(Config)
-            file_config = OmegaConf.load(base_kae_cfg_path)
-            base_kae_cfg = OmegaConf.merge(base_config, file_config)
-            OmegaConf.resolve(base_kae_cfg)
+            base_kae_cfg = load_config(base_kae_cfg_path)
 
             # harmonize attribute naming for rollouts
             try:
@@ -794,7 +808,7 @@ def main(args):
         assert base_kae_cfg is not None
 
         # tell mypy that it's a Config
-        cfg: Config = cast(Config, base_kae_cfg)
+        cfg: Config = base_kae_cfg
 
         # now safe to pass to functions
         train_ds, val_ds, test_ds = load_datasets(cfg)
@@ -868,7 +882,7 @@ def main(args):
                     try:
                         model = load_acdm_model(model_config, DEVICE)
                         rollout_fn = cast(
-                            Optional[Callable[..., Any]], kae_rollout_wrapper
+                            Optional[Callable[..., Any]], run_diffusion_rollout
                         )
                     except Exception as e:
                         logger.exception(

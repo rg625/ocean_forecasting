@@ -14,7 +14,6 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Refactored project imports
-from models.config_classes import Config
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
@@ -26,7 +25,11 @@ from models.dataloader import (
 )
 from models.trainer import Trainer
 from models.metrics import Metric
-from models.utils import load_checkpoint, load_datasets
+from models.utils import (
+    load_checkpoint,
+    load_datasets,
+    load_config,
+)
 
 # Configure logging for clear and informative output
 logging.basicConfig(
@@ -265,14 +268,10 @@ if __name__ == "__main__":
     args, unknown_args = parser.parse_known_args()
 
     try:
-        base_config = OmegaConf.structured(Config)
-        file_config = OmegaConf.load(args.config)
-        cli_config = OmegaConf.from_cli(unknown_args)
-
-        cfg = OmegaConf.merge(base_config, file_config, cli_config)
-        OmegaConf.resolve(cfg)
-
+        # Use our unified load_config function
+        cfg = load_config(config_path=args.config, cli_args=unknown_args)
         logger.info(f"Configuration loaded and merged:\n{OmegaConf.to_yaml(cfg)}")
+
         main(cfg)
 
     except (FileNotFoundError, OmegaConfBaseException) as e:

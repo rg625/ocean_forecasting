@@ -1,0 +1,29 @@
+# configs/model/base.yaml
+# base config for model
+
+# model:
+height: 64
+width: 128
+hidden_dims: [64, 128, 64]
+block_size: 2
+kernel_size: 3
+conv_kwargs:
+  padding: 1
+  padding_mode: circular
+
+latent_dim: 256
+re_embedding_dim: 256
+re_cond_type: adaln
+operator_mode: linear
+
+transformer:
+  num_layers: 4
+  nhead: 8
+  ff_mult: 4
+  max_len: 1000
+  dropout: 0.0
+
+predict_re: true
+re_grad_enabled: false
+disturb_std: 0.01
+residual: false
