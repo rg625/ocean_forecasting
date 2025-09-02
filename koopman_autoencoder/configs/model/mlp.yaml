@@ -26,4 +26,4 @@ transformer:
 predict_re: true
 re_grad_enabled: false
 disturb_std: 0.01
-residual: true
+residual: false
