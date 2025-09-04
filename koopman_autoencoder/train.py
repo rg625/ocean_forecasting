@@ -1,6 +1,7 @@
 # main.py
 import torch
 import torch.optim as optim
+import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from pathlib import Path
 from datetime import datetime
@@ -118,7 +119,7 @@ def main(cfg: DictConfig):
             predict_re=cfg.model.predict_re,
             re_grad_enabled=cfg.model.re_grad_enabled,
             disturb_std=cfg.model.disturb_std,
-            residual=cfg.model.residual,
+            is_continuous=cfg.model.is_continuous,
             **cfg.model.conv_kwargs,
         ).to(device)
         if is_ddp:
@@ -150,7 +151,8 @@ def main(cfg: DictConfig):
     start_epoch = 0
     if cfg.ckpt:
         logger.info(f"Attempting to load checkpoint from: {cfg.ckpt}")
-        model_to_load = model.module if is_ddp else model
+        model_to_load: nn.Module = model.module if isinstance(model, DDP) else model
+        assert isinstance(model_to_load, nn.Module)
         try:
             _, _, _, start_epoch = load_checkpoint(cfg.ckpt, model_to_load, optimizer)
             # Ensure optimizer state is on the correct device after loading
@@ -227,6 +229,9 @@ def main(cfg: DictConfig):
         logger.info("Saving final model and artifacts...")
         final_model_path = output_dir / "final_model.pth"
         model_to_save = model.module if is_ddp else model
+        assert isinstance(
+            model_to_save, nn.Module
+        ), f"Expected model to be nn.Module but got {type(model_to_save)} instead."
 
         save_data = {
             "model_state_dict": model_to_save.state_dict(),
@@ -270,6 +275,7 @@ if __name__ == "__main__":
     try:
         # Use our unified load_config function
         cfg = load_config(config_path=args.config, cli_args=unknown_args)
+        assert isinstance(cfg, DictConfig)  # for static type checkers
         logger.info(f"Configuration loaded and merged:\n{OmegaConf.to_yaml(cfg)}")
 
         main(cfg)

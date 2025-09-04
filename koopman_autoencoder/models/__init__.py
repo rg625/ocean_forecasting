@@ -21,7 +21,8 @@ from .dataloader import (
 from .loss import KoopmanLoss as KoopmanLoss
 from .lr_schedule import CosineWarmup as CosineWarmup
 from .metrics import Metric as Metric
-from .networks import TransformerConfig as TransformerConfig
+from .networks import ConvEncoder as ConvEncoder, AdaLNMLP as AdaLNMLP
+from .modules import TransformerConfig as TransformerConfig
 from .config_classes import Config as Config
 from . import utils as utils
 from . import metrics_utils as metrics_utils

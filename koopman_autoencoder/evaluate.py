@@ -75,14 +75,8 @@ SCRIPT_CONFIG = {
         "metric_order": ["MSE", "LSiM"],
         "model_display_map": {
             "ACDM_ncn": r"$ACDM_{ncn}$",
-            "ACDM_Standard": "ACDM",
+            "ACDM": "ACDM",
             "KAE": "KAE",
-        },
-        # Keep scaling map optional; functions will handle missing entries gracefully
-        "scaling_map": {
-            500: {"MSE": (1e-6, 1, -6), "LSiM": (1e-3, 1, -3)},
-            600: {"MSE": (1e-5, 1, -5), "LSiM": (1e-2, 2, -2)},
-            1000: {"MSE": (1e-5, 1, -5), "LSiM": (1e-2, 2, -2)},
         },
     },
 }
@@ -172,7 +166,7 @@ def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module,
             use_checkpoint=False,
             predict_re=cfg.model.predict_re,
             re_grad_enabled=cfg.model.re_grad_enabled,
-            residual=cfg.model.residual,
+            is_continuous=cfg.model.is_continuous,
             **cfg.model.conv_kwargs,
         ).to(device)
     except Exception:
@@ -455,14 +449,12 @@ def generate_comparison_plots(
 
 
 def generate_comparison_latex_table_by_split(all_results: dict) -> str:
-    """Generates a LaTeX table summarizing results by data split and model."""
     cfg: DictConfig = SCRIPT_CONFIG["latex"]
-
     split_names = list(all_results.keys())
     if not split_names:
         return "No results to generate table."
+
     model_names = []
-    # derive model names safely from the first non-empty split
     for split in split_names:
         if all_results.get(split):
             model_names = list(all_results[split].keys())
@@ -473,31 +465,18 @@ def generate_comparison_latex_table_by_split(all_results: dict) -> str:
 
     metric_order = cfg.get("metric_order", ["MSE", "LSiM"])
 
-    def format_val(mean, std, metric):
+    def format_val(mean, std):
         if mean is None or std is None or np.isnan(mean) or np.isnan(std):
             return "-"
-        # Use a fallback scaling entry (try to find any mapping)
-        scale_info = None
-        # prefer 500 mapping if available
-        for k in (500, 600, 1000):
-            scale_info = cfg["scaling_map"].get(k, {}).get(metric)
-            if scale_info:
-                break
-        if not scale_info:
-            # No scale info, print with scientific format
-            return f"${mean:.2e} \\pm {std:.2e}$"
-        scale, precision, _ = scale_info
-        try:
-            return f"${mean / scale:.{precision}f} \\pm {std / scale:.{precision}f}$"
-        except Exception:
-            return f"${mean:.2e} \\pm {std:.2e}$"
+        scale, precision = 1e-4, 2
+        return f"${mean / scale:.{precision}f} \pm {std / scale:.{precision}f}$"
 
-    header = r"\begin{tabular}{@{}lcc" + " ".join(["c"] * len(metric_order)) + "@{}}"
+    header = r"\begin{tabular}{@{}lcc" + " ".join(["c"] * len(metric_order)) + r"@{}}"
     header += r"\toprule" + "\n"
     header += (
         r"\textbf{Data Split} & \textbf{Method} & "
         + " & ".join(metric_order)
-        + r" \\ \midrule"
+        + r" \ \midrule"
     )
 
     rows = []
@@ -505,7 +484,7 @@ def generate_comparison_latex_table_by_split(all_results: dict) -> str:
         for i, model_name in enumerate(model_names):
             display_name = cfg["model_display_map"].get(model_name, model_name)
             row_prefix = (
-                f"\\multirow{{{len(model_names)}}}{{*}}{{{split_name}}}"
+                f"\multirow{{{len(model_names)}}}{{*}}{{{split_name}}}"
                 if i == 0
                 else ""
             )
@@ -523,7 +502,7 @@ def generate_comparison_latex_table_by_split(all_results: dict) -> str:
                     mean_std = metrics.get(internal_key, {}).get("all")
                     if mean_std:
                         mean, std = mean_std
-                row_data.append(format_val(mean, std, display_metric))
+                row_data.append(format_val(mean, std))
             rows.append(" & ".join(row_data) + r" \\")
 
     table = [
@@ -541,41 +520,39 @@ def generate_comparison_latex_table_by_split(all_results: dict) -> str:
 
 
 def generate_comparison_latex_table_by_re(all_results_by_re: dict) -> str:
-    """Generates a LaTeX table summarizing results organized per Re value."""
     cfg: DictConfig = SCRIPT_CONFIG["latex"]
     if not all_results_by_re:
         return "No results to generate table."
+
     re_values = sorted(all_results_by_re.keys())
     first_re = next((re for re in re_values if all_results_by_re.get(re)), None)
     if not first_re:
         return "No valid results found to create table."
     model_names = sorted(all_results_by_re[first_re].keys())
 
-    def format_val(mean, std, re, metric):
+    def format_val(mean, std):
         if mean is None or std is None or np.isnan(mean) or np.isnan(std):
             return "-"
-        scale_info = cfg["scaling_map"].get(re, {}).get(metric)
-        if not scale_info:
-            return f"{mean:.2e} ± {std:.2e}"
-        scale, precision, _ = scale_info
-        return f"${mean / scale:.{precision}f} \\pm {std / scale:.{precision}f}$"
+        scale, precision = 1e-4, 2
+        return f"${mean / scale:.{precision}f} \pm {std / scale:.{precision}f}$"
 
     header1 = (
         r"\multirow{2}{*}{\textbf{Method}} & "
         + " & ".join(
-            [f"\\multicolumn{{2}}{{c}}{{\\textbf{{Re={re}}}}}" for re in re_values]
+            [f"\multicolumn{{2}}{{c}}{{\textbf{{Re={re}}}}}" for re in re_values]
         )
         + r" \\"
     )
     cmidrules = " & " + " ".join(
-        [f"\\cmidrule(lr){{{2+i*2}-{3+i*2}}}" for i in range(len(re_values))]
+        [f"\cmidrule(lr){{{2+i*2}-{3+i*2}}}" for i in range(len(re_values))]
     )
     header2_parts = [
-        f"{metric} $(\\times 10^{{{cfg['scaling_map'].get(re, {}).get(metric, [0,0,0])[2]}}})$"
+        f"{metric} $(\times 10^{{-4}})$"
         for re in re_values
         for metric in cfg["metric_order"]
     ]
-    header2 = " & " + " & ".join(header2_parts) + r" \\ \midrule"
+    header2 = " & ".join(["", *header2_parts]) + r" \\ \midrule"
+
     rows = []
     for model_name in model_names:
         display_name = cfg["model_display_map"].get(model_name, model_name)
@@ -592,15 +569,16 @@ def generate_comparison_latex_table_by_re(all_results_by_re: dict) -> str:
                     mean_std = metrics.get(internal_key, {}).get("all")
                     if mean_std:
                         mean, std = mean_std
-                row_data.append(format_val(mean, std, re, display_metric))
+                row_data.append(format_val(mean, std))
         rows.append(" & ".join(row_data) + r" \\")
+
     table = [
         r"\begin{table*}[h!]",
         r"\centering",
         r"\caption{Quantitative comparison of prediction accuracy.}",
         r"\label{tab:quantitative_comparison}",
         r"\resizebox{\textwidth}{!}{%",
-        r"\begin{tabular}{@{}l" + " ".join(["cc"] * len(re_values)) + "@{}}",
+        r"\begin{tabular}{@{}l" + " ".join(["cc"] * len(re_values)) + r"@{}}",
         r"\toprule",
         header1,
         cmidrules,
@@ -658,7 +636,7 @@ def generate_plots_for_re(models: Dict[str, nn.Module], loader, re_val: int):
         else:
             # sample could itself be a tensor
             if hasattr(sample, "ndim") or hasattr(sample, "shape"):
-                ground_truth["var0"] = sample
+                ground_truth = sample
         if not ground_truth:
             logger.warning(
                 "No suitable GT tensors found in sample for plotting; skipping."
@@ -819,7 +797,8 @@ def main(args):
         logger.exception("Failed to load datasets. Error: %s", e)
         return
 
-    all_results: Dict = {}
+    all_results_split: Dict = {}
+    all_results_re: Dict = {}
 
     # Evaluate across the three static splits
     splits_to_evaluate = {
@@ -858,7 +837,8 @@ def main(args):
         logger.info(
             f"\n{'='*30} Evaluating on '{split_name}' Split (Re={re_val}) {'='*30}"
         )
-        all_results[split_name] = {}
+        all_results_split[split_name] = {}
+        all_results_re[re_val] = {}
 
         for model_config in evaluations:
             model_name = model_config.get("name", "<unnamed>")
@@ -876,7 +856,8 @@ def main(args):
                         logger.exception(
                             f"Failed to load KAE model '{model_name}': {e}"
                         )
-                        all_results[split_name][model_name] = {}
+                        all_results_split[split_name][model_name] = {}
+                        all_results_re[re_val][model_name] = {}
                         continue
                 elif model_type in ("acdm", "acdm_ncn"):
                     try:
@@ -888,7 +869,8 @@ def main(args):
                         logger.exception(
                             f"Failed to load ACDM model '{model_name}': {e}"
                         )
-                        all_results[split_name][model_name] = {}
+                        all_results_split[split_name][model_name] = {}
+                        all_results_re[re_val][model_name] = {}
                         continue
                 else:
                     logger.warning(
@@ -901,7 +883,8 @@ def main(args):
                     logger.warning(
                         f"No rollout function available for model '{model_name}'. Skipping evaluation."
                     )
-                    all_results[split_name][model_name] = {}
+                    all_results_split[split_name][model_name] = {}
+                    all_results_re[re_val][model_name] = {}
                     continue
 
                 # Run evaluation in try/except so single model failure doesn't stop the loop
@@ -916,20 +899,23 @@ def main(args):
                         output_len=output_len,
                         rollout_fn=rollout_fn,
                     )
-                    all_results[split_name][model_name] = metrics or {}
+                    all_results_split[split_name][model_name] = metrics or {}
+                    all_results_re[re_val][model_name] = metrics or {}
                 except Exception as e:
                     logger.exception(
                         f"run_evaluation failed for model '{model_name}' on split '{split_name}': {e}"
                     )
                     # store empty metrics so table generation knows model was attempted
-                    all_results[split_name][model_name] = {}
+                    all_results_split[split_name][model_name] = metrics or {}
+                    all_results_re[re_val][model_name] = metrics or {}
                     continue
 
             except Exception as e:
                 logger.exception(
                     f"Unexpected error while setting up model '{model_name}': {e}"
                 )
-                all_results[split_name][model_name] = {}
+                all_results_split[split_name][model_name] = {}
+                all_results_re[re_val][model_name] = {}
                 continue
 
         if args.generate_plots:
@@ -973,20 +959,29 @@ def main(args):
         + "=" * 80
     )
     try:
-        latex_table = generate_comparison_latex_table_by_split(all_results)
+        latex_table_split = generate_comparison_latex_table_by_split(all_results_split)
     except Exception:
-        logger.exception(
-            "Failed to generate LaTeX table; falling back to minimal report."
-        )
-        latex_table = "Failed to create LaTeX table."
+        logger.exception("Failed to generate LaTeX table by split.")
+        latex_table_split = "Failed to create LaTeX table by split."
 
-    print(latex_table)
-
-    output_filename = "metrics_table_split_comparison.tex"
     try:
-        with open(output_filename, "w") as f:
-            f.write(latex_table)
-        logger.info(f"LaTeX table saved to {output_filename}")
+        latex_table_re = generate_comparison_latex_table_by_re(all_results_re)
+    except Exception:
+        logger.exception("Failed to generate LaTeX table by Re.")
+        latex_table_re = "Failed to create LaTeX table by Re."
+
+    print(latex_table_split)
+    print(latex_table_re)
+
+    output_filename_split = "metrics_table_split_comparison.tex"
+    output_filename_re = "metrics_table_re_comparison.tex"
+    try:
+        with open(output_filename_split, "w") as f:
+            f.write(latex_table_split)
+        logger.info(f"LaTeX table saved to {output_filename_split}")
+        with open(output_filename_re, "w") as f:
+            f.write(latex_table_re)
+        logger.info(f"LaTeX table saved to {output_filename_re}")
     except Exception:
         logger.exception("Failed to save LaTeX file.")
 

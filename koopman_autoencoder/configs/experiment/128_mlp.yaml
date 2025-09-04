@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - /data: eval
+  - /data: base
   - /model: mlp
   - /metric: base
   - /training: base
@@ -8,7 +8,7 @@ defaults:
   - /lr_scheduler: linear_decay
 
 # Top-level run configuration
-output_dir: "model_outputs/128_inc_kl_1.0_mlp"
+output_dir: "model_outputs/128_inc_discrete_mlp"
 ckpt: null
 # ckpt: '/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_mlp/run-20250822_164415/checkpoints/epoch_320.pth'
 log_epoch: 20

@@ -19,6 +19,6 @@ normalization:
   type: "MeanStdNormalizer"
   sim: 0
 quantile_range: [2.5, 97.5]
-train_re: 600
-val_re: 1000
-test_re: 500 # 490
+train_re: [[240, 480],[600, 800]]
+val_re: [[100, 190],[900, 1000]]
+test_re: [490, 500]
