@@ -4,7 +4,7 @@ evaluations:
   - name: "KAE MLP"
     model_type: kae
     config_path: "experiment/128_mlp.yaml"
-    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_mlp/run-20250825_132607/checkpoints/epoch_440.pth"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_mlp/run-20250825_132607/checkpoints/epoch_440_surged_2.pth"
 
   # - name: "KAE Linear"
   #   model_type: kae
@@ -14,7 +14,7 @@ evaluations:
   - name: "RKAE MLP"
     model_type: kae
     config_path: "experiment/128_continous_mlp.yaml"
-    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_theoretical_mlp/run-20250903_114713/checkpoints/epoch_20.pth"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_continous_mlp/run-20250904_180223/checkpoints/epoch_60.pth"
 
   # - name: "RKAE Linear"
   #   model_type: kae

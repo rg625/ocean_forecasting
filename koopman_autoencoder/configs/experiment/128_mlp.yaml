@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - /data: base
+  - /data: eval
   - /model: mlp
   - /metric: base
   - /training: base
