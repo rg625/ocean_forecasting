@@ -592,7 +592,7 @@ def plot_model_rollouts(
     num_rows = 1 + 2 * num_preds  # GT + all preds + all errors
     fig_height = 2.0 * num_rows
     fig_width = 2.6 * num_cols
-    fig = plt.figure(figsize=(fig_width, fig_height))
+    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=True)
     spec = gridspec.GridSpec(num_rows, num_cols, hspace=0.6, wspace=0.6)
 
     # Top row: Ground truth
@@ -660,5 +660,5 @@ def plot_model_rollouts(
         fontsize=16,
         y=0.98,
     )
-    plt.tight_layout(rect=[0.05, 0, 0.95, 0.95])
+    # plt.tight_layout(rect=[0.05, 0, 0.95, 0.92])  # leave space for suptitle
     plt.show()

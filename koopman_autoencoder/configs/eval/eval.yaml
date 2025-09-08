@@ -1,30 +1,71 @@
-# eval.yaml
-
 evaluations:
-  - name: "KAE MLP"
+  - name: "continous_linear_128"
     model_type: kae
-    config_path: "experiment/128_mlp.yaml"
-    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_mlp/run-20250825_132607/checkpoints/epoch_440_surged_2.pth"
-
-  # - name: "KAE Linear"
-  #   model_type: kae
-  #   config_path: "experiment/128_linear.yaml"
-  #   checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_theoretical_linear/run-20250829_170413/checkpoints/epoch_100.pth"
-
-  - name: "RKAE MLP"
+    config_path: "experiment/continous_linear_128.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_linear_128/run/epoch_180.pth"
+  - name: "continous_linear_256"
     model_type: kae
-    config_path: "experiment/128_continous_mlp.yaml"
-    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_continous_mlp/run-20250904_180223/checkpoints/epoch_60.pth"
-
-  # - name: "RKAE Linear"
-  #   model_type: kae
-  #   config_path: "experiment/128_continous_linear.yaml"
-  #   checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/128_inc_kl_1.0_theoretical_linear/run-20250901_222653/checkpoints/epoch_40.pth"
-
-  - name: "ACDM"
+    config_path: "experiment/continous_linear_256.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_linear_256/run/epoch_120.pth"
+  - name: "continous_linear_512"
+    model_type: kae
+    config_path: "experiment/continous_linear_512.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_linear_512/run/epoch_180.pth"
+  - name: "continous_linear_1024"
+    model_type: kae
+    config_path: "experiment/continous_linear_1024.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_linear_1024/run/epoch_180.pth"
+  - name: "continous_mlp_128"
+    model_type: kae
+    config_path: "experiment/continous_mlp_128.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_mlp_128/run/epoch_180.pth"
+  - name: "continous_mlp_256"
+    model_type: kae
+    config_path: "experiment/continous_mlp_256.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_mlp_256/run/epoch_120.pth"
+  - name: "continous_mlp_512"
+    model_type: kae
+    config_path: "experiment/continous_mlp_512.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_mlp_512/run/epoch_180.pth"
+  - name: "continous_mlp_1024"
+    model_type: kae
+    config_path: "experiment/continous_mlp_1024.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_mlp_1024/run/epoch_180.pth"
+  - name: "discrete_linear_128"
+    model_type: kae
+    config_path: "experiment/discrete_linear_128.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_linear_128/run/epoch_180.pth"
+  - name: "discrete_linear_256"
+    model_type: kae
+    config_path: "experiment/discrete_linear_256.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_linear_256/run/epoch_180.pth"
+  - name: "discrete_linear_512"
+    model_type: kae
+    config_path: "experiment/discrete_linear_512.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_linear_512/run/epoch_180.pth"
+  - name: "discrete_linear_1024"
+    model_type: kae
+    config_path: "experiment/discrete_linear_1024.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_linear_1024/run/epoch_180.pth"
+  - name: "discrete_mlp_128"
+    model_type: kae
+    config_path: "experiment/discrete_mlp_128.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_mlp_128/run/epoch_180.pth"
+  - name: "discrete_mlp_256"
+    model_type: kae
+    config_path: "experiment/discrete_mlp_256.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_mlp_256/run/epoch_180.pth"
+  - name: "discrete_mlp_512"
+    model_type: kae
+    config_path: "experiment/discrete_mlp_512.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_mlp_512/run/epoch_180.pth"
+  - name: "discrete_mlp_1024"
+    model_type: kae
+    config_path: "experiment/discrete_mlp_1024.yaml"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/discrete_mlp_1024/run/epoch_180.pth"
+  - name: ACDM
     model_type: acdm
-    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/autoreg-pde-diffusion/pretrained_models/models_inc/128_acdm-r20_02/Model.pth"
-
-  - name: "ACDM_{ncn}"
+    checkpoint_path: /home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/pretrained_models/models_inc/128_acdm-r20_02/Model.pth
+  - name: ACDM_ncn
     model_type: acdm_ncn
-    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/autoreg-pde-diffusion/pretrained_models/models_inc/128_acdm-r20_ncn_00/Model.pth"
+    checkpoint_path: /home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/pretrained_models/models_inc/128_acdm-r20_ncn_00/Model.pth
