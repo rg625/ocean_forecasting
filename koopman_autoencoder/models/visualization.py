@@ -521,3 +521,144 @@ def plot_rollout(gt_dict, pred_dict, variable_name, frame_stride=5):
     fig.suptitle(f"Koopman AE Rollout for Variable: {variable_name}", fontsize=16)
     plt.tight_layout(rect=[0, 0.4, 0.98, 0.95])
     plt.show()
+
+
+def plot_model_rollouts(
+    models,
+    gt_dict,
+    variable_name: str,
+    ic: torch.Tensor,
+    rollout_steps: int,
+    frame_stride: int = 5,
+    max_frames: int = 15,
+    re: int = 1000,
+    cmap="viridis",
+    err_cmap="coolwarm",
+    device="cuda",
+):
+    """
+    Runs multiple models (with their own rollout functions) and plots GT vs predictions + errors.
+    Horizontal layout: frames evolve left → right, model names on the left, timestamp above each frame.
+
+    Args:
+        models (dict): mapping name -> {"model": nn.Module, "rollout_fn": callable}.
+                       rollout_fn(model, ic, steps) -> TensorDict with variables.
+        gt_dict (TensorDict): ground truth dict with [T,H,W] tensors per variable.
+        variable_name (str): variable to visualize.
+        ic (torch.Tensor): initial condition for rollout.
+        rollout_steps (int): number of rollout steps.
+        frame_stride (int): stride between frames to display.
+        max_frames (int): maximum number of frames to show.
+        re (int, optional): Reynolds number.
+        cmap (str): colormap for fields.
+        err_cmap (str): colormap for errors.
+        device (str): "cuda" or "cpu".
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib import gridspec
+
+    ic = ic.to(device)
+    gt = (
+        gt_dict.get(variable_name)
+        if hasattr(gt_dict, "get")
+        else gt_dict[variable_name]
+    )
+    if gt.ndim == 4 and gt.shape[0] == 1:
+        gt = gt.squeeze(0)
+    gt = gt[:rollout_steps].cpu()
+
+    # Run models and store predictions
+    preds = {}
+    for name, entry in models.items():
+        model = entry["model"].to(device).eval()
+        rollout_fn = entry["rollout_fn"]
+
+        with torch.no_grad():
+            td_out = rollout_fn(model, ic)
+            out = (
+                td_out.get(variable_name)
+                if hasattr(td_out, "get")
+                else td_out[variable_name]
+            )
+            if out.ndim == 4 and out.shape[0] == 1:
+                out = out.squeeze(0)
+            preds[name] = out.cpu()
+
+    # Determine frames to plot
+    num_frames = min(gt.shape[0], min(p.shape[0] for p in preds.values()))
+    indices = list(range(0, num_frames, frame_stride))[:max_frames]
+    num_cols = len(indices)
+    num_preds = len(preds)
+    num_rows = 1 + 2 * num_preds  # GT + all preds + all errors
+    fig_height = 2.0 * num_rows
+    fig_width = 2.6 * num_cols
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    spec = gridspec.GridSpec(num_rows, num_cols, hspace=0.6, wspace=0.6)
+
+    # Top row: Ground truth
+    for j, idx in enumerate(indices):
+        ax = fig.add_subplot(spec[0, j])
+        im = ax.imshow(gt[idx], cmap=cmap, origin="lower")
+        ax.axis("off")
+        if j == 0:
+            ax.text(
+                -0.3,
+                0.5,
+                "Ground Truth",
+                fontsize=12,
+                fontweight="bold",
+                transform=ax.transAxes,
+                ha="right",
+                va="center",
+            )
+        ax.set_title(f"t={idx}", fontsize=10)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    # Predictions (grouped together)
+    for i, (name, pred) in enumerate(preds.items()):
+        for j, idx in enumerate(indices):
+            axp = fig.add_subplot(spec[1 + i, j])  # predictions start at row 1
+            imp = axp.imshow(pred[idx], cmap=cmap, origin="lower")
+            axp.axis("off")
+            if j == 0:
+                axp.text(
+                    -0.3,
+                    0.5,
+                    f"{name} Prediction",
+                    fontsize=12,
+                    fontweight="bold",
+                    transform=axp.transAxes,
+                    ha="right",
+                    va="center",
+                )
+            fig.colorbar(imp, ax=axp, fraction=0.046, pad=0.04)
+
+    # Errors (grouped after predictions)
+    for i, (name, pred) in enumerate(preds.items()):
+        err = gt[: pred.shape[0]] - pred
+        for j, idx in enumerate(indices):
+            axe = fig.add_subplot(
+                spec[1 + num_preds + i, j]
+            )  # errors start after predictions
+            ime = axe.imshow(err[idx], cmap=err_cmap, origin="lower")
+            axe.axis("off")
+            if j == 0:
+                axe.text(
+                    -0.3,
+                    0.5,
+                    f"{name} Error",
+                    fontsize=12,
+                    fontweight="bold",
+                    transform=axe.transAxes,
+                    ha="right",
+                    va="center",
+                )
+            fig.colorbar(ime, ax=axe, fraction=0.046, pad=0.04)
+
+    fig.suptitle(
+        f"Rollout Comparison for '{variable_name.upper()}', Re={re}",
+        fontsize=16,
+        y=0.98,
+    )
+    plt.tight_layout(rect=[0.05, 0, 0.95, 0.95])
+    plt.show()
