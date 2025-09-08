@@ -449,11 +449,15 @@ def generate_comparison_plots(
 
 
 def generate_comparison_latex_table_by_split(all_results: dict) -> str:
+    """
+    Generate a LaTeX table comparing quantitative results across data splits.
+    """
     cfg: DictConfig = SCRIPT_CONFIG["latex"]
     split_names = list(all_results.keys())
     if not split_names:
         return "No results to generate table."
 
+    # pick the first split that has models
     model_names = []
     for split in split_names:
         if all_results.get(split):
@@ -466,31 +470,42 @@ def generate_comparison_latex_table_by_split(all_results: dict) -> str:
     metric_order = cfg.get("metric_order", ["MSE", "LSiM"])
 
     def format_val(mean, std):
+        """Format mean ± std in scientific notation scaled by 1e-4."""
         if mean is None or std is None or np.isnan(mean) or np.isnan(std):
             return "-"
         scale, precision = 1e-4, 2
-        return f"${mean / scale:.{precision}f} \pm {std / scale:.{precision}f}$"
+        return f"${mean / scale:.{precision}f} \\pm {std / scale:.{precision}f}$"
 
-    header = r"\begin{tabular}{@{}lcc" + " ".join(["c"] * len(metric_order)) + r"@{}}"
-    header += r"\toprule" + "\n"
-    header += (
+    # build tabular column specification: 1st col=split, 2nd col=method, rest=metrics
+    column_spec = "@{}lc" + "c" * len(metric_order) + "@{}"
+
+    # table header
+    header = [
+        rf"\begin{{tabular}}{{{column_spec}}}",
+        r"\toprule",
         r"\textbf{Data Split} & \textbf{Method} & "
-        + " & ".join(metric_order)
-        + r" \ \midrule"
-    )
+        + " & ".join([f"{m} $(\\times 10^{{-4}})$" for m in metric_order])
+        + r" \\ \midrule",
+    ]
 
     rows = []
     for split_name in split_names:
         for i, model_name in enumerate(model_names):
             display_name = cfg["model_display_map"].get(model_name, model_name)
+
+            # only show split name once per block using multirow
             row_prefix = (
-                f"\multirow{{{len(model_names)}}}{{*}}{{{split_name}}}"
+                rf"\multirow{{{len(model_names)}}}{{*}}{{{split_name}}}"
                 if i == 0
                 else ""
             )
+
+            # add horizontal midrule between split blocks
             if i == 0 and split_name != split_names[0]:
                 rows.append(r"\midrule")
+
             row_data = [row_prefix, display_name]
+
             for display_metric in metric_order:
                 internal_key = next(
                     (k for k, v in cfg["metric_map"].items() if v == display_metric),
@@ -503,14 +518,16 @@ def generate_comparison_latex_table_by_split(all_results: dict) -> str:
                     if mean_std:
                         mean, std = mean_std
                 row_data.append(format_val(mean, std))
+
             rows.append(" & ".join(row_data) + r" \\")
 
+    # final table
     table = [
         r"\begin{table}[h!]",
         r"\centering",
         r"\caption{Quantitative Comparison by Data Split}",
         r"\label{tab:quantitative_split_comparison}",
-        header,
+        *header,
         "\n".join(rows),
         r"\bottomrule",
         r"\end{tabular}",
@@ -536,6 +553,7 @@ def generate_comparison_latex_table_by_re(all_results_by_re: dict) -> str:
         scale, precision = 1e-4, 2
         return f"${mean / scale:.{precision}f} \pm {std / scale:.{precision}f}$"
 
+    # header rows
     header1 = (
         r"\multirow{2}{*}{\textbf{Method}} & "
         + " & ".join(
@@ -543,16 +561,17 @@ def generate_comparison_latex_table_by_re(all_results_by_re: dict) -> str:
         )
         + r" \\"
     )
-    cmidrules = " & " + " ".join(
-        [f"\cmidrule(lr){{{2+i*2}-{3+i*2}}}" for i in range(len(re_values))]
+    cmidrules = " ".join(
+        [f"\\cmidrule(lr){{{2+i*2}-{3+i*2}}}" for i in range(len(re_values))]
     )
     header2_parts = [
-        f"{metric} $(\times 10^{{-4}})$"
+        f"{metric} $(\\times 10^{{-4}})$"
         for re in re_values
         for metric in cfg["metric_order"]
     ]
     header2 = " & ".join(["", *header2_parts]) + r" \\ \midrule"
 
+    # data rows
     rows = []
     for model_name in model_names:
         display_name = cfg["model_display_map"].get(model_name, model_name)
@@ -572,13 +591,14 @@ def generate_comparison_latex_table_by_re(all_results_by_re: dict) -> str:
                 row_data.append(format_val(mean, std))
         rows.append(" & ".join(row_data) + r" \\")
 
+    # build table
     table = [
         r"\begin{table*}[h!]",
         r"\centering",
         r"\caption{Quantitative comparison of prediction accuracy.}",
         r"\label{tab:quantitative_comparison}",
         r"\resizebox{\textwidth}{!}{%",
-        r"\begin{tabular}{@{}l" + " ".join(["cc"] * len(re_values)) + r"@{}}",
+        r"\begin{tabular}{@{}l " + " ".join(["cc"] * len(re_values)) + r"@{}}",
         r"\toprule",
         header1,
         cmidrules,

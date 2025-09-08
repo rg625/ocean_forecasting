@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 import seaborn as sns
 from matplotlib import gridspec
+from .metrics_utils import compute_vorticity
 
 plt.style.use("seaborn-v0_8-whitegrid")
 
@@ -575,6 +576,8 @@ def plot_model_rollouts(
 
         with torch.no_grad():
             td_out = rollout_fn(model, ic)
+            if variable_name == "vort":
+                td_out["vort"] = compute_vorticity(td_out["v_x"], td_out["v_y"])
             out = (
                 td_out.get(variable_name)
                 if hasattr(td_out, "get")
