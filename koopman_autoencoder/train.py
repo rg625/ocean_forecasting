@@ -1,6 +1,7 @@
 # main.py
 import torch
 import torch.optim as optim
+import torch.nn as nn
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from pathlib import Path
 from datetime import datetime
@@ -14,7 +15,6 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # Refactored project imports
-from models.config_classes import Config
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
@@ -26,7 +26,11 @@ from models.dataloader import (
 )
 from models.trainer import Trainer
 from models.metrics import Metric
-from models.utils import load_checkpoint, load_datasets
+from models.utils import (
+    load_checkpoint,
+    load_datasets,
+    load_config,
+)
 
 # Configure logging for clear and informative output
 logging.basicConfig(
@@ -115,6 +119,7 @@ def main(cfg: DictConfig):
             predict_re=cfg.model.predict_re,
             re_grad_enabled=cfg.model.re_grad_enabled,
             disturb_std=cfg.model.disturb_std,
+            is_continuous=cfg.model.is_continuous,
             **cfg.model.conv_kwargs,
         ).to(device)
         if is_ddp:
@@ -146,7 +151,8 @@ def main(cfg: DictConfig):
     start_epoch = 0
     if cfg.ckpt:
         logger.info(f"Attempting to load checkpoint from: {cfg.ckpt}")
-        model_to_load = model.module if is_ddp else model
+        model_to_load: nn.Module = model.module if isinstance(model, DDP) else model
+        assert isinstance(model_to_load, nn.Module)
         try:
             _, _, _, start_epoch = load_checkpoint(cfg.ckpt, model_to_load, optimizer)
             # Ensure optimizer state is on the correct device after loading
@@ -223,6 +229,9 @@ def main(cfg: DictConfig):
         logger.info("Saving final model and artifacts...")
         final_model_path = output_dir / "final_model.pth"
         model_to_save = model.module if is_ddp else model
+        assert isinstance(
+            model_to_save, nn.Module
+        ), f"Expected model to be nn.Module but got {type(model_to_save)} instead."
 
         save_data = {
             "model_state_dict": model_to_save.state_dict(),
@@ -264,14 +273,11 @@ if __name__ == "__main__":
     args, unknown_args = parser.parse_known_args()
 
     try:
-        base_config = OmegaConf.structured(Config)
-        file_config = OmegaConf.load(args.config)
-        cli_config = OmegaConf.from_cli(unknown_args)
-
-        cfg = OmegaConf.merge(base_config, file_config, cli_config)
-        OmegaConf.resolve(cfg)
-
+        # Use our unified load_config function
+        cfg = load_config(config_path=args.config, cli_args=unknown_args)
+        assert isinstance(cfg, DictConfig)  # for static type checkers
         logger.info(f"Configuration loaded and merged:\n{OmegaConf.to_yaml(cfg)}")
+
         main(cfg)
 
     except (FileNotFoundError, OmegaConfBaseException) as e:

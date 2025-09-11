@@ -1,0 +1,10 @@
+# configs/loss/base.yaml
+# base config for loss
+
+# loss:
+alpha: 1.0
+beta: 0.001
+re_weight: null # 0.0
+stability_weight: 0.001 # null
+weighting_type: "uniform"
+sigma_blur: null

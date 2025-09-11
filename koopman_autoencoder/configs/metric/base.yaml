@@ -1,0 +1,7 @@
+# configs/metric/base.yaml
+# base config for metrics evaluation
+
+# metric:
+mode: "SSIM"
+variable_mode: "all"
+variable_name: null

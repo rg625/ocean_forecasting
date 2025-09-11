@@ -1,0 +1,14 @@
+# configs/base.yaml
+# base config encapsulating all necessary configs
+
+output_dir: ${hydra:runtime.output_dir}
+ckpt: null
+log_epoch: 20
+
+defaults:
+  - data: base
+  - model: base
+  - training: base
+  - loss: base
+  - scheduler: linear_decay
+  - metric: base

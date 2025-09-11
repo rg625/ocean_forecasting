@@ -12,6 +12,8 @@ from models.utils import cuda_timer, elapsed_time
 from models.networks import (
     ConvEncoder,
     ConvDecoder,
+)
+from models.modules import (
     HistoryEncoder,
     TransformerConfig,
     KoopmanOperator,
@@ -61,6 +63,7 @@ class KoopmanAutoencoder(nn.Module):
         predict_re: bool = False,
         re_grad_enabled: bool = False,
         disturb_std: float = 1e-2,
+        is_continuous: Optional[bool] = False,
         **conv_kwargs,
     ):
         super().__init__()
@@ -110,11 +113,15 @@ class KoopmanAutoencoder(nn.Module):
         self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
         self.decoder = ConvDecoder(C=self.total_input_channels, **common_args)
 
+        assert isinstance(
+            re_embedding_dim, int
+        ), f"expected 're_embedding_dim' to be int but got {type(re_embedding_dim)} instead."
         self.koopman_operator = KoopmanOperator(
             latent_dim=latent_dim,
             re_embedding_dim=re_embedding_dim,
             mode=operator_mode,
             use_checkpoint=use_checkpoint,
+            is_continuous=is_continuous,
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)

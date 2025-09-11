@@ -1,16 +1,18 @@
 # models/utils.py
 
+import os
 from tensordict import TensorDict
 import torch
 from torch import nn, Tensor
 from torch.optim import Optimizer
 from pathlib import Path
-import yaml
 from typing import Dict, Any, Type, Tuple, Union, List, Optional
 import logging
-from models.metrics import Metric
+from omegaconf import OmegaConf
+from hydra import initialize, compose
 
 # Re-importing locally to make this file self-contained and reflect fix
+from models.metrics import Metric
 from .config_classes import Config
 from .dataloader import (
     QGDatasetBase,
@@ -57,9 +59,45 @@ def average_losses(total_losses: Dict[str, Tensor], n_batches: int) -> Dict[str,
     return {key: (value / n_batches).item() for key, value in total_losses.items()}
 
 
-def load_config(config_path: str) -> Any:
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+def load_config(
+    config_path: Union[str, None], cli_args: Optional[List[str]] = None
+) -> Config:
+    """
+    Load a Hydra config into the structured Config dataclass.
+    Works in notebooks and scripts.
+
+    Args:
+        config_path: Path to the experiment YAML relative to the configs root, e.g., "experiment/128_inc"
+        cli_args: Optional list of CLI-style overrides.
+
+    Returns:
+        Config: Structured and fully resolved configuration.
+    """
+    # Repo root (assumes this file is in models/)
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    configs_root_abs = os.path.join(repo_root, "../configs")
+
+    # Make configs_root relative to current working dir (Hydra requires relative paths)
+    configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
+
+    # Strip .yaml if present
+    if config_path is not None:
+        config_name = os.path.splitext(config_path)[0]
+    else:
+        config_name = ""
+
+    # Initialize Hydra from the relative configs root
+    with initialize(config_path=configs_root, version_base=None):
+        cfg_dict = compose(config_name=config_name, overrides=cli_args or [])
+
+    # Extract 'experiment' if present
+    cfg_dict = cfg_dict.get("experiment", cfg_dict)
+
+    # Merge into structured dataclass
+    cfg: Config = OmegaConf.merge(OmegaConf.structured(Config()), cfg_dict)
+    OmegaConf.resolve(cfg)
+
+    return cfg
 
 
 def get_dataset_class(dataset_type_str: str) -> Type[QGDatasetBase]:
@@ -86,7 +124,9 @@ def get_normalizer(cfg: Config) -> AbstractNormalizer:
         raise ValueError(f"Unknown normalization type: '{norm_type}'")
 
 
-def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
+def load_datasets(
+    cfg: Config, ignore_re: Optional[bool] = False
+) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
     """
     Loads the training, validation, and test datasets based on the provided config.
     """
@@ -105,7 +145,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            # select_re=cfg.data.train_re,
+            select_re=None if ignore_re else cfg.data.train_re,
             **common_args,
         )
         val_dataset = DatasetClass(
@@ -115,7 +155,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            # select_re=cfg.data.val_re,
+            select_re=None if ignore_re else cfg.data.val_re,
             **common_args,
         )
         test_dataset = DatasetClass(
@@ -125,7 +165,7 @@ def load_datasets(cfg: Config) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetB
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            # select_re=cfg.data.test_re,
+            select_re=None if ignore_re else cfg.data.test_re,
             **common_args,
         )
 

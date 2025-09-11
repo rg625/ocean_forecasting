@@ -1,17 +1,70 @@
 # models/metrics_utils.py
 
-from tensordict import TensorDict, stack as stack_tensordict
 import torch
-from typing import Dict, Tuple, List, Optional
+from tensordict import TensorDict, stack as stack_tensordict
+from typing import Protocol, Dict, Tuple, List, Optional, Any
 import logging
-from models.metrics import Metric
+from models.dataloader import QGDatasetBase
 
+# --- Basic Configuration ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Diffusion model-specific normalization constants
+DIFFUSION_MEAN = {"v_x": 0.444969, "v_y": 0.000299, "p": 0.000586, "rey": 550.0}
+DIFFUSION_STD = {"v_x": 0.206128, "v_y": 0.206128, "p": 0.003942, "rey": 262.678467}
+
+
+# =====================================================================================
+# SECTION 1: CORE METRIC & DERIVED VARIABLE COMPUTATION
+# =====================================================================================
+
+
+class RolloutFn(Protocol):
+    def __call__(
+        self,
+        model: Any,
+        input_seq: TensorDict,
+        metadata: dict,
+        rollout_steps: int,
+        dataset: Any = None,
+    ) -> TensorDict: ...
+
+
+def compute_vorticity(
+    v_x: torch.Tensor, v_y: torch.Tensor, chunk_size: int = 16
+) -> torch.Tensor:
+    """
+    Computes vorticity (dv_y/dx - dv_x/dy) from velocity fields in chunks to save memory.
+    Expects input shape like [B, T, H, W] or [T, H, W].
+    """
+    vort_list = []
+    # Add a temporary batch dimension if the input is a single sample
+    is_single_sample = v_x.dim() == 3
+    if is_single_sample:
+        v_x, v_y = v_x.unsqueeze(0), v_y.unsqueeze(0)
+
+    for i in range(0, v_x.size(0), chunk_size):
+        vx_chunk = v_x[i : i + chunk_size]
+        vy_chunk = v_y[i : i + chunk_size]
+
+        # --- FIX ---
+        # Calculate gradients along both spatial dimensions (H, W) at once.
+        # torch.gradient returns gradients in the order of the dims provided.
+        # For dim=(-2, -1), the output is (d/dy, d/dx).
+        vx_dy, vx_dx = torch.gradient(vx_chunk, dim=(-2, -1))
+        vy_dy, vy_dx = torch.gradient(vy_chunk, dim=(-2, -1))
+
+        # Vorticity formula: (d(v_y)/dx - d(v_x)/dy)
+        vort_list.append(vy_dx - vx_dy)
+
+    result = torch.cat(vort_list, dim=0)
+
+    # Remove the temporary batch dimension if it was added
+    return result.squeeze(0) if is_single_sample else result
 
 
 def compute_all_metrics(
@@ -20,55 +73,45 @@ def compute_all_metrics(
     loader,
     variables: List[str],
     custom_min_max: Optional[Dict[str, Tuple[float, float]]] = None,
-    chunk_size: int = 8,  # limit batch size in normalization
+    chunk_size: int = 8,
 ) -> dict:
     """
-    Computes all metrics (L2, SSIM, PSNR, VI) for each variable and for 'all'.
-    Applies manual normalization for custom-computed variables like 'vort'.
+    Computes a suite of metrics (L2, SSIM, PSNR) for specified variables.
 
-    Args:
-        target (TensorDict): Ground truth data (denormalized).
-        prediction (TensorDict): Model predictions (denormalized).
-        loader: The dataset or loader that contains to_unit_range().
-        variables (List[str]): Variables to evaluate.
-        custom_min_max (dict, optional): For manual normalization, e.g. {'vort': (min, max)}
-
-    Returns:
-        dict: Nested structure {metric_mode: {variable_name: (mean, std)}}
+    This function normalizes data to a [0, 1] range before metric calculation,
+    as is standard for image-based metrics like SSIM and PSNR.
     """
-    results: Dict = {}
+    from models.metrics import Metric  # Local import to avoid circular dependency
 
-    # --- Prepare data ---
-    target_norm = {}
-    prediction_norm = {}
+    results: Dict = {mode: {} for mode in Metric.VALID_MODES}
+
+    # --- Prepare Normalized Data ---
+    target_norm, prediction_norm = {}, {}
 
     for var in variables:
         if custom_min_max and var in custom_min_max:
             vmin, vmax = custom_min_max[var]
-            target_norm[var] = (target[var] - vmin) / (vmax - vmin + 1e-8)
-            prediction_norm[var] = (prediction[var] - vmin) / (vmax - vmin + 1e-8)
+            eps = 1e-8
+            target_norm[var] = (target[var] - vmin) / (vmax - vmin + eps)
+            prediction_norm[var] = (prediction[var] - vmin) / (vmax - vmin + eps)
         else:
-            # Process in smaller CPU chunks to avoid GPU OOM
-            target_chunks = []
-            pred_chunks = []
+            # Process in CPU chunks to avoid OOM with large datasets.
+            target_chunks, pred_chunks = [], []
             for start in range(0, target.shape[0], chunk_size):
                 end = start + chunk_size
-                t_chunk = loader.to_unit_range(target[start:end].cpu())[
-                    var
-                ]  # keep on CPU
+                t_chunk = loader.to_unit_range(target[start:end].cpu())[var]
                 p_chunk = loader.to_unit_range(prediction[start:end].cpu())[var]
                 target_chunks.append(t_chunk)
                 pred_chunks.append(p_chunk)
-            target_norm[var] = torch.cat(target_chunks, dim=0)  # .to(DEVICE)
-            prediction_norm[var] = torch.cat(pred_chunks, dim=0)  # .to(DEVICE)
+            target_norm[var] = torch.cat(target_chunks, dim=0)
+            prediction_norm[var] = torch.cat(pred_chunks, dim=0)
 
-    target_td = TensorDict(target_norm, batch_size=target.batch_size)
-    pred_td = TensorDict(prediction_norm, batch_size=prediction.batch_size)
-    target_td = target_td.to(DEVICE)
-    pred_td = pred_td.to(DEVICE)
+    # Move all normalized data to the device for metric computation
+    target_td = TensorDict(target_norm, batch_size=target.batch_size).to(DEVICE)
+    pred_td = TensorDict(prediction_norm, batch_size=prediction.batch_size).to(DEVICE)
 
+    # --- Calculate Metrics ---
     for mode in Metric.VALID_MODES:
-        results[mode] = {}
         for var in variables + ["all"]:
             variable_mode = "all" if var == "all" else "single"
             metric_fn = Metric(
@@ -76,397 +119,293 @@ def compute_all_metrics(
                 variable_mode=variable_mode,
                 variable_name=None if variable_mode == "all" else var,
             )
-            dist = metric_fn(target_td, pred_td)  # [B, T]
+            dist = metric_fn(target_td, pred_td)  # Shape: [B, T]
             results[mode][var] = (dist.mean().item(), dist.std().item())
+
     return results
 
 
-def compute_vorticity(vx, vy, chunk_size=10):
-    vort_list = []
-    for i in range(0, vx.size(0), chunk_size):
-        vx_chunk = vx[i : i + chunk_size]
-        vy_chunk = vy[i : i + chunk_size]
-        vxDx, vxDy = torch.gradient(vx_chunk, dim=(1, 2))
-        vyDx, vyDy = torch.gradient(vy_chunk, dim=(1, 2))
-        vort_list.append(vxDx - vyDy)
-    return torch.cat(vort_list, dim=0)
+# =====================================================================================
+# SECTION 2: DATA TRANSFORMATION UTILITIES (TENSOR <-> TENSORDICT)
+# =====================================================================================
 
 
-def compute_vorticity_diff(vx, vy, chunk_size=10):
-    vort_list = []
-    for i in range(0, vx.size(0), chunk_size):
-        vx_chunk = vx[i : i + chunk_size]
-        vy_chunk = vy[i : i + chunk_size]
-        vxDx, vxDy = torch.gradient(vx_chunk, dim=(1, 2))
-        vyDx, vyDy = torch.gradient(vy_chunk, dim=(1, 2))
-        vort_list.append(vxDy - vyDx)
-    return torch.cat(vort_list, dim=0)
+def tensor_to_tensordict(tensor: torch.Tensor, var_names: List[str]) -> TensorDict:
+    """Converts a tensor [B, T, C, H, W] to a TensorDict."""
+    num_samples, seq_len, channels, H, W = tensor.shape
+    tensor_reshaped = tensor.permute(0, 1, 3, 4, 2)
+    td_fields = {var: tensor_reshaped[..., i] for i, var in enumerate(var_names)}
+    return TensorDict(td_fields, batch_size=[num_samples, seq_len])
 
 
-def run_long_rollout(model, input_seq, rollout_steps):
-    input_seq = input_seq.unsqueeze(0).to(DEVICE)  # [1, T, C, H, W]
+def tensordict_to_tensor(
+    td: TensorDict, var_names: List[str], re_val: Optional[float] = None
+) -> torch.Tensor:
+    """
+    Converts a TensorDict to a tensor, optionally adding Reynolds number as a channel.
+    Handles both batched (4D fields) and non-batched (3D fields) inputs.
+    """
+    first_key = var_names[0]
+    field_shape = td[first_key].shape
+
+    # --- FIX STARTS HERE ---
+    # Check dimensions and add a batch dimension if it's missing
+    if len(field_shape) == 3:  # Input is a single sample with shape [T, H, W]
+        td = td.unsqueeze(0)  # Add a batch dimension -> [1, T, H, W]
+    elif len(field_shape) != 4:  # Input is not the expected [B, T, H, W]
+        raise ValueError(
+            f"Unexpected field shape in TensorDict: {field_shape}. "
+            "Expected 3 dimensions [T, H, W] or 4 dimensions [B, T, H, W]."
+        )
+    # --- FIX ENDS HERE ---
+
+    # Now we can safely unpack the 4D shape
+    B, T, H, W = td[first_key].shape
+
+    stacked = torch.stack([td[var] for var in var_names], dim=-1)  # [B, T, H, W, C]
+
+    if re_val is not None:
+        re_tensor = torch.full(
+            (B, T, H, W, 1), re_val, device=stacked.device, dtype=stacked.dtype
+        )
+        stacked = torch.cat([stacked, re_tensor], dim=-1)
+
+    return stacked.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
+
+
+# =====================================================================================
+# SECTION 3: DIFFUSION MODEL-SPECIFIC NORMALIZATION HELPERS
+# =====================================================================================
+
+
+def normalize_for_diffusion(td: TensorDict) -> TensorDict:
+    """Applies Z-score normalization for the diffusion model."""
+    normalized_td = td.clone()
+    for key, mean in DIFFUSION_MEAN.items():
+        if key in td.keys():
+            normalized_td[key] = (td[key] - mean) / DIFFUSION_STD[key]
+    return normalized_td
+
+
+def denormalize_from_diffusion(td: TensorDict) -> TensorDict:
+    """Reverses the diffusion model's Z-score normalization."""
+    denormalized_td = td.clone()
+    for key, mean in DIFFUSION_MEAN.items():
+        if key in td.keys():
+            denormalized_td[key] = (td[key] * DIFFUSION_STD[key]) + mean
+    return denormalized_td
+
+
+# =====================================================================================
+# SECTION 4: MODEL-SPECIFIC ROLLOUT FUNCTIONS
+# =====================================================================================
+
+
+def run_kae_rollout(
+    model,
+    input_seq: TensorDict,
+    rollout_steps: int,
+    return_xpreds: Optional[bool] = True,
+) -> TensorDict:
+    """Performs a long rollout for a Koopman Autoencoder (KAE) model."""
+    input_seq = input_seq.unsqueeze(0).to(DEVICE)
+    with torch.no_grad():
+        # The model returns a TensorDict containing the full predicted sequence
+        predicted_td = model(input_seq, seq_length=rollout_steps)
+    return (
+        predicted_td.x_preds.squeeze(0) if return_xpreds else predicted_td
+    )  # Remove batch dim
+
+
+def kae_rollout_wrapper(
+    model, input_seq, metadata: dict, rollout_steps: int, dataset=None
+):
+    """
+    Wraps run_kae_rollout to match the signature of run_diffusion_rollout.
+    The `metadata` and `dataset` arguments are ignored for KAE.
+    """
+    return run_kae_rollout(
+        model=model, input_seq=input_seq, rollout_steps=rollout_steps
+    )
+
+
+def run_diffusion_rollout(
+    model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
+) -> TensorDict:
+    """Performs a long rollout for the Diffusion model, handling its unique data requirements."""
+    model.eval()
+    var_names_3c = ["v_x", "v_y", "p"]
 
     with torch.no_grad():
-        out = model(input_seq, seq_length=rollout_steps)
+        # Step 1: Denormalize from dataset format, then re-normalize for diffusion model
+        input_denorm = dataset.denormalize(input_seq.clone())
+        input_renorm = normalize_for_diffusion(input_denorm)
 
-    return out  # [T+rollout_steps, C, H, W]
+        # Step 2: Get and normalize the Reynolds number for conditioning
+        re_val = metadata["Re_input"][0].item()
+        normalized_re = (re_val - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD["rey"]
+
+        # Step 3: Convert to a 4-channel tensor [vx, vy, p, Re] and transpose H, W
+        d = tensordict_to_tensor(input_renorm, var_names_3c, re_val=normalized_re).to(
+            DEVICE
+        )
+        d = d.permute(0, 1, 2, 4, 3)  # [B, T, C, H, W] -> [B, T, C, W, H]
+
+        # Step 4: Autoregressive prediction loop
+        B, T_in, C, H, W = d.shape
+        T_out = T_in + rollout_steps
+        prediction = torch.zeros([B, T_out, C, H, W], device=DEVICE)
+        prediction[:, :T_in] = d
+
+        for i in range(T_in, T_out):
+            # The model uses the 2 previous steps for conditioning
+            cond = torch.cat(
+                [prediction[:, i - 2 : i - 1], prediction[:, i - 1 : i]], dim=2
+            )
+            current_slice = prediction[:, i - 1 : i]
+            result = model(conditioning=cond, data=current_slice)
+
+            # CRITICAL: Overwrite the model's predicted Reynolds number with the true, constant value.
+            result[..., -1, :, :] = normalized_re
+            prediction[:, i : i + 1] = result
+
+    # Step 5: Convert back to TensorDict and denormalize
+    output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)  # Transpose back H, W
+    var_names_4c = var_names_3c + ["rey"]
+    pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
+    pred_td_denorm = denormalize_from_diffusion(pred_td_normalized)
+
+    pred_td_denorm.pop("rey", None)  # Remove temporary Reynolds number field
+    return pred_td_denorm.squeeze(0)  # Remove batch dim
 
 
-def exhaustive_predictions(model, dataset, input_len, output_len):
-    import logging
+# =====================================================================================
+# SECTION 5: UNIFIED EVALUATION ORCHESTRATION
+# =====================================================================================
 
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)  # Make sure your logger prints DEBUG messages
 
-    all_final_targets = []
-    all_final_predictions = []
-
-    logger.debug(
-        f"Starting exhaustive_predictions with input_len={input_len}, output_len={output_len}"
-    )
-    logger.debug(f"Dataset length: {len(dataset)}")
+def generate_predictions_for_dataset(
+    model: torch.nn.Module,
+    dataset: QGDatasetBase,
+    input_len: int,
+    output_len: int,
+    rollout_fn: RolloutFn,
+) -> Tuple[TensorDict, TensorDict]:
+    """
+    Iterates through a dataset to generate model predictions for all samples.
+    """
+    all_targets, all_predictions = [], []
 
     for idx in range(0, len(dataset), (output_len + input_len)):
-        logger.debug(f"\n--- Processing sample index: {idx} ---")
-
         try:
-            # Run rollout
-            input_seq, ground_truth_future, _metadata = dataset[idx]
-            input_seq["obstacle_mask"] = _metadata["obstacle_mask"][0].repeat(
-                *input_seq.batch_size, 1, 1
-            )
-            input_seq["Re_input"] = _metadata["Re_input"][0].repeat(
-                *input_seq.batch_size
-            )
+            input_seq, ground_truth_future, metadata = dataset[idx]
 
-            logger.debug(f"input_seq shape: {input_seq.shape}")
-            logger.debug(f"target_seq shape: {ground_truth_future.shape}")
-
-            # Run rollout with input_seq and rollout_steps = output_len
-            predicted_future_seq = run_long_rollout(
-                model=model, input_seq=input_seq, rollout_steps=output_len
-            ).x_preds
-            logger.debug("Rollout done.")
-
-            # Log raw tensordict info
-            logger.debug(f"Predicted future sequence: {predicted_future_seq}")
-            logger.debug(f"Ground truth future sequence: {ground_truth_future}")
-
-            # Denormalize predictions and ground truth
-            logger.debug("Denormalizing predicted_future_seq")
-            predicted_future_seq = dataset.denormalize(predicted_future_seq)
-            logger.debug(f"Denormalized predicted_future_seq: {predicted_future_seq}")
-
-            logger.debug("Denormalizing ground_truth_future")
-            ground_truth_future = dataset.denormalize(ground_truth_future.unsqueeze(0))
-            logger.debug(f"Denormalized ground_truth_future: {ground_truth_future}")
-
-            # Log batch sizes and shapes
-            pred_batch_size = (
-                predicted_future_seq.batch_size
-                if hasattr(predicted_future_seq, "batch_size")
-                else "N/A"
-            )
-            targ_batch_size = (
-                ground_truth_future.batch_size
-                if hasattr(ground_truth_future, "batch_size")
-                else "N/A"
-            )
-            logger.debug(f"predicted_future_seq batch_size: {pred_batch_size}")
-            logger.debug(f"ground_truth_future batch_size: {targ_batch_size}")
-
-            # Check length consistency
-            pred_len = (
-                pred_batch_size[1]
-                if pred_batch_size and len(pred_batch_size) > 1
-                else None
-            )
-            targ_len = (
-                targ_batch_size[1]
-                if targ_batch_size and len(targ_batch_size) > 1
-                else None
-            )
-            logger.debug(f"pred_len: {pred_len}, targ_len: {targ_len}")
-
-            if pred_len != output_len or targ_len != output_len:
-                logger.warning(
-                    f"Length mismatch at sample {idx}: pred_len={pred_len}, targ_len={targ_len}"
+            # Add required metadata to the input TensorDict for the model.
+            # This is necessary for models that use conditioning (e.g., on Re or obstacles).
+            if "Re_input" in metadata:
+                # The .repeat() call assumes the metadata is for a single sample and adds a
+                # compatible batch dimension if the input_seq has one.
+                input_seq["Re_input"] = metadata["Re_input"][0].repeat(
+                    *input_seq.batch_size
                 )
+            if "obstacle_mask" in metadata:
+                input_seq["obstacle_mask"] = metadata["obstacle_mask"][0].repeat(
+                    *input_seq.batch_size, 1, 1
+                )
+            if rollout_fn is None:
+                raise ValueError("rollout_fn must be provided")
+            predicted_future = rollout_fn(
+                model, input_seq, metadata, output_len, dataset
+            )
 
-            all_final_predictions.append(predicted_future_seq)
-            all_final_targets.append(ground_truth_future)
+            denormalized_gt = dataset.denormalize(ground_truth_future.clone())
+
+            if "diffusion" in rollout_fn.__name__:
+                denormalized_pred = predicted_future
+            else:
+                denormalized_pred = dataset.denormalize(predicted_future.clone())
+
+            all_targets.append(denormalized_gt)
+            all_predictions.append(denormalized_pred)
 
         except Exception as e:
-            logger.error(f"Exception at sample index {idx}: {e}", exc_info=True)
+            logger.error(f"Error processing sample at index {idx}: {e}", exc_info=True)
             continue
 
-    if not all_final_predictions or not all_final_targets:
-        logger.error(
-            "No valid predictions or targets collected. Returning empty TensorDicts."
-        )
+    if not all_predictions:
+        logger.error("No valid predictions were generated. Aborting evaluation.")
         return TensorDict({}, batch_size=[0]), TensorDict({}, batch_size=[0])
 
-    logger.debug("Stacking all predictions and targets now...")
+    stacked_targets = stack_tensordict(all_targets, dim=0)
+    stacked_predictions = stack_tensordict(all_predictions, dim=0)
 
-    try:
-        stacked_targets = stack_tensordict(all_final_targets, dim=0).squeeze()
-        stacked_predictions = stack_tensordict(all_final_predictions, dim=0).squeeze()
-    except Exception as e:
-        logger.error(f"Error while stacking tensordicts: {e}", exc_info=True)
-        raise
-
-    logger.debug(
-        f"Stacked targets batch size: {stacked_targets.batch_size if hasattr(stacked_targets, 'batch_size') else 'N/A'}"
-    )
-    logger.debug(
-        f"Stacked predictions batch size: {stacked_predictions.batch_size if hasattr(stacked_predictions, 'batch_size') else 'N/A'}"
-    )
-
-    logger.info("exhaustive_predictions completed successfully.")
-
+    logger.info(f"Generated predictions for {stacked_targets.shape[0]} samples.")
     return stacked_targets, stacked_predictions
 
 
-def run_full_evaluation_and_report(model, loader, input_len: int, output_len: int):
+def run_evaluation(
+    model: torch.nn.Module,
+    loader,
+    input_len: int,
+    output_len: int,
+    rollout_fn: RolloutFn,
+) -> Dict:
     """
-    Orchestrates the entire evaluation pipeline using configurable
-    input sequence length and output sequence length.
+    Orchestrates the entire evaluation pipeline for a given model.
+    1. Generates predictions for the full dataset.
+    2. Computes derived quantities (e.g., vorticity).
+    3. Calculates and returns all metrics.
     """
-    # --- 1. Generate predictions and ground truths ---
-    batched_targets, batched_predictions = exhaustive_predictions(
+    rollout_name = rollout_fn.__name__ if rollout_fn is not None else "<undefined>"
+    logger.info(
+        f"Starting evaluation for model '{model.__class__.__name__}' using '{rollout_name}'..."
+    )
+
+    # --- 1. Generate Predictions ---
+    targets, predictions = generate_predictions_for_dataset(
         model=model,
         dataset=loader.dataset,
         input_len=input_len,
         output_len=output_len,
+        rollout_fn=rollout_fn,
     )
 
-    if batched_targets.is_empty():
-        logger.error("Prediction generation failed. Cannot proceed.")
-        return
+    if targets.is_empty():
+        logger.error(
+            "Prediction generation failed. Cannot proceed with metric calculation."
+        )
+        return {}
 
-    # --- 2. Post-process variables ---
-    logger.info("Post-processing to compute derived variables...")
+    # --- 2. Compute Derived Variables (e.g., Vorticity) ---
+    logger.info("Computing derived variables...")
     custom_min_max = {}
-    if "v_x" in batched_targets and "v_y" in batched_targets:
-        vort_truth = compute_vorticity_diff(
-            batched_targets["v_x"], batched_targets["v_y"]
-        )
-        batched_targets["vort"] = vort_truth
+    if "v_x" in targets and "v_y" in targets:
+        vort_truth = compute_vorticity(targets["v_x"], targets["v_y"])
+        targets["vort"] = vort_truth
 
-        vort_pred = compute_vorticity_diff(
-            batched_predictions["v_x"].squeeze(), batched_predictions["v_y"].squeeze()
-        )
-        batched_predictions["vort"] = vort_pred
+        vort_pred = compute_vorticity(predictions["v_x"], predictions["v_y"])
+        predictions["vort"] = vort_pred
 
-        global_vort_min = vort_truth.min().item()
-        global_vort_max = vort_truth.max().item()
-        custom_min_max["vort"] = (global_vort_min, global_vort_max)
-
+        # Use the ground truth vorticity to define the normalization range
+        vmin, vmax = vort_truth.min().item(), vort_truth.max().item()
+        custom_min_max["vort"] = (vmin, vmax)
         logger.info(
-            f"Global vorticity range: [{global_vort_min:.4f}, {global_vort_max:.4f}]"
+            f"Global vorticity range for normalization: [{vmin:.4f}, {vmax:.4f}]"
         )
     else:
-        logger.warning("Variables 'v_x' and 'v_y' not found. Skipping vorticity calc.")
+        logger.warning("Velocity fields 'v_x' and 'v_y' not found. Skipping vorticity.")
 
-    # --- 3. Compute metrics ---
-    vars_to_eval = [
-        k
-        for k in batched_predictions.keys()
-        if k in batched_targets
-        and k not in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]
-    ]
-    logger.info(f"Computing metrics for: {vars_to_eval}")
+    # --- 3. Compute Metrics ---
+    vars_to_eval = [k for k in predictions.keys() if k in targets]
+    logger.info(f"Computing metrics for variables: {vars_to_eval}")
 
-    metrics_result = compute_all_metrics(
-        target=batched_targets,
-        prediction=batched_predictions,
+    metrics = compute_all_metrics(
+        target=targets,
+        prediction=predictions,
         loader=loader,
         variables=vars_to_eval,
         custom_min_max=custom_min_max,
     )
-    return metrics_result
 
-
-def metrics_to_latex_table(metrics: dict) -> str:
-    """
-    Convert metrics dict to a LaTeX table showing mean ± std for each variable and mode.
-    Small values are shown in scientific notation for better readability.
-    """
-    all_vars = sorted({v for mode_vals in metrics.values() for v in mode_vals.keys()})
-    all_modes = Metric.VALID_MODES
-
-    header = r"\begin{tabular}{l" + "c" * len(all_modes) + "}\n"
-    header += "Variable & " + " & ".join(all_modes) + r" \\\hline" + "\n"
-
-    def fmt(num):
-        if num != num:  # NaN check
-            return "nan"
-        return f"{num:.2e}"
-
-    rows = []
-    for var in all_vars:
-        row = [var]
-        for mode in all_modes:
-            mean, std = metrics.get(mode, {}).get(var, (float("nan"), float("nan")))
-            row.append(f"{fmt(mean)} ± {fmt(std)}")
-        rows.append(" & ".join(row) + r" \\")
-
-    table = header + "\n".join(rows) + "\n\\end{tabular}"
-    return table
-
-
-def convert_to_tensordict_fields(tensor, var_names):
-    """
-    Convert tensor (num_samples, seq_len, channels, H, W)
-    to TensorDict with fields {var_name: (time, H, W)} where time = num_samples * seq_len
-    """
-    num_samples, seq_len, channels, H, W = tensor.shape
-    # reshape so time dimension is samples * seq_len
-    tensor_reshaped = tensor.permute(
-        0, 1, 3, 4, 2
-    )  # .reshape(num_samples * seq_len, H, W, channels)
-    td_fields = {}
-    for i, var in enumerate(var_names):
-        td_fields[var] = tensor_reshaped[..., i]
-    return TensorDict(td_fields, batch_size=[num_samples, seq_len])
-
-
-def exhaustive_diffusion_rollout(
-    model, loader, device, numSamples=5, sequenceLength=60
-):
-    """
-    Run exhaustive rollout on all dataset samples using the diffusion model.
-    Returns TensorDicts with separate fields per variable.
-    """
-    model.eval()
-    all_gt = []
-    all_pred = []
-
-    with torch.no_grad():
-        for idx, sample in enumerate(loader):
-            # Original batch is 1; repeat for numSamples
-            d = (
-                sample["data"].to(device).repeat(numSamples, 1, 1, 1, 1)
-            )  # (numSamples, seq_len, C, H, W)
-            # print(f"testLoader.shape: {len(testLoader)}")
-            batch_size, seq_len, C, H, W = d.shape
-
-            prediction = torch.zeros(
-                [batch_size, sequenceLength, C, H, W], device=device
-            )
-            inputSteps = 2
-
-            # Copy first inputSteps from data (no prediction)
-            for i in range(inputSteps):
-                prediction[:, i] = d[:, i]
-
-            # Auto-regressive rollout
-            for i in range(inputSteps, sequenceLength):
-                cond = []
-                for j in range(inputSteps, 0, -1):
-                    cond += [prediction[:, i - j : i - (j - 1)]]  # collect input steps
-                cond = torch.concat(cond, dim=2)  # combine along channel dimension
-
-                result = model(
-                    conditioning=cond, data=d[:, i - 1 : i]
-                )  # auto-regressive inference
-                result[:, :, -1:] = d[
-                    :, i : i + 1, -1:
-                ]  # replace simparam prediction with true values
-                prediction[:, i : i + 1] = result
-
-            # Move tensors to CPU for stacking and conversion
-            prediction_cpu = prediction.cpu()
-            gt_cpu = d[:, :sequenceLength, ...].cpu()
-
-            all_pred.append(prediction_cpu)
-            all_gt.append(gt_cpu)
-
-    # Concatenate all samples across dataset dimension (axis=1 because batch size is at dim=1 in your example)
-    all_pred = torch.cat(all_pred, dim=0)  # shape: (numSamples, total_seq_len, C, H, W)
-    all_gt = torch.cat(all_gt, dim=0)
-    var_names = [
-        "v_x",
-        "v_y",
-        "p",
-    ]  # adjust if you have more channels or different order
-
-    # Convert to TensorDict format with shape (time, H, W)
-    pred_td = convert_to_tensordict_fields(all_pred, var_names)
-    gt_td = convert_to_tensordict_fields(all_gt, var_names)
-    return gt_td, pred_td
-
-
-def run_full_eval_and_report_diffusion(
-    model, loader, device, numSamples=5, sequenceLength=60
-):
-    """
-    Orchestrates evaluation pipeline for diffusion model using exhaustive rollout.
-
-    Args:
-        model: Diffusion model.
-        loader: DataLoader with dataset for evaluation.
-        device: torch device (CPU or CUDA).
-        numSamples: Number of diffusion samples per sequence.
-        sequenceLength: Total sequence length to rollout.
-
-    Returns:
-        metrics_result: dict of metrics like L2, SSIM, PSNR, VI.
-    """
-    # --- 1. Generate predictions and ground truths ---
-    logger.info(
-        f"Running exhaustive diffusion rollout: numSamples={numSamples}, sequenceLength={sequenceLength}"
-    )
-    batched_targets, batched_predictions = exhaustive_diffusion_rollout(
-        model=model,
-        loader=loader[0],
-        device=device,
-        numSamples=numSamples,
-        sequenceLength=sequenceLength,
-    )
-
-    if batched_targets.is_empty():
-        logger.error("Diffusion prediction generation failed. Cannot proceed.")
-        return
-
-    # --- 2. Post-process variables ---
-    logger.info("Post-processing to compute derived variables for diffusion model...")
-    custom_min_max = {}
-    if "v_x" in batched_targets and "v_y" in batched_targets:
-        vort_truth = compute_vorticity_diff(
-            batched_targets["v_x"], batched_targets["v_y"]
-        )
-        batched_targets["vort"] = vort_truth
-
-        vort_pred = compute_vorticity_diff(
-            batched_predictions["v_x"].squeeze(), batched_predictions["v_y"].squeeze()
-        )
-        batched_predictions["vort"] = vort_pred.unsqueeze(0)
-
-        global_vort_min = vort_truth.min().item()
-        global_vort_max = vort_truth.max().item()
-        custom_min_max["vort"] = (global_vort_min, global_vort_max)
-
-        logger.info(
-            f"Global vorticity range (diffusion): [{global_vort_min:.4f}, {global_vort_max:.4f}]"
-        )
-    else:
-        logger.warning("Variables 'v_x' and 'v_y' not found. Skipping vorticity calc.")
-
-    # --- 3. Compute metrics ---
-    vars_to_eval = [
-        k
-        for k in batched_predictions.keys()
-        if k in batched_targets
-        and k not in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]
-    ]
-    logger.info(f"Computing metrics for diffusion model: {vars_to_eval}")
-
-    metrics_result = compute_all_metrics(
-        target=batched_targets,
-        prediction=batched_predictions,
-        loader=loader[1],
-        variables=vars_to_eval,
-        custom_min_max=custom_min_max,
-    )
-    return metrics_result
+    logger.info("Evaluation complete.")
+    return metrics
