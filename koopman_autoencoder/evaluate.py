@@ -30,6 +30,9 @@ try:
         kae_rollout_wrapper,
         run_diffusion_rollout,
     )
+    from models.register_models import (
+        MODEL_REGISTRY,
+    )
 except Exception:
     # Provide helpful log if imports fail; allow the script to continue so user sees the message.
     # Many errors here are environment/setup related (PYTHONPATH, missing package).
@@ -611,148 +614,75 @@ def generate_comparison_latex_table_by_re(all_results_by_re: dict) -> str:
     return "\n".join(table)
 
 
-def generate_plots_for_re(models: Dict[str, nn.Module], loader, re_val: int):
+def generate_plots_for_re(
+    models_with_rollout_fns: Dict[str, Dict[str, Any]],
+    loader,
+    re_val: int,
+    initial_sample_index: int = 300,
+    rollout_steps: int = 61,
+):
     """
-    Attempt to generate comparison plots for the given models on a loader.
-    This function is defensive: if we don't have compatible data/predictions, it logs and returns.
+    Generates comparison plots for given models, each with its own rollout function.
+    This function is defensive: if data/predictions are incompatible, it logs and returns.
     """
     logger.info("Attempting to generate plots for Re=%s", re_val)
-    # Try to obtain a single ground-truth sequence from the loader.dataset
+
+    # 1. Obtain a single ground-truth sequence and initial condition
     try:
         ds = getattr(loader, "dataset", None)
-        if ds is None or len(ds) == 0:
-            logger.warning(
-                "No dataset found in loader or dataset is empty. Skipping plotting."
-            )
+        if not ds or len(ds) <= initial_sample_index:
+            logger.warning("Dataset unavailable or too small. Skipping plotting.")
             return
-        # dataset indexing is project-specific. Try common forms
-        sample = None
+
+        # Fetch the data sample required for rollouts
+        input_data, ground_truth, metadata = ds[initial_sample_index, rollout_steps]
+        # Make the initial condition usable by rollout functions
+        initial_condition = {
+            "v_x": input_data["v_x"],
+            "v_y": input_data["v_y"],
+            "obstacle_mask": metadata["obstacle_mask"][0].repeat(
+                input_data["v_x"].shape[0], 1, 1, 1
+            ),
+            "Re_input": metadata["Re_input"][0].repeat(input_data["v_x"].shape[0]),
+        }
+
+    except Exception as e:
+        logger.exception(f"Could not retrieve a data sample for plotting: {e}")
+        return
+
+    # 2. Generate predictions for each model using its specific rollout function
+    all_predictions: Dict[str, Dict[str, torch.Tensor]] = {}
+    for name, entry in models_with_rollout_fns.items():
+        model = entry.get("model")
+        rollout_fn = entry.get("rollout_fn")
+
+        if not model or not rollout_fn:
+            logger.warning(
+                f"Skipping model '{name}' due to missing model or rollout_fn."
+            )
+            continue
+
         try:
-            sample = ds[0]
-        except Exception:
-            # If dataset is an iterable with no __getitem__, try iterating
-            for s in ds:
-                sample = s
-                break
-        if sample is None:
-            logger.warning(
-                "Could not retrieve a sample from dataset; skipping plotting."
-            )
-            return
-        # Expect sample to be dict-like with keys for variables (e.g., 'pres') or tensors
-        # Build a ground_truth dict with whatever reasonable keys we find
-        ground_truth = {}
-        if isinstance(sample, dict):
-            # prefer a target sequence key if present
-            for candidate in ("target", "y", "gt", "sequence", "seq", "pres"):
-                if candidate in sample:
-                    ground_truth[candidate] = sample[candidate]
-            # fallback: if sample contains arrays/tensors, pick first tensor-like
-            if not ground_truth:
-                for k, v in sample.items():
-                    if hasattr(v, "ndim") or (hasattr(v, "shape")):
-                        ground_truth[k] = v
-                        break
-        else:
-            # sample could itself be a tensor
-            if hasattr(sample, "ndim") or hasattr(sample, "shape"):
-                ground_truth = sample
-        if not ground_truth:
-            logger.warning(
-                "No suitable GT tensors found in sample for plotting; skipping."
-            )
-            return
-
-        # Attempt to produce predictions for each model. We don't assume a specific rollout signature.
-        # Try calling model in eval mode on the sample input if possible, else skip predictions.
-        all_predictions: Dict = {}
-        for name, model in models.items():
-            if model is None:
-                continue
             model.eval()
-            # Attempt to find an input tensor in the sample
-            input_tensor = None
-            if isinstance(sample, dict):
-                for k in ("input", "x", "src", "sequence", "seq"):
-                    if k in sample:
-                        input_tensor = sample[k]
-                        break
-                # try to infer input from shapes if not found
-                if input_tensor is None:
-                    # take the first tensor-like item
-                    for v in sample.values():
-                        if hasattr(v, "ndim") or hasattr(v, "shape"):
-                            input_tensor = v
-                            break
-            else:
-                input_tensor = sample
+            with torch.no_grad():
+                # The rollout function is now self-contained
+                prediction = rollout_fn(model, initial_condition)
+                all_predictions[name] = prediction
+            logger.info(f"Successfully generated rollout for model '{name}'.")
+        except Exception:
+            logger.exception(f"Failed to run rollout for model '{name}'.")
+            all_predictions[name] = {}
 
-            # We cannot assume the exact rollout API. If the project provides a
-            # run_kae_rollout/run_diffusion_rollout that accepts (model, loader, ...)
-            # then the proper way is to use those. Here we attempt a very small inference:
-            try:
-                with torch.no_grad():
-                    if input_tensor is None:
-                        # If no usable input, don't attempt inference; mark empty
-                        logger.debug(
-                            f"No input tensor available for model {name}; skipping prediction."
-                        )
-                        all_predictions[name] = {}
-                        continue
-                    # Move input to same device as model
-                    input_on_device = (
-                        input_tensor.to(next(model.parameters()).device)
-                        if hasattr(model, "parameters")
-                        else input_tensor
-                    )
-                    # Try common forward signatures:
-                    # 1) model(input)
-                    try:
-                        out = model(input_on_device)
-                    except TypeError:
-                        # 2) model.forward(input, some_flags)
-                        try:
-                            out = model.forward(input_on_device)
-                        except Exception:
-                            out = None
-                    if out is None:
-                        logger.debug(
-                            f"Model {name} did not produce output for direct forward. Skipping."
-                        )
-                        all_predictions[name] = {}
-                    else:
-                        # store the output in a dict keyed by same keys as ground_truth where possible
-                        # If out is tensor, map to same variable name as ground_truth's first entry
-                        if isinstance(out, torch.Tensor):
-                            first_var = next(iter(ground_truth.keys()))
-                            all_predictions[name] = {first_var: out}
-                        elif isinstance(out, dict):
-                            all_predictions[name] = out
-                        else:
-                            # fallback: store under 'var0' if shape-like
-                            try:
-                                out_t = torch.as_tensor(out)
-                                all_predictions[name] = {
-                                    next(iter(ground_truth.keys())): out_t
-                                }
-                            except Exception:
-                                all_predictions[name] = {}
-                logger.info(
-                    f"Made best-effort prediction with model {name} for plotting."
-                )
-            except Exception:
-                logger.exception(
-                    f"Failed to run model {name} on a sample for plotting. Skipping this model."
-                )
-                all_predictions[name] = {}
+    # 3. Plot the results if we have ground truth and at least one prediction
+    if not all_predictions:
+        logger.warning("No predictions were generated; skipping plot creation.")
+        return
 
-        # If we have at least one prediction and GT, pick the first variable to plot
-        var_to_plot = next(iter(ground_truth.keys()))
+    var_to_plot = next(iter(ground_truth.keys()), None)
+    if var_to_plot:
         generate_comparison_plots(ground_truth, all_predictions, var_to_plot, re_val)
-    except Exception:
-        logger.exception(
-            "Unhandled exception during generate_plots_for_re; skipping plotting."
-        )
+    else:
+        logger.warning("Ground truth dictionary is empty; cannot generate plots.")
 
 
 def main(args):
@@ -779,6 +709,7 @@ def main(args):
 
     # --- Setup Dataloaders ---
     base_kae_cfg = None
+    models_to_plot: Dict = {}
     try:
         # Try to find any kae config if available, but tolerate absence
         kae_entry = next((m for m in evaluations if m.get("model_type") == "kae"), None)
@@ -939,37 +870,68 @@ def main(args):
                 continue
 
         if args.generate_plots:
-            # Attempt to generate simple best-effort plots using the first model found
+            logger.info(f"Preparing models for plotting on split '{split_name}'...")
+            # We need a single metadata sample for the model registry builders
             try:
-                # Build a dict of loaded models (from eval_config) that we can pass to plotting helper
-                loaded_models_for_plot = {}
-                for mcfg in evaluations:
-                    name = mcfg.get("name", "<unnamed>")
-                    # Attempt to load the model but don't block plotting if it fails
-                    try:
-                        if mcfg.get("model_type", "").lower() == "kae":
-                            mdl, _ = load_kae_model(mcfg, DEVICE)
-                            loaded_models_for_plot[name] = mdl
-                        elif mcfg.get("model_type", "").lower() in ("acdm", "acdm_ncn"):
-                            mdl = load_acdm_model(mcfg, DEVICE)
-                            loaded_models_for_plot[name] = mdl
-                    except Exception:
-                        logger.debug(
-                            f"Could not load model for plotting: {name}", exc_info=True
+                _, _, metadata_for_plot = loader.dataset[
+                    300, 61
+                ]  # Use the same index as plotting
+            except Exception as e:
+                logger.error(
+                    f"Cannot get metadata for plotting, skipping plots. Error: {e}"
+                )
+                continue
+
+            for mcfg in evaluations:
+                name = mcfg.get("name")
+                model_type = mcfg.get("model_type", "").lower()
+
+                # Use a display name for keys if available, otherwise use model type
+                key = name if name else model_type
+                if not key:
+                    logger.warning(
+                        "Skipping a model in eval_config with no name or type."
+                    )
+                    continue
+
+                try:
+                    builder_fn = None
+                    if model_type == "kae":
+                        builder_fn = MODEL_REGISTRY.get("KAE")
+                    elif model_type in ("acdm", "acdm_ncn"):
+                        builder_fn = MODEL_REGISTRY.get("Diffusion")
+
+                    if builder_fn:
+                        models_to_plot[name] = builder_fn(
+                            cfg=base_kae_cfg,  # Use the globally loaded KAE config
+                            ckpt_path=mcfg.get("checkpoint_path"),
+                            metadata=metadata_for_plot,
+                            val_dataset=loader.dataset,
+                            device=DEVICE,
+                            rollout_steps=SCRIPT_CONFIG["rollout_steps"],
+                        )
+                        logger.info(f"Successfully built '{name}' for plotting.")
+                    else:
+                        logger.warning(
+                            f"No model builder found in registry for type '{model_type}'."
                         )
 
-                if loaded_models_for_plot:
-                    generate_plots_for_re(
-                        models=loaded_models_for_plot, loader=loader, re_val=re_val
+                except Exception as e:
+                    logger.exception(
+                        f"Failed to build model '{name}' for plotting. Error: {e}"
                     )
-                else:
-                    logger.info(
-                        "No models could be loaded for plotting; skipping plotting step."
-                    )
-            except Exception:
-                logger.exception(
-                    "Plot generation raised an unexpected exception; continuing."
+
+            if models_to_plot:
+                # rollout_steps: int = int(cast(int, SCRIPT_CONFIG["rollout_steps"]))
+                generate_plots_for_re(
+                    models_with_rollout_fns=models_to_plot,
+                    loader=loader,
+                    re_val=re_val,
+                    initial_sample_index=300,  # Standardized index
+                    rollout_steps=rollout_steps,
                 )
+            else:
+                logger.warning("No models were successfully built for plotting.")
 
     # --- Final Report Generation ---
     logger.info(

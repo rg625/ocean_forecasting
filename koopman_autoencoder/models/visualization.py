@@ -9,7 +9,10 @@ from torch import Tensor
 import torch
 import torch.distributed as dist
 import seaborn as sns
-from matplotlib import gridspec
+from typing import List
+
+import matplotlib.gridspec as gridspec
+import matplotlib.patches as patches
 from .metrics_utils import compute_vorticity
 
 plt.style.use("seaborn-v0_8-whitegrid")
@@ -287,55 +290,93 @@ def denormalize_and_visualize(
 
 
 def plot_joint_rollout(
-    gt_dict, pred_dict, diff_pred_dict, variable_name, frame_stride=5, re=1000
+    gt_dict,
+    pred_dict,
+    diff_pred_dict,
+    variable_name,
+    frame_stride=5,
+    re=1000,
+    pad=[0.012, 0.018, 0.015, 0.025],
 ):
     """
     Plots the rollout comparison between ground truth and predicted sequence for a given variable.
-
-    Args:
-        gt_dict (TensorDict): TensorDict of ground truth tensors [T, H, W] per variable.
-        pred_dict (TensorDict): TensorDict of predicted tensors [T, H, W] per variable.
-        variable_name (str): The key for the variable to visualize.
-        frame_stride (int): Step between frames to plot.
+    The first two frames are always included and highlighted with a rectangle spanning
+    all 5 rows (including colorbars) for those two columns.
     """
     # Remove batch dimension if present
-    if gt_dict.batch_dims == 1 and gt_dict.batch_size[0] == 1:
+    if getattr(gt_dict, "batch_dims", 0) == 1 and gt_dict.batch_size[0] == 1:
         gt_dict = gt_dict.squeeze(0)
-    if pred_dict.batch_dims == 1 and pred_dict.batch_size[0] == 1:
+    if getattr(pred_dict, "batch_dims", 0) == 1 and pred_dict.batch_size[0] == 1:
         pred_dict = pred_dict.squeeze(0)
-    if diff_pred_dict.batch_dims == 1 and diff_pred_dict.batch_size[0] == 1:
+    if (
+        getattr(diff_pred_dict, "batch_dims", 0) == 1
+        and diff_pred_dict.batch_size[0] == 1
+    ):
         diff_pred_dict = diff_pred_dict.squeeze(0)
+
     gt = gt_dict[variable_name]  # shape: [T, H, W]
     pred = pred_dict[variable_name]  # shape: [T, H, W]
     diff_pred = diff_pred_dict[variable_name]  # shape: [T, H, W]
 
-    print(f"Stats for variable: {variable_name}")
-    print(
-        f"GT   | Min: {gt.min():.4f}, Max: {gt.max():.4f}, Mean: {gt.mean():.4f}, Std: {gt.std():.4f}"
-    )
-    print(
-        f"Pred | Min: {pred.min():.4f}, Max: {pred.max():.4f}, Mean: {pred.mean():.4f}, Std: {pred.std():.4f}"
-    )
-    print(
-        f"Diff Pred | Min: {diff_pred.min():.4f}, Max: {diff_pred.max():.4f}, Mean: {diff_pred.mean():.4f}, Std: {diff_pred.std():.4f}"
-    )
-
+    # Build indices: always include conditioning frames [0,1], then stride
     num_frames = min(gt.shape[0], pred.shape[0])
-    indices = list(range(0, num_frames, frame_stride))
+    indices = [0, 1] + list(range(2, num_frames, frame_stride))
     num_plots = min(len(indices), 15)
 
     fig = plt.figure(figsize=(1.8 * num_plots, 7.5))
     spec = gridspec.GridSpec(5, num_plots + 1, width_ratios=[1] * num_plots + [0.05])
 
+    # Store all axes (main + colorbar) for each column
+    columns_axes: List = [[] for _ in range(num_plots)]
+
     for i, idx in enumerate(indices[:num_plots]):
+        # Frame label
+        if i == 0:
+            t_label = "t=-1"
+        elif i == 1:
+            t_label = "t=0"
+        else:
+            t_label = f"t={idx-1}"
+
         # ----- Ground Truth -----
         ax_gt = fig.add_subplot(spec[0, i])
         im_gt = ax_gt.imshow(gt[idx].cpu(), cmap=cmap)
         ax_gt.axis("off")
-        plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
-        ax_gt.set_title(f"t={idx}", fontsize=10)
+        cbar = plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
+        columns_axes[i].extend([ax_gt, cbar.ax])
+        ax_gt.set_title(t_label, fontsize=10)
 
-        # Add row label only above the first frame
+        # ----- KAE Prediction -----
+        ax_pred = fig.add_subplot(spec[1, i])
+        im_pred = ax_pred.imshow(pred[idx].cpu(), cmap=cmap)
+        ax_pred.axis("off")
+        cbar = plt.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
+        columns_axes[i].extend([ax_pred, cbar.ax])
+
+        # ----- Diff Prediction -----
+        ax_diff_pred = fig.add_subplot(spec[2, i])
+        im_diff_pred = ax_diff_pred.imshow(diff_pred[idx].cpu(), cmap=cmap)
+        ax_diff_pred.axis("off")
+        cbar = plt.colorbar(im_diff_pred, ax=ax_diff_pred, fraction=0.046, pad=0.04)
+        columns_axes[i].extend([ax_diff_pred, cbar.ax])
+
+        # ----- KAE Error -----
+        err = gt[idx] - pred[idx]
+        ax_err = fig.add_subplot(spec[3, i])
+        im_err = ax_err.imshow(err.cpu(), cmap=cmap)
+        ax_err.axis("off")
+        cbar = plt.colorbar(im_err, ax=ax_err, fraction=0.046, pad=0.04)
+        columns_axes[i].extend([ax_err, cbar.ax])
+
+        # ----- Diff Error -----
+        diff_err = gt[idx] - diff_pred[idx]
+        ax_diff_err = fig.add_subplot(spec[4, i])
+        im_diff_err = ax_diff_err.imshow(diff_err.cpu(), cmap=cmap)
+        ax_diff_err.axis("off")
+        cbar = plt.colorbar(im_diff_err, ax=ax_diff_err, fraction=0.046, pad=0.04)
+        columns_axes[i].extend([ax_diff_err, cbar.ax])
+
+        # Row labels
         if i == 0:
             ax_gt.text(
                 -0.2,
@@ -347,14 +388,6 @@ def plot_joint_rollout(
                 ha="left",
                 va="bottom",
             )
-
-        # ----- KAE Prediction -----
-        ax_pred = fig.add_subplot(spec[1, i])
-        im_pred = ax_pred.imshow(pred[idx].cpu(), cmap=cmap)
-        ax_pred.axis("off")
-        plt.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
-
-        if i == 0:
             ax_pred.text(
                 -0.2,
                 1.1,
@@ -365,14 +398,6 @@ def plot_joint_rollout(
                 ha="left",
                 va="bottom",
             )
-
-        # ----- Diff Prediction -----
-        ax_diff_pred = fig.add_subplot(spec[2, i])
-        im_diff_pred = ax_diff_pred.imshow(diff_pred[idx].cpu(), cmap=cmap)
-        ax_diff_pred.axis("off")
-        plt.colorbar(im_diff_pred, ax=ax_diff_pred, fraction=0.046, pad=0.04)
-
-        if i == 0:
             ax_diff_pred.text(
                 -0.2,
                 1.1,
@@ -383,15 +408,6 @@ def plot_joint_rollout(
                 ha="left",
                 va="bottom",
             )
-
-        # ----- KAE Error -----
-        err = gt[idx] - pred[idx]
-        ax_err = fig.add_subplot(spec[3, i])
-        im_err = ax_err.imshow(err.cpu(), cmap=cmap)
-        ax_err.axis("off")
-        plt.colorbar(im_err, ax=ax_err, fraction=0.046, pad=0.04)
-
-        if i == 0:
             ax_err.text(
                 -0.2,
                 1.1,
@@ -402,15 +418,6 @@ def plot_joint_rollout(
                 ha="left",
                 va="bottom",
             )
-
-        # ----- Diff Error -----
-        diff_err = gt[idx] - diff_pred[idx]
-        ax_diff_err = fig.add_subplot(spec[4, i])
-        im_diff_err = ax_diff_err.imshow(diff_err.cpu(), cmap=cmap)
-        ax_diff_err.axis("off")
-        plt.colorbar(im_diff_err, ax=ax_diff_err, fraction=0.046, pad=0.04)
-
-        if i == 0:
             ax_diff_err.text(
                 -0.2,
                 1.1,
@@ -422,8 +429,35 @@ def plot_joint_rollout(
                 va="bottom",
             )
 
-    fig.suptitle(f"Joint Rollout for Variable: {variable_name}", fontsize=16)
+    # Layout and title
     plt.tight_layout(rect=[0, 0.4, 0.98, 0.95])
+    fig.suptitle(f"Joint Rollout for Variable: {variable_name}", fontsize=16)
+    fig.canvas.draw()
+
+    # ---- Highlight conditioning columns ----
+    pad_left, pad_right, pad_bottom, pad_top = pad
+
+    n_highlight = min(2, num_plots)
+    for col_idx in range(n_highlight):
+        bboxes = [ax.get_position() for ax in columns_axes[col_idx]]
+        x0 = min(b.x0 for b in bboxes) - pad_left
+        x1 = max(b.x1 for b in bboxes) + pad_right
+        y0 = min(b.y0 for b in bboxes) - pad_bottom
+        y1 = max(b.y1 for b in bboxes) + pad_top
+
+        rect = patches.Rectangle(
+            (x0, y0),
+            x1 - x0,
+            y1 - y0,
+            linewidth=3,
+            edgecolor="red",
+            facecolor="none",
+            transform=fig.transFigure,
+            clip_on=False,
+            zorder=10,
+        )
+        fig.add_artist(rect)
+
     plt.show()
 
 
@@ -530,6 +564,7 @@ def plot_model_rollouts(
     variable_name: str,
     ic: torch.Tensor,
     rollout_steps: int,
+    ds: torch.utils.data.Dataset,
     frame_stride: int = 5,
     max_frames: int = 15,
     re: int = 1000,
@@ -576,6 +611,7 @@ def plot_model_rollouts(
 
         with torch.no_grad():
             td_out = rollout_fn(model, ic)
+            td_out = ds.denormalize(td_out) if "acdm" not in name.lower() else td_out
             if variable_name == "vort":
                 td_out["vort"] = compute_vorticity(td_out["v_x"], td_out["v_y"])
             out = (
@@ -601,7 +637,7 @@ def plot_model_rollouts(
     # Top row: Ground truth
     for j, idx in enumerate(indices):
         ax = fig.add_subplot(spec[0, j])
-        im = ax.imshow(gt[idx], cmap=cmap, origin="lower")
+        im = ax.imshow(gt[idx], cmap=cmap)
         ax.axis("off")
         if j == 0:
             ax.text(
@@ -615,13 +651,13 @@ def plot_model_rollouts(
                 va="center",
             )
         ax.set_title(f"t={idx}", fontsize=10)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     # Predictions (grouped together)
     for i, (name, pred) in enumerate(preds.items()):
         for j, idx in enumerate(indices):
             axp = fig.add_subplot(spec[1 + i, j])  # predictions start at row 1
-            imp = axp.imshow(pred[idx], cmap=cmap, origin="lower")
+            imp = axp.imshow(pred[idx], cmap=cmap)
             axp.axis("off")
             if j == 0:
                 axp.text(
@@ -634,7 +670,7 @@ def plot_model_rollouts(
                     ha="right",
                     va="center",
                 )
-            fig.colorbar(imp, ax=axp, fraction=0.046, pad=0.04)
+            plt.colorbar(imp, ax=axp, fraction=0.046, pad=0.04)
 
     # Errors (grouped after predictions)
     for i, (name, pred) in enumerate(preds.items()):
@@ -643,7 +679,7 @@ def plot_model_rollouts(
             axe = fig.add_subplot(
                 spec[1 + num_preds + i, j]
             )  # errors start after predictions
-            ime = axe.imshow(err[idx], cmap=err_cmap, origin="lower")
+            ime = axe.imshow(err[idx], cmap=err_cmap)
             axe.axis("off")
             if j == 0:
                 axe.text(
@@ -656,7 +692,7 @@ def plot_model_rollouts(
                     ha="right",
                     va="center",
                 )
-            fig.colorbar(ime, ax=axe, fraction=0.046, pad=0.04)
+            plt.colorbar(ime, ax=axe, fraction=0.046, pad=0.04)
 
     fig.suptitle(
         f"Rollout Comparison for '{variable_name.upper()}', Re={re}",

@@ -1,10 +1,12 @@
 # models/metrics_utils.py
 
+import numpy as np
 import torch
 from tensordict import TensorDict, stack as stack_tensordict
-from typing import Protocol, Dict, Tuple, List, Optional, Any
+from typing import Protocol, Dict, Tuple, List, Optional, Any, cast
 import logging
 from models.dataloader import QGDatasetBase
+from models.utils import cuda_timer, elapsed_time
 
 # --- Basic Configuration ---
 logging.basicConfig(
@@ -148,7 +150,6 @@ def tensordict_to_tensor(
     first_key = var_names[0]
     field_shape = td[first_key].shape
 
-    # --- FIX STARTS HERE ---
     # Check dimensions and add a batch dimension if it's missing
     if len(field_shape) == 3:  # Input is a single sample with shape [T, H, W]
         td = td.unsqueeze(0)  # Add a batch dimension -> [1, T, H, W]
@@ -157,7 +158,6 @@ def tensordict_to_tensor(
             f"Unexpected field shape in TensorDict: {field_shape}. "
             "Expected 3 dimensions [T, H, W] or 4 dimensions [B, T, H, W]."
         )
-    # --- FIX ENDS HERE ---
 
     # Now we can safely unpack the 4D shape
     B, T, H, W = td[first_key].shape
@@ -201,6 +201,30 @@ def denormalize_from_diffusion(td: TensorDict) -> TensorDict:
 # =====================================================================================
 
 
+def ke_timeseries(tensordict, dx=1.0, dy=1.0, rho=1.0):
+    """
+    Compute total kinetic energy for each time step.
+
+    Args:
+        tensordict: TensorDict with keys "v_x", "v_y"
+        dx, dy: grid spacing in x and y
+        rho: fluid density
+
+    Returns:
+        Tensor of shape [61] with KE at each time step
+    """
+    vx = tensordict["v_x"]  # shape [61, 64, 128]
+    vy = tensordict["v_y"]  # shape [61, 64, 128]
+
+    # kinetic energy density (per cell, per timestep)
+    ke_density = 0.5 * (vx**2 + vy**2)  # [61, 64, 128]
+
+    # integrate over space: sum over spatial dimensions
+    ke_total = rho * torch.sum(ke_density, dim=(1, 2)) * dx * dy  # [61]
+
+    return ke_total
+
+
 def run_kae_rollout(
     model,
     input_seq: TensorDict,
@@ -232,9 +256,15 @@ def kae_rollout_wrapper(
 def run_diffusion_rollout(
     model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
 ) -> TensorDict:
-    """Performs a long rollout for the Diffusion model, handling its unique data requirements."""
+    """Performs a long rollout for the Diffusion model, handling its unique data requirements.
+    Returns predictions and a timings dict with total, average, and per-step timings.
+    """
     model.eval()
+    timings: Dict = {}
     var_names_3c = ["v_x", "v_y", "p"]
+
+    total_start, total_end = cuda_timer()
+    total_start.record()
 
     with torch.no_grad():
         # Step 1: Denormalize from dataset format, then re-normalize for diffusion model
@@ -257,15 +287,24 @@ def run_diffusion_rollout(
         prediction = torch.zeros([B, T_out, C, H, W], device=DEVICE)
         prediction[:, :T_in] = d
 
+        step_times = []
         for i in range(T_in, T_out):
-            # The model uses the 2 previous steps for conditioning
+            start, end = cuda_timer()
+            start.record()
+            torch.cuda.synchronize()
+
+            # Conditioning with previous 2 steps
             cond = torch.cat(
                 [prediction[:, i - 2 : i - 1], prediction[:, i - 1 : i]], dim=2
             )
             current_slice = prediction[:, i - 1 : i]
             result = model(conditioning=cond, data=current_slice)
 
-            # CRITICAL: Overwrite the model's predicted Reynolds number with the true, constant value.
+            end.record()
+            torch.cuda.synchronize()
+            step_times.append(elapsed_time(start, end))
+
+            # Overwrite predicted Reynolds number with constant
             result[..., -1, :, :] = normalized_re
             prediction[:, i : i + 1] = result
 
@@ -274,9 +313,22 @@ def run_diffusion_rollout(
     var_names_4c = var_names_3c + ["rey"]
     pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
     pred_td_denorm = denormalize_from_diffusion(pred_td_normalized)
-
     pred_td_denorm.pop("rey", None)  # Remove temporary Reynolds number field
-    return pred_td_denorm.squeeze(0)  # Remove batch dim
+
+    # Final total timing
+    total_end.record()
+    torch.cuda.synchronize()
+    total_time = elapsed_time(total_start, total_end)
+
+    # Organize timings in the requested order
+    timings = {
+        "total_time_ms": float(total_time),
+        "average_step_time_ms": float(np.mean(step_times)),
+        "all_step_times_ms": [float(t) for t in step_times],
+    }
+    logger.info(f"Diffusion timings: {timings}")
+
+    return cast(TensorDict, pred_td_denorm.squeeze(0))
 
 
 # =====================================================================================
