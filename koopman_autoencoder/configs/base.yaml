@@ -3,7 +3,7 @@
 
 output_dir: ${hydra:runtime.output_dir}
 ckpt: null
-log_epoch: 20
+log_epoch: 10
 
 defaults:
   - data: base

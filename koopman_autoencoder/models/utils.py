@@ -75,7 +75,7 @@ def load_config(
     """
     # Repo root (assumes this file is in models/)
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    configs_root_abs = os.path.join(repo_root, "../configs")
+    configs_root_abs = os.path.join(repo_root, "../../configs")
 
     # Make configs_root relative to current working dir (Hydra requires relative paths)
     configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
