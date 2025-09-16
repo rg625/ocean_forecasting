@@ -421,16 +421,12 @@ class AdaLNMLP(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
 
-        # 1. A small MLP to embed the scalar Reynolds number into a vector space.
         self.re_embedding = nn.Sequential(
             nn.Linear(1, re_embedding_dim),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(re_embedding_dim, re_embedding_dim),
+            nn.Softplus(),
         )
-
-        # 2. A linear layer to project the embedding to the scale and shift parameters.
-        #    We need 2 * latent_dim outputs: one for gamma (scale) and one for beta (shift).
-        self.projection = nn.Linear(re_embedding_dim, latent_dim * 2)
 
     def forward(self, z: Tensor, re: Tensor) -> Tensor:
         """
@@ -446,13 +442,4 @@ class AdaLNMLP(nn.Module):
         # Ensure re has the correct shape (B, 1)
         if re.ndim == 1:
             re = re.unsqueeze(1)
-
-        # Create the embedding from the Reynolds number
-        re_emb = self.re_embedding(re)
-
-        # Predict scale (gamma) and shift (beta) from the embedding
-        gamma, beta = self.projection(re_emb).chunk(2, dim=1)
-
-        # Apply the modulation: z_new = gamma * z + beta
-        # This is a feature-wise affine transformation.
-        return gamma * z + beta
+        return self.re_embedding(re) * z

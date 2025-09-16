@@ -113,6 +113,13 @@ class KoopmanAutoencoder(nn.Module):
         self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
         self.decoder = ConvDecoder(C=self.total_input_channels, **common_args)
 
+        if self.history_encoder is not None and self.encoder is not None:
+            self.fusion_gate = nn.Sequential(
+                nn.Linear(2 * latent_dim, latent_dim // 4),
+                nn.SiLU(),
+                nn.Linear(latent_dim // 4, 1),
+                nn.Sigmoid(),
+            )
         assert isinstance(
             re_embedding_dim, int
         ), f"expected 're_embedding_dim' to be int but got {type(re_embedding_dim)} instead."
@@ -136,24 +143,45 @@ class KoopmanAutoencoder(nn.Module):
         RE_MEAN, RE_STD = 550.0, 261.1513
         return (re_value - RE_MEAN) / RE_STD
 
-    def encode(self, x: TensorDict, re_input: Optional[Tensor] = None) -> Tensor:
-        """Encodes input data (history + present) into the latent space."""
+    def present_encoding(
+        self, x: TensorDict, re_input: Optional[Tensor] = None
+    ) -> Tensor:
+        """Encodes present data into the latent space."""
         present_list = [x[var][:, -1] for var in self.data_variables]
         for i, (var, num_channels) in enumerate(self.data_variables.items()):
             if num_channels == 1 and present_list[i].ndim == 3:
                 present_list[i] = present_list[i].unsqueeze(1)
         stacked_present = torch.cat(present_list, dim=1)
-        latent_present = self.encoder(stacked_present)
+        if re_input is not None:
+            re_input = re_input[..., :-1] if re_input.ndim == 2 else re_input[-1]
+        return self.encoder(stacked_present, re=re_input)
+
+    def history_encoding(
+        self, x: TensorDict, re_input: Optional[Tensor] = None
+    ) -> Tensor:
+        """Encodes history data into the latent space."""
+
+        assert self.history_encoder is not None, "history_encoder was not initialized"
+
+        history_list = [x[var][:, :-1] for var in self.data_variables]
+        for i, (var, num_channels) in enumerate(self.data_variables.items()):
+            if num_channels == 1 and history_list[i].ndim == 4:
+                history_list[i] = history_list[i].unsqueeze(2)
+        stacked_history = torch.cat(history_list, dim=2)
+        re_history = re_input[:, :-1] if re_input is not None else None
+        latent_history = self.history_encoder(stacked_history, re=re_history)
+        return latent_history
+
+    def encode(self, x: TensorDict, re_input: Optional[Tensor] = None) -> Tensor:
+        """Encodes input data (history + present) into the latent space."""
+
+        latent_present = self.present_encoding(x=x, re_input=re_input)
 
         if self.input_frames > 1 and self.history_encoder is not None:
-            history_list = [x[var][:, :-1] for var in self.data_variables]
-            for i, (var, num_channels) in enumerate(self.data_variables.items()):
-                if num_channels == 1 and history_list[i].ndim == 4:
-                    history_list[i] = history_list[i].unsqueeze(2)
-            stacked_history = torch.cat(history_list, dim=2)
-            re_history = re_input[:, :-1] if re_input is not None else None
-            latent_history = self.history_encoder(stacked_history, re=re_history)
-            return latent_history + latent_present
+            latent_history = self.history_encoding(x=x, re_input=re_input)
+            combined = torch.cat([latent_history, latent_present], dim=-1)
+            alpha = self.fusion_gate(combined)
+            return alpha * latent_history + (1 - alpha) * latent_present
         return latent_present
 
     def decode(self, z: Tensor, obstacle_mask: Optional[Tensor] = None) -> TensorDict:

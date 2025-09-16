@@ -14,6 +14,7 @@ from tqdm import tqdm
 import logging
 from typing import Optional, Union, Dict, List
 import wandb
+from einops import rearrange
 
 # Local imports
 from .autoencoder import KoopmanAutoencoder
@@ -134,6 +135,31 @@ class Trainer:
 
         return {key: val.item() for key, val in zip(metrics.keys(), metric_tensor)}
 
+    def true_latent_encoding(self, target_td: TensorDict, model_module):
+
+        original_batch_size = target_td.batch_size
+        B, T = original_batch_size
+        td_to_encode = target_td.select(*model_module.data_variables.keys())
+
+        # 1. Create a new Python dictionary with rearranged (flattened) tensors.
+        squashed_dict = {
+            key: rearrange(tensor.unsqueeze(2), "b t ... -> (b t) ...")
+            for key, tensor in td_to_encode.items()
+        }
+        # 2. Create a new TensorDict with the correct flattened batch size.
+        squashed_td_to_encode = TensorDict(squashed_dict, batch_size=[B * T, 1])
+
+        # Flatten the Reynolds number tensor to match the squashed batch dimension.
+        re_target_flat = None
+        if "Re_target" in target_td:
+            re_target_flat = rearrange(target_td["Re_target"], "b t -> (b t)")
+
+        # Get the "true" latent vectors by encoding the ground-truth future states.
+        true_latents_flat = model_module.present_encoding(
+            squashed_td_to_encode, re_input=re_target_flat
+        )
+        return rearrange(true_latents_flat, "(b t) d -> b t d", b=B)
+
     def _run_one_epoch(self) -> Dict[str, float]:
         """Runs a single training epoch."""
         self.model.train()
@@ -167,6 +193,9 @@ class Trainer:
                     out.z_preds,
                     x_true_recon,
                     target_td,
+                    self.true_latent_encoding(
+                        target_td=target_td, model_module=model_module
+                    ),
                     out.reynolds,
                     out.disturbed_latents,
                 )
@@ -231,13 +260,16 @@ class Trainer:
                     batch_size=input_td.batch_size[0],
                 )
                 loss_dict = self.criterion(
-                    out.x_recon,
-                    out.x_preds,
-                    out.z_preds,
-                    x_true_recon,
-                    target_td,
-                    out.reynolds,
-                    out.disturbed_latents,
+                    x_recon=out.x_recon,
+                    x_preds=out.x_preds,
+                    latent_pred=out.z_preds,
+                    x_true=x_true_recon,
+                    x_future=target_td,
+                    true_latents=self.true_latent_encoding(
+                        target_td=target_td, model_module=model_module
+                    ),
+                    reynolds=out.reynolds,
+                    disturbed_latents=out.disturbed_latents,
                 )
                 detached_losses = {
                     k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)

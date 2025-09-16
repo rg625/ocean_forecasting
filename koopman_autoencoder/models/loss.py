@@ -6,7 +6,7 @@ from tensordict import TensorDict
 from einops import reduce, rearrange, repeat
 from torchvision.transforms import GaussianBlur
 import logging
-from typing import Union, Optional, Dict
+from typing import Union, Optional, Dict, cast
 
 # Configure logging
 logging.basicConfig(
@@ -166,6 +166,12 @@ class KoopmanLoss(nn.Module):
                 f"Weighting type '{self.weighting_type}' not implemented."
             )
 
+    def _true_latents_loss(self, true_latents, latent_pred) -> Dict[str, Tensor]:
+        """Computes time-weighted rollout loss safely over common latent space tensors."""
+        diff = true_latents - latent_pred
+        loss = reduce(diff**2, "b n ... -> b n", "mean")
+        return cast(Dict, reduce(loss, "b n ->", "mean"))
+
     @staticmethod
     def _kl_divergence(latent_pred: Tensor) -> Tensor:
         """Computes KL divergence to a standard normal distribution N(0,1)."""
@@ -213,6 +219,7 @@ class KoopmanLoss(nn.Module):
         latent_pred: Tensor,
         x_true: TensorDict,
         x_future: TensorDict,
+        true_latents: Optional[Tensor],
         reynolds: Optional[Tensor],
         disturbed_latents: Optional[Tensor] = None,
     ) -> Dict[str, Union[Tensor, float, Dict[str, float]]]:
@@ -240,6 +247,13 @@ class KoopmanLoss(nn.Module):
             if pred_loss_dict
             else torch.tensor(0.0, device=latent_pred.device)
         )
+
+        true_latents_loss = torch.tensor(0.0, device=latent_pred.device)
+        if self.beta is not None and true_latents is not None:
+            true_latents_loss = self._true_latents_loss(
+                true_latents=true_latents, latent_pred=latent_pred
+            )
+            latent_loss = true_latents_loss
 
         total_loss = (
             total_recon_loss + self.alpha * total_pred_loss + self.beta * latent_loss

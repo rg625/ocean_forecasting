@@ -9,6 +9,7 @@ from einops import rearrange
 import abc
 from typing import Optional, Literal
 from dataclasses import dataclass
+from torch.nn.utils import spectral_norm
 
 # Note: The following import assumes that 'networks.py' and 'modules.py' are in the same
 # directory and 'networks.py' contains the definitions for ConvEncoder and AdaLNMLP.
@@ -188,7 +189,9 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if self.mode == "linear":
-            self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            self.K = spectral_norm(
+                nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            )
         elif self.mode == "eigen":
             # --- Parameters for Eigendecomposition ---
             # Unconstrained log-magnitude, mapped to <= 0 by softplus for stability.
@@ -202,9 +205,9 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             self.eigenvectors = nn.Parameter(torch.linalg.qr(eigenvectors_init).Q)
         elif self.mode == "mlp":
             self.K = nn.Sequential(
-                nn.Linear(self.latent_dim, self.latent_dim // 8),
-                nn.ReLU(),
-                nn.Linear(self.latent_dim // 8, self.latent_dim),
+                spectral_norm(nn.Linear(self.latent_dim, self.latent_dim // 8)),
+                nn.SiLU(),
+                spectral_norm(nn.Linear(self.latent_dim // 8, self.latent_dim)),
             )
 
     @property
@@ -246,7 +249,6 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
         self, z: Tensor, re: Optional[Tensor] = None, dt: Optional[float] = None
     ) -> Tensor:
         """Evolves the state by one discrete step, ignoring dt."""
-        # --- REVERTED: Conditioning is applied to the INPUT state `z` ---
         z_conditioned = self._apply_conditioning(z, re)
 
         if self.use_checkpoint and self.training:
@@ -267,12 +269,15 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         super().__init__(**kwargs)
         # The network now represents the derivative function, f(z).
         if self.mode == "linear":
-            self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            self.K = spectral_norm(
+                nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            )
+            # self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
         elif self.mode == "mlp":
             self.K = nn.Sequential(
-                nn.Linear(self.latent_dim, self.latent_dim // 8),
+                spectral_norm(nn.Linear(self.latent_dim, self.latent_dim // 8)),
                 nn.SiLU(),
-                nn.Linear(self.latent_dim // 8, self.latent_dim),
+                spectral_norm(nn.Linear(self.latent_dim // 8, self.latent_dim)),
             )
         elif self.mode == "eigen":
             # --- Parameters for Eigendecomposition of the derivative operator ---
@@ -300,7 +305,8 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         Computes the derivative dz/dt = f(z), then applies conditioning.
         This models f(z, Re) where Re acts as a forcing term.
         """
-        dz_dt = self.K(z)
+        dz_dt = self.K(z) - z
+        # dz_dt = self.K(z)
         return self._apply_conditioning(dz_dt, re)
 
     def _forward_eigen(self, z: Tensor, dt: float, re: Optional[Tensor]) -> Tensor:
@@ -368,7 +374,6 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
             return step_fn(z, re)
 
 
-# --- FINAL WRAPPER: The user-facing class ---
 class KoopmanOperator(nn.Module):
     """
     A robust, user-facing wrapper that selects and steps through a Koopman operator.
