@@ -113,13 +113,6 @@ class KoopmanAutoencoder(nn.Module):
         self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
         self.decoder = ConvDecoder(C=self.total_input_channels, **common_args)
 
-        if self.history_encoder is not None and self.encoder is not None:
-            self.fusion_gate = nn.Sequential(
-                nn.Linear(2 * latent_dim, latent_dim // 4),
-                nn.SiLU(),
-                nn.Linear(latent_dim // 4, 1),
-                nn.Sigmoid(),
-            )
         assert isinstance(
             re_embedding_dim, int
         ), f"expected 're_embedding_dim' to be int but got {type(re_embedding_dim)} instead."
@@ -179,9 +172,7 @@ class KoopmanAutoencoder(nn.Module):
 
         if self.input_frames > 1 and self.history_encoder is not None:
             latent_history = self.history_encoding(x=x, re_input=re_input)
-            combined = torch.cat([latent_history, latent_present], dim=-1)
-            alpha = self.fusion_gate(combined)
-            return alpha * latent_history + (1 - alpha) * latent_present
+            return (latent_history + latent_present) / 2
         return latent_present
 
     def decode(self, z: Tensor, obstacle_mask: Optional[Tensor] = None) -> TensorDict:
