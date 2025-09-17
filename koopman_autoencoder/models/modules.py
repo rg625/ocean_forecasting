@@ -269,15 +269,12 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         super().__init__(**kwargs)
         # The network now represents the derivative function, f(z).
         if self.mode == "linear":
-            self.K = spectral_norm(
-                nn.Linear(self.latent_dim, self.latent_dim, bias=False)
-            )
-            # self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
         elif self.mode == "mlp":
             self.K = nn.Sequential(
-                spectral_norm(nn.Linear(self.latent_dim, self.latent_dim // 8)),
+                nn.Linear(self.latent_dim, self.latent_dim // 8),
                 nn.SiLU(),
-                spectral_norm(nn.Linear(self.latent_dim // 8, self.latent_dim)),
+                nn.Linear(self.latent_dim // 8, self.latent_dim),
             )
         elif self.mode == "eigen":
             # --- Parameters for Eigendecomposition of the derivative operator ---
