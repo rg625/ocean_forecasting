@@ -6,7 +6,7 @@ import numpy as np
 import random
 import logging
 from pathlib import Path
-from typing import List, Optional, Union, Dict, Tuple
+from typing import List, Optional, Union, Dict, Tuple, cast
 from abc import ABC, abstractmethod
 from omegaconf import DictConfig, ListConfig
 
@@ -322,6 +322,7 @@ class QGDatasetMultiSim(QGDatasetBase):
     ):
         # Store the keys for dynamic and static variables
         self.select_re = kwargs.pop("select_re", None)
+        self.select_ma = kwargs.pop("select_ma", None)
         self.dynamic_keys = list(variables.keys())
         self.static_keys = list(static_variables.keys()) if static_variables else []
         self.subsample = subsample
@@ -332,6 +333,7 @@ class QGDatasetMultiSim(QGDatasetBase):
         self.master_index: List[Tuple[int, int]] = []
         self.static_tensors: Dict[str, torch.Tensor] = {}
         self.Re: Optional[torch.Tensor] = None
+        self.Ma: Optional[torch.Tensor] = None
         self.obstacle_mask: Optional[torch.Tensor] = None  # Initialize as None
 
         super().__init__(
@@ -360,63 +362,47 @@ class QGDatasetMultiSim(QGDatasetBase):
             self.num_sims = self._data.sizes["sim"]
 
             self.Re = None
+            self.Ma = None
             if "Re" in self._data:
                 self.Re = torch.from_numpy(self._data["Re"].values).float()
+                control_param = "Re"
+                control_tensor = self.Re
+                selection = self.select_re
+            elif "Ma" in self._data:
+                self.Ma = torch.from_numpy(self._data["Ma"].values).float()
+                control_param = "Ma"
+                control_tensor = self.Ma
+                selection = self.select_ma  # <-- add this new attribute
+            else:
+                control_param, control_tensor, selection = None, None, None
+            self.control_param = control_param  # "Re", "Ma", or None
 
-            if self.select_re is not None:
-                if self.Re is None:
+            if selection is not None:
+                if control_tensor is None:
                     raise ValueError(
-                        "select_re was specified, but 'Re' not found in dataset."
+                        f"Selection for {control_param} was specified, but not found in dataset."
                     )
 
-                mask = torch.zeros_like(self.Re, dtype=torch.bool)
-
-                # --- CHANGE: Added ListConfig to the type checks ---
-                if isinstance(self.select_re, (list, tuple, ListConfig)) and all(
-                    isinstance(item, (list, tuple, ListConfig))
-                    for item in self.select_re
-                ):
-                    logger.info(
-                        f"Filtering simulations with Reynolds number in intervals: {self.select_re}"
-                    )
-                    for re_range in self.select_re:
-                        re_min, re_max = re_range
-                        mask |= (self.Re >= re_min) & (self.Re <= re_max)
-
-                elif isinstance(self.select_re, (float, int)):
-                    logger.info(
-                        f"Filtering simulations with Reynolds number == {self.select_re}"
-                    )
-                    mask = self.Re == self.select_re
-
-                elif isinstance(self.select_re, (list, tuple, ListConfig)):
-                    if len(self.select_re) == 2 and all(
-                        isinstance(v, (float, int)) for v in self.select_re
-                    ):
-                        re_min, re_max = self.select_re
-                        logger.info(
-                            f"Filtering simulations with Reynolds number in interval [{re_min}, {re_max}]"
-                        )
-                        mask = (self.Re >= re_min) & (self.Re <= re_max)
-                    else:
-                        logger.info(
-                            f"Filtering simulations with Reynolds numbers in list: {self.select_re}"
-                        )
-                        mask = torch.isin(self.Re, torch.tensor(list(self.select_re)))
-
-                else:
-                    raise ValueError(
-                        f"Invalid type for 'select_re': {type(self.select_re)}"
-                    )
+                mask = self._build_selection_mask(
+                    tensor=control_tensor,
+                    selection=selection,
+                    name=cast(str, control_param),
+                )
 
                 selected_indices = mask.nonzero(as_tuple=True)[0]
                 if len(selected_indices) == 0:
-                    raise ValueError(f"No simulations found with Re={self.select_re}")
+                    raise ValueError(
+                        f"No simulations found with {control_param}={selection}"
+                    )
 
                 logger.info(
-                    f"Filtering {self.num_sims} simulations → {len(selected_indices)} with Re={self.select_re}"
+                    f"Filtering {self.num_sims} simulations → {len(selected_indices)} with {control_param}={selection}"
                 )
-                self.Re = self.Re[selected_indices]
+                if control_param == "Re":
+                    self.Re = self.Re[selected_indices]
+                else:
+                    self.Ma = self.Ma[selected_indices]
+
                 ds = ds.isel(sim=selected_indices)
                 self.num_sims = len(selected_indices)
 
@@ -456,6 +442,42 @@ class QGDatasetMultiSim(QGDatasetBase):
                 {key: torch.max(tensor) for key, tensor in self.raw_data_td.items()},
                 batch_size=[],
             )
+
+    def _build_selection_mask(
+        self, tensor: torch.Tensor, selection, name: str
+    ) -> torch.Tensor:
+        """Helper to build a boolean mask given selection criteria."""
+        mask = torch.zeros_like(tensor, dtype=torch.bool)
+
+        if isinstance(selection, (list, tuple, ListConfig)) and all(
+            isinstance(item, (list, tuple, ListConfig)) for item in selection
+        ):
+            logger.info(f"Filtering simulations with {name} in intervals: {selection}")
+            for rng in selection:
+                vmin, vmax = rng
+                mask |= (tensor >= vmin) & (tensor <= vmax)
+
+        elif isinstance(selection, (float, int)):
+            logger.info(f"Filtering simulations with {name} == {selection}")
+            mask = tensor == selection
+
+        elif isinstance(selection, (list, tuple, ListConfig)):
+            if len(selection) == 2 and all(
+                isinstance(v, (float, int)) for v in selection
+            ):
+                vmin, vmax = selection
+                logger.info(
+                    f"Filtering simulations with {name} in interval [{vmin}, {vmax}]"
+                )
+                mask = (tensor >= vmin) & (tensor <= vmax)
+            else:
+                logger.info(f"Filtering simulations with {name} in list: {selection}")
+                mask = torch.isin(tensor, torch.tensor(list(selection)))
+
+        else:
+            raise ValueError(f"Invalid type for '{name}' selection: {type(selection)}")
+
+        return mask
 
     def denormalize(self, data: TensorDict) -> TensorDict:
         denormalized = self.normalizer.inverse_transform(data)
@@ -548,14 +570,17 @@ class QGDatasetMultiSim(QGDatasetBase):
         ]
 
         # --- Prepare a single metadata dictionary with destination markers ---
-        metadata = {}
-        metadata["obstacle_mask"] = (self.obstacle_mask, "input")
+        metadata: Dict = {
+            "obstacle_mask": (self.obstacle_mask, "input"),
+            "seq_length": (target_length, "target"),
+        }
 
-        # seq_length and Re -> marked for 'target'
-        metadata["seq_length"] = (target_length, "target")
-        if self.Re is not None:
-            metadata["Re_target"] = (self.Re[sim_idx], "target")
-            metadata["Re_input"] = (self.Re[sim_idx], "input")
+        # Handle Re/Ma generically
+        if self.control_param is not None:
+            param_tensor = getattr(self, self.control_param)
+            value = param_tensor[sim_idx]
+            metadata[f"{self.control_param}_target"] = (value, "target")
+            metadata[f"{self.control_param}_input"] = (value, "input")
 
         input_seq = self.apply_mask(input_seq)
         target_seq = self.apply_mask(target_seq)
@@ -593,6 +618,38 @@ class QGDatasetMultiSim(QGDatasetBase):
         ]
 
         logger.info(f"Found {len(subset_indices)} samples for Re = {re_val}.")
+        return Subset(self, subset_indices)
+
+    def create_subset_for_ma(self, ma_val: int) -> Subset:
+        """
+        Creates a torch.utils.data.Subset containing only the samples for a specific Reynolds number.
+        """
+        if self.Ma is None:
+            raise ValueError(
+                "Cannot create subset for Re because 'Re' was not found in the dataset."
+            )
+
+        logger.info(f"Creating a subset for Ma = {ma_val}...")
+
+        # Find which simulation indices correspond to the desired Reynolds number
+        # Note: self.Re is 1D tensor of size [num_sims]
+        sim_indices_with_re = (self.Ma == ma_val).nonzero(as_tuple=True)[0]
+
+        if len(sim_indices_with_re) == 0:
+            logger.warning(
+                f"No simulations found for Ma = {ma_val} in this dataset split. Returning an empty subset."
+            )
+            return Subset(self, [])
+
+        # Find all master_index entries that belong to these simulation indices
+        # self.master_index is a list of (sim_idx, time_idx) tuples
+        subset_indices = [
+            i
+            for i, (sim_idx, _) in enumerate(self.master_index)
+            if sim_idx in sim_indices_with_re
+        ]
+
+        logger.info(f"Found {len(subset_indices)} samples for Re = {ma_val}.")
         return Subset(self, subset_indices)
 
 

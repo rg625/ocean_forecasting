@@ -40,6 +40,10 @@ class DataConfig:
     val_re: Optional[Any] = None
     test_re: Optional[Any] = None
 
+    train_ma: Optional[Any] = None
+    val_ma: Optional[Any] = None
+    test_ma: Optional[Any] = None
+
 
 @dataclass
 class ModelConfig:

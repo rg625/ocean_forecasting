@@ -167,7 +167,6 @@ class KoopmanAutoencoder(nn.Module):
 
     def encode(self, x: TensorDict, re_input: Optional[Tensor] = None) -> Tensor:
         """Encodes input data (history + present) into the latent space."""
-
         latent_present = self.present_encoding(x=x, re_input=re_input)
 
         if self.input_frames > 1 and self.history_encoder is not None:
@@ -224,8 +223,11 @@ class KoopmanAutoencoder(nn.Module):
 
         z_preds_list = []
         z_current = z_init
-        for _ in range(seq_length):
-            z_current = self.koopman_operator(z_current, re=re_for_prediction)
+        for frame in range(seq_length):
+            assert (
+                re_for_prediction is not None
+            ), f"Cannot Index {type(re_for_prediction)} type"
+            z_current = self.koopman_operator(z_current, re=re_for_prediction[:, frame])
             z_preds_list.append(z_current)
         return torch.stack(z_preds_list, dim=1)
 
@@ -249,7 +251,12 @@ class KoopmanAutoencoder(nn.Module):
             x_preds = TensorDict({}, batch_size=[z0.size(0), 0])
         return x_recon, x_preds
 
-    def forward(self, x: TensorDict, seq_length: Union[int, Tensor]) -> KoopmanOutput:
+    def forward(
+        self,
+        x: TensorDict,
+        seq_length: Union[int, Tensor],
+        re_future: Optional[Tensor] = None,
+    ) -> KoopmanOutput:
         """Forward pass: Encode, roll out predictions, and decode."""
         total_start, total_end = cuda_timer()
         total_start.record()
@@ -267,11 +274,20 @@ class KoopmanAutoencoder(nn.Module):
         self.timings["encode"] = elapsed_time(start, end)
 
         # 3. Get conditioning Reynolds number for the prediction phase
-        re_for_prediction = (
+        input_re_for_prediction = (
             re_input[:, -1]
             if (re_input is not None and re_input.ndim == 2)
             else re_input
         )
+        if re_future is not None:
+            assert (
+                len(re_future.squeeze()) == seq_length_int
+            ), f"Expected a corresponding Re/Ma number for each predicted frame, but got {len(re_future.squeeze())} Re/Ma numbers and {seq_length_int} frames to predict"
+            re_for_prediction = self.re_norm(re_future)
+        else:
+            re_for_prediction = input_re_for_prediction.view(-1, 1).repeat(
+                1, seq_length_int
+            )
 
         # 4. Perform autoregressive rollout for the main trajectory
         start, end = cuda_timer()

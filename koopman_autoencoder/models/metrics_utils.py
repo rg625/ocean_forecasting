@@ -272,13 +272,36 @@ def run_diffusion_rollout(
         input_renorm = normalize_for_diffusion(input_denorm)
 
         # Step 2: Get and normalize the Reynolds number for conditioning
-        re_val = metadata["Re_input"][0].item()
+        re_val = metadata["Re_target"][0]
+
+        # Ensure it's a tensor
+        if not torch.is_tensor(re_val):
+            re_val = torch.tensor([re_val], dtype=torch.float32, device=DEVICE)
+
+        # If empty, replace with a constant (e.g., dataset mean) to avoid crash
+        if re_val.numel() == 0:
+            re_val = torch.tensor(
+                [DIFFUSION_MEAN["rey"]], dtype=torch.float32, device=DEVICE
+            )
+
+        # Normalize
         normalized_re = (re_val - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD["rey"]
 
-        # Step 3: Convert to a 4-channel tensor [vx, vy, p, Re] and transpose H, W
-        d = tensordict_to_tensor(input_renorm, var_names_3c, re_val=normalized_re).to(
-            DEVICE
+        # If length < rollout_steps, pad by repeating last value
+        if normalized_re.numel() < rollout_steps:
+            normalized_re = normalized_re.repeat(rollout_steps)
+
+        re_input = (
+            metadata["Re_input"][0].item()
+            if metadata["Re_input"][0].ndim == 0
+            else metadata["Re_input"][0][-1]
         )
+        normalized_re_input = (re_input - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD["rey"]
+
+        # Step 3: Convert to a 4-channel tensor [vx, vy, p, Re] and transpose H, W
+        d = tensordict_to_tensor(
+            input_renorm, var_names_3c, re_val=normalized_re_input
+        ).to(DEVICE)
         d = d.permute(0, 1, 2, 4, 3)  # [B, T, C, H, W] -> [B, T, C, W, H]
 
         # Step 4: Autoregressive prediction loop
@@ -305,7 +328,7 @@ def run_diffusion_rollout(
             step_times.append(elapsed_time(start, end))
 
             # Overwrite predicted Reynolds number with constant
-            result[..., -1, :, :] = normalized_re
+            result[..., -1, :, :] = normalized_re[i - T_in]
             prediction[:, i : i + 1] = result
 
     # Step 5: Convert back to TensorDict and denormalize

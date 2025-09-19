@@ -75,7 +75,7 @@ def load_config(
     """
     # Repo root (assumes this file is in models/)
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    configs_root_abs = os.path.join(repo_root, "../../configs")
+    configs_root_abs = os.path.join(repo_root, "../configs")
 
     # Make configs_root relative to current working dir (Hydra requires relative paths)
     configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
@@ -125,7 +125,7 @@ def get_normalizer(cfg: Config) -> AbstractNormalizer:
 
 
 def load_datasets(
-    cfg: Config, ignore_re: Optional[bool] = False
+    cfg: Config, ignore_re_ma: Optional[bool] = False
 ) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
     """
     Loads the training, validation, and test datasets based on the provided config.
@@ -145,7 +145,8 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=None if ignore_re else cfg.data.train_re,
+            select_re=None if ignore_re_ma else cfg.data.train_re,
+            select_ma=None if ignore_re_ma else cfg.data.train_ma,
             **common_args,
         )
         val_dataset = DatasetClass(
@@ -155,7 +156,8 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=None if ignore_re else cfg.data.val_re,
+            select_re=None if ignore_re_ma else cfg.data.val_re,
+            select_ma=None if ignore_re_ma else cfg.data.val_ma,
             **common_args,
         )
         test_dataset = DatasetClass(
@@ -165,7 +167,8 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=None if ignore_re else cfg.data.test_re,
+            select_re=None if ignore_re_ma else cfg.data.test_re,
+            select_ma=None if ignore_re_ma else cfg.data.test_ma,
             **common_args,
         )
 
