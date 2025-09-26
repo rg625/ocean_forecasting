@@ -182,7 +182,10 @@ def load_datasets(
 
 
 def load_checkpoint(
-    checkpoint_path: str, model: nn.Module, optimizer: Optimizer
+    checkpoint_path: str,
+    model: nn.Module,
+    optimizer: Optimizer,
+    strict: Optional[bool] = True,
 ) -> Tuple[nn.Module, Optimizer, Dict[str, Any], int]:
     """
     Loads a model, optimizer, history, and start epoch from a checkpoint.
@@ -195,7 +198,7 @@ def load_checkpoint(
 
     try:
         checkpoint = torch.load(cp_path, map_location="cpu")
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
         if "optimizer_state_dict" in checkpoint:
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
@@ -279,3 +282,89 @@ def cuda_timer():
 
 def elapsed_time(start, end):
     return start.elapsed_time(end) / 1000.0  # ms → seconds
+
+
+def surgically_transfer_checkpoint(
+    old_checkpoint: Dict[str, Any],
+    new_model: nn.Module,
+    old_model_for_mapping: nn.Module,
+    new_optimizer: Optimizer,
+) -> Tuple[nn.Module, Optimizer]:
+    """
+    Performs model surgery to transfer weights and optimizer state from an old
+    checkpoint to a new model architecture.
+
+    This utility is essential when you've modified a model's architecture (e.g.,
+    added a new layer) and want to resume training without starting from scratch.
+    It preserves both the learned weights and the optimizer's momentum for all
+    unchanged layers.
+
+    Args:
+        old_checkpoint (Dict[str, Any]): The loaded state dictionary from the old checkpoint file.
+        new_model (nn.Module): An instance of the *new* model architecture.
+        old_model_for_mapping (nn.Module): An instance of the *old* model architecture,
+                                           used only to create a stable parameter name map.
+        new_optimizer (optim.Optimizer): An instance of the optimizer configured for the *new* model.
+
+    Returns:
+        Tuple[nn.Module, optim.Optimizer]: The new model and optimizer, now populated
+                                           with the transferred states.
+
+    Raises:
+        KeyError: If the checkpoint is missing required keys.
+    """
+    # 1. Transfer Model Weights
+    # ---------------------------
+    logger.info("Step 1: Transferring model weights...")
+    old_model_state = old_checkpoint["model_state_dict"]
+
+    # Load weights with strict=False to accommodate architectural changes
+    missing_keys, unexpected_keys = new_model.load_state_dict(
+        old_model_state, strict=False
+    )
+
+    if unexpected_keys:
+        logger.warning(f"Unexpected keys in state_dict: {unexpected_keys}")
+    if not missing_keys:
+        logger.warning("No missing keys found. Model architectures may be identical.")
+    else:
+        logger.info(f"Successfully ignored missing keys (new layers): {missing_keys}")
+
+    # 2. Reconstruct Optimizer State
+    # --------------------------------
+    logger.info("Step 2: Reconstructing optimizer state...")
+
+    # Load the old model's state to create a name-based map
+    old_model_for_mapping.load_state_dict(old_model_state)
+
+    # Create mappings from parameter names to the actual parameter objects
+    # This is more robust than using id(p), as names are consistent.
+    old_params_by_name = {
+        name: p for name, p in old_model_for_mapping.named_parameters()
+    }
+    new_params_by_name = {name: p for name, p in new_model.named_parameters()}
+
+    old_optimizer_state = old_checkpoint["optimizer_state_dict"]["state"]
+    new_optimizer_state = {}
+
+    num_transferred = 0
+    # Iterate over the old parameters to find their state
+    for name, old_param in old_params_by_name.items():
+        if name in new_params_by_name:
+            # If the parameter still exists, find its state in the old optimizer
+            if old_param in old_optimizer_state:
+                # Get the corresponding parameter in the new model
+                new_param = new_params_by_name[name]
+                # Assign the old state to the new parameter
+                new_optimizer_state[new_param] = old_optimizer_state[old_param]
+                num_transferred += 1
+
+    total_new_params = len(list(new_model.parameters()))
+    logger.info(
+        f"Transferred optimizer state for {num_transferred} / {total_new_params} parameters."
+    )
+
+    # Update the new optimizer's state dictionary
+    new_optimizer.state = new_optimizer_state
+
+    return new_model, new_optimizer

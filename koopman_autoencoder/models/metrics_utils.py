@@ -224,6 +224,13 @@ def ke_timeseries(tensordict, dx=1.0, dy=1.0, rho=1.0):
 
     return ke_total
 
+    # vx = torch.mean(tensordict["v_x"], dim=(1, 2))  # shape [T, 64, 128]
+    # vy = torch.mean(tensordict["v_y"], dim=(1, 2))  # shape [T, 64, 128]
+
+    # # kinetic energy density (per cell, per timestep)
+    # ke_density = 0.5 * (vx**2 + vy**2)  # [T, 64, 128]
+    # return rho * ke_density * dx * dy  # [61]
+
 
 def run_kae_rollout(
     model,

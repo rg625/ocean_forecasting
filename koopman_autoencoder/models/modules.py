@@ -66,7 +66,7 @@ class HistoryEncoder(ConvEncoder):
     ):
         # Initialize the parent ConvEncoder with all provided arguments.
         super().__init__(latent_dim=latent_dim, **kwargs)
-
+        self.norm = nn.LayerNorm(latent_dim)
         # Initialize positional encoding if requested.
         self.pos_enc = (
             PositionalEncoding(latent_dim, max_len=transformer_config.max_len)
@@ -122,7 +122,7 @@ class HistoryEncoder(ConvEncoder):
         # Un-flatten the features back into a sequence for the Transformer.
         # Shape: (B*T, D) -> (B, T, D)
         features = rearrange(features, "(b t) d -> b t d", t=T)
-
+        features = self.norm(features)
         # Add positional information and process with the Transformer.
         features = self.pos_enc(features)
         out = self.transformer(features)

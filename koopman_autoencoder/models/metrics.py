@@ -21,12 +21,12 @@ class Metric(nn.Module):
     Computes image-based comparison metrics between two sets of video data
     represented as TensorDicts.
 
-    This module supports standard image metrics (L2, SSIM, PSNR, VI) via
+    This module supports standard image metrics (L1, L2, SSIM, PSNR, VI) via
     scikit-image and learned perceptual metrics (LSIM_BASE) using
     the official DistanceModel wrapper.
 
     Args:
-        mode (str): The metric to compute. Valid modes are "L2", "SSIM",
+        mode (str): The metric to compute. Valid modes are "L1", "L2", "SSIM",
                     "PSNR", "VI", "LSIM_BASE".
         variable_mode (str): How to select variables from the TensorDict.
                              Must be 'single' or 'all'. Defaults to "single".
@@ -44,8 +44,8 @@ class Metric(nn.Module):
                     required arguments are missing.
     """
 
-    VALID_MODES = ["L2", "SSIM", "PSNR", "VI", "LSIM"]
-    SKIMAGE_MODES = ["L2", "SSIM", "PSNR", "VI"]
+    VALID_MODES = ["L1", "L2", "SSIM", "PSNR", "VI", "LSIM"]
+    SKIMAGE_MODES = ["L1", "L2", "SSIM", "PSNR", "VI"]
     LSIM_MODES = ["LSIM"]
 
     def __init__(
@@ -156,6 +156,9 @@ class Metric(nn.Module):
                 if self.mode == "L2":
                     # MSE on [0, 1] range is already normalized
                     distances[i, j] = sk_metrics.mean_squared_error(r, o)
+                elif self.mode == "L1":
+                    # MAE on [0, 1] range is already normalized
+                    distances[i, j] = np.mean(np.abs(r - o))
                 elif self.mode == "SSIM":
                     # SSIM is a similarity [0, 1], so 1 - SSIM is a distance
                     distances[i, j] = 1.0 - sk_metrics.structural_similarity(
