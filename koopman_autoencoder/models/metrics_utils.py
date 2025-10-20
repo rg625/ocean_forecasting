@@ -5,7 +5,7 @@ import torch
 from tensordict import TensorDict, stack as stack_tensordict
 from typing import Protocol, Dict, Tuple, List, Optional, Any, cast
 import logging
-from models.dataloader import QGDatasetBase
+from models.dataloader import QGDatasetBase, AbstractNormalizer
 from models.utils import cuda_timer, elapsed_time
 
 # --- Basic Configuration ---
@@ -114,15 +114,24 @@ def compute_all_metrics(
 
     # --- Calculate Metrics ---
     for mode in Metric.VALID_MODES:
-        for var in variables + ["all"]:
-            variable_mode = "all" if var == "all" else "single"
+        mode_results = {}
+        for var in variables:
+            variable_mode = "all"  # existing code
             metric_fn = Metric(
-                mode=mode,
-                variable_mode=variable_mode,
-                variable_name=None if variable_mode == "all" else var,
+                mode=mode, variable_mode=variable_mode, variable_name=None
             )
             dist = metric_fn(target_td, pred_td)  # Shape: [B, T]
-            results[mode][var] = (dist.mean().item(), dist.std().item())
+            mode_results[var] = (dist.mean().item(), dist.std().item())
+
+        # Compute average across all variables
+        all_means = [v[0] for v in mode_results.values()]
+        all_stds = [v[1] for v in mode_results.values()]
+        if all_means:
+            mean_all = float(np.mean(all_means))
+            std_all = float(np.sqrt(np.mean(np.array(all_stds) ** 2)))
+            mode_results["all"] = (mean_all, std_all)
+
+        results[mode] = mode_results
 
     return results
 
@@ -266,6 +275,7 @@ def run_diffusion_rollout(
     """Performs a long rollout for the Diffusion model, handling its unique data requirements.
     Returns predictions and a timings dict with total, average, and per-step timings.
     """
+    model.training = False
     model.eval()
     timings: Dict = {}
     var_names_3c = ["v_x", "v_y", "p"]
@@ -275,7 +285,11 @@ def run_diffusion_rollout(
 
     with torch.no_grad():
         # Step 1: Denormalize from dataset format, then re-normalize for diffusion model
-        input_denorm = dataset.denormalize(input_seq.clone())
+        input_denorm = (
+            dataset.denormalize(input_seq.clone())
+            if isinstance(input_seq, TensorDict)
+            else input_seq
+        )
         input_renorm = normalize_for_diffusion(input_denorm)
 
         # Step 2: Get and normalize the Reynolds number for conditioning
@@ -460,22 +474,22 @@ def run_evaluation(
 
     # --- 2. Compute Derived Variables (e.g., Vorticity) ---
     logger.info("Computing derived variables...")
-    custom_min_max = {}
-    if "v_x" in targets and "v_y" in targets:
-        vort_truth = compute_vorticity(targets["v_x"], targets["v_y"])
-        targets["vort"] = vort_truth
+    custom_min_max: Dict = {}
+    # if "v_x" in targets and "v_y" in targets:
+    #     vort_truth = compute_vorticity(targets["v_x"], targets["v_y"])
+    #     targets["vort"] = vort_truth
 
-        vort_pred = compute_vorticity(predictions["v_x"], predictions["v_y"])
-        predictions["vort"] = vort_pred
+    #     vort_pred = compute_vorticity(predictions["v_x"], predictions["v_y"])
+    #     predictions["vort"] = vort_pred
 
-        # Use the ground truth vorticity to define the normalization range
-        vmin, vmax = vort_truth.min().item(), vort_truth.max().item()
-        custom_min_max["vort"] = (vmin, vmax)
-        logger.info(
-            f"Global vorticity range for normalization: [{vmin:.4f}, {vmax:.4f}]"
-        )
-    else:
-        logger.warning("Velocity fields 'v_x' and 'v_y' not found. Skipping vorticity.")
+    #     # Use the ground truth vorticity to define the normalization range
+    #     vmin, vmax = vort_truth.min().item(), vort_truth.max().item()
+    #     custom_min_max["vort"] = (vmin, vmax)
+    #     logger.info(
+    #         f"Global vorticity range for normalization: [{vmin:.4f}, {vmax:.4f}]"
+    #     )
+    # else:
+    #     logger.warning("Velocity fields 'v_x' and 'v_y' not found. Skipping vorticity.")
 
     # --- 3. Compute Metrics ---
     vars_to_eval = [k for k in predictions.keys() if k in targets]
@@ -490,4 +504,108 @@ def run_evaluation(
     )
 
     logger.info("Evaluation complete.")
+    return metrics
+
+
+def compute_stability_metrics(
+    ground_truth_td: TensorDict,
+    predicted_td: TensorDict,
+    diff_td: TensorDict = None,
+    normalizer: AbstractNormalizer = None,
+    ttd_threshold: float = 1e2,
+):
+    """
+    Compute stability metrics: TTD, slope error, and energy drift for predictions and optional diff baseline.
+
+    Returns
+    -------
+    metrics : dict
+        Dictionary with keys:
+        - ttd_pred, ttd_diff
+        - slope_error_pred, slope_error_diff
+        - energy_drift_pred, energy_drift_diff
+    """
+
+    def tensordict_to_numpy(td):
+        fields = []
+        for key in td.keys():
+            t = td.get(key)
+            if torch.is_tensor(t):
+                t = t.detach().cpu().numpy()
+            fields.append(t)
+        return np.stack(fields, axis=-1)
+
+    # Apply normalizer if provided
+    if normalizer:
+        ground_truth_td = normalizer.transform(ground_truth_td)
+        predicted_td = normalizer.transform(predicted_td)
+        if diff_td is not None:
+            diff_td = normalizer.transform(diff_td)
+
+    gt_np = tensordict_to_numpy(ground_truth_td)
+    pred_np = tensordict_to_numpy(predicted_td)
+    diff_np = tensordict_to_numpy(diff_td) if diff_td is not None else None
+
+    time_steps = gt_np.shape[0]
+
+    # Channel indices for velocity
+    v_x_idx = 1
+    v_y_idx = 2
+
+    # Initial energy (ground truth)
+    v_x_gt = gt_np[..., v_x_idx]
+    v_y_gt = gt_np[..., v_y_idx]
+    E0 = 0.5 * np.sum(v_x_gt[0] ** 2 + v_y_gt[0] ** 2)
+
+    # Initialize storage
+    slope_error_pred: list = []
+    slope_error_diff: list = []
+    energy_drift_pred: list = []
+    energy_drift_diff: list = []
+    diverged_pred = np.zeros(time_steps)
+    diverged_diff = np.zeros(time_steps) if diff_np is not None else None
+
+    for t in range(time_steps):
+        # Slope errors
+        error_pred = np.linalg.norm(pred_np[t] - gt_np[t])
+        slope_error_pred.append(error_pred)
+        if error_pred > ttd_threshold or np.isnan(error_pred):
+            diverged_pred[t] = 1
+
+        if diff_np is not None:
+            assert diverged_diff is not None  # tell mypy it's ndarray here
+            error_diff = np.linalg.norm(diff_np[t] - gt_np[t])
+            slope_error_diff.append(error_diff)
+            if error_diff > ttd_threshold or np.isnan(error_diff):
+                diverged_diff[t] = 1  # now mypy is happy
+
+        # Energy drift
+        v_x_pred = pred_np[t, ..., v_x_idx]
+        v_y_pred = pred_np[t, ..., v_y_idx]
+        E_pred = 0.5 * np.sum(v_x_pred**2 + v_y_pred**2)
+        energy_drift_pred.append(abs(E_pred - E0))
+
+        if diff_np is not None:
+            v_x_diff = diff_np[t, ..., v_x_idx]
+            v_y_diff = diff_np[t, ..., v_y_idx]
+            E_diff = 0.5 * np.sum(v_x_diff**2 + v_y_diff**2)
+            energy_drift_diff.append(abs(E_diff - E0))
+
+    # Compute TTD
+    ttd_pred = np.argmax(diverged_pred) if np.any(diverged_pred) else time_steps
+    if diff_np is not None:
+        assert diverged_diff is not None
+        ttd_diff = np.argmax(diverged_diff) if np.any(diverged_diff) else time_steps
+    else:
+        ttd_diff = None
+
+    metrics = {
+        "ttd_pred": ttd_pred,
+        "ttd_diff": ttd_diff,
+        "slope_error_pred": slope_error_pred,
+        "slope_error_diff": slope_error_diff,
+        "energy_drift_pred": energy_drift_pred,
+        "energy_drift_diff": energy_drift_diff,
+    }
+
     return metrics

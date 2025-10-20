@@ -6,7 +6,8 @@ from tensordict import TensorDict
 from einops import reduce, rearrange, repeat
 from torchvision.transforms import GaussianBlur
 import logging
-from typing import Union, Optional, Dict, cast
+from typing import Union, Optional, Dict, cast, Literal, Callable
+from torchmetrics.functional import structural_similarity_index_measure as ssim
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +29,7 @@ class KoopmanLoss(nn.Module):
 
     Args:
         alpha (float): Weight for the prediction (rollout) loss term.
-        beta (float): Weight for the latent KL divergence loss term.
+        beta (float): Weight for the latent divergence loss term.
         re_weight (float): Weight for the optional Reynolds number prediction loss.
         stability_weight (float): Weight for regularizing the latent space to be invariant to small perturbations.
         weighting_type (str): Rollout weighting schedule ('cosine' or 'uniform').
@@ -40,6 +41,9 @@ class KoopmanLoss(nn.Module):
         self,
         alpha: float = 1.0,
         beta: float = 0.1,
+        loss_type: Literal["l1", "l2"] = "l2",
+        ssim_weight: Optional[float] = None,
+        to_unit_range: Optional[Callable] = None,
         re_weight: Optional[float] = None,
         stability_weight: Optional[float] = None,
         weighting_type: str = "cosine",
@@ -48,16 +52,24 @@ class KoopmanLoss(nn.Module):
         super().__init__()
 
         if not (alpha >= 0 and beta >= 0):
-            raise ValueError("Basic loss weights (alpha, beta) must be non-negative.")
+            raise ValueError("Core loss weights (alpha, beta) must be non-negative.")
+        if ssim_weight is not None and ssim_weight > 0 and to_unit_range is None:
+            raise ValueError(
+                "A `to_unit_range` method must be provided if `ssim_weight` is used."
+            )
         if weighting_type not in ["cosine", "uniform"]:
             raise ValueError(f"Unknown weighting type: {weighting_type}")
+        if loss_type not in ["l1", "l2"]:
+            raise ValueError(f"Unknown loss_type: {loss_type}. Must be 'l1' or 'l2'.")
 
         self.alpha = alpha
         self.beta = beta
+        self.loss_type = loss_type
+        self.ssim_weight = ssim_weight if ssim_weight is not None else 0.0
+        self.to_unit_range = to_unit_range
         self.re_weight = re_weight
         self.stability_weight = stability_weight
         self.weighting_type = weighting_type
-
         self.gaussian_blur = self._init_blur_transform(sigma_blur)
 
     @staticmethod
@@ -95,7 +107,7 @@ class KoopmanLoss(nn.Module):
         self, pred: TensorDict, true: TensorDict
     ) -> Dict[str, Tensor]:
         """Computes reconstruction loss safely over common keys."""
-        loss_dict = {}
+        mse_dict: Dict = {}
         common_keys = pred.keys() & true.keys()
         if not common_keys:
             logger.warning(
@@ -103,11 +115,25 @@ class KoopmanLoss(nn.Module):
             )
             return {}
 
+        if self.ssim_weight is not None and self.to_unit_range is not None:
+            pred_ssim = self.to_unit_range(pred)
+            true_ssim = self.to_unit_range(true)
+
         for key in common_keys:
-            diff = pred[key] - self._blur(true[key])
-            loss_per_sample = reduce(diff**2, "b ... -> b", "mean")
-            loss_dict[key] = reduce(loss_per_sample, "b ->", "mean")
-        return loss_dict
+
+            if self.loss_type == "l1":
+                diff = torch.abs(pred[key] - self._blur(true[key]))
+            else:  # 'l2'
+                diff = (pred[key] - self._blur(true[key])) ** 2
+
+            mse_per_sample = reduce(diff, "b ... -> b", "mean")
+            mse_dict[key] = reduce(
+                mse_per_sample, "b ->", "mean"
+            ) + self.ssim_weight * self._ssim_loss(
+                pred_ssim[key], self._blur(true_ssim[key])
+            )
+
+        return mse_dict
 
     def _compute_rollout_loss(
         self, pred: TensorDict, true: TensorDict
@@ -173,20 +199,6 @@ class KoopmanLoss(nn.Module):
         return cast(Dict, reduce(loss, "b n ->", "mean"))
 
     @staticmethod
-    def _kl_divergence(latent_pred: Tensor) -> Tensor:
-        """Computes KL divergence to a standard normal distribution N(0,1)."""
-        mu = reduce(latent_pred, "b t d -> b t", "mean")
-        # Add epsilon for numerical stability before taking the log
-        var = (
-            reduce((latent_pred - mu.unsqueeze(-1)) ** 2, "b t d -> b t", "mean") + 1e-6
-        )
-        # Correctly average over time for each batch sample -> (B,)
-        kl_per_sample = -0.5 * reduce(
-            1.0 + torch.log(var) - mu**2 - var, "b t -> b", "mean"
-        )
-        return reduce(kl_per_sample, "b ->", "mean")
-
-    @staticmethod
     def stability_loss(latent_pred: Tensor, disturbed_latents: Tensor) -> Tensor:
         """Computes stability regularization for latent vectors."""
         assert (
@@ -195,6 +207,20 @@ class KoopmanLoss(nn.Module):
         diff = latent_pred - disturbed_latents
         per_step_loss = reduce(diff**2, "b ... -> b", "mean")
         return reduce(per_step_loss, "b ->", "mean")
+
+    def _ssim_loss(self, pred: Tensor, target: Tensor) -> Tensor:
+        """
+        Computes SSIM loss = 1 - SSIM, averaged over batch.
+        Accepts [B, H, W], [B, C, H, W], or [B, T, C, H, W].
+        """
+        if pred.ndim == 3:  # [B, H, W]
+            pred = pred.unsqueeze(1)  # -> [B, 1, H, W]
+            target = target.unsqueeze(1)
+        elif pred.ndim == 5:  # [B, T, C, H, W] → flatten time into batch for SSIM
+            B, T, C, H, W = pred.shape
+            pred = pred.reshape(B * T, C, H, W)
+            target = target.reshape(B * T, C, H, W)
+        return 1.0 - ssim(pred, target, data_range=1.0)
 
     def _compute_re_loss(self, pred_re: Tensor, true_re: Tensor) -> Tensor:
         """Computes MSE loss for the Reynolds number prediction."""
@@ -222,6 +248,8 @@ class KoopmanLoss(nn.Module):
         true_latents: Optional[Tensor],
         reynolds: Optional[Tensor],
         disturbed_latents: Optional[Tensor] = None,
+        dz_dt: Optional[Tensor] = None,
+        dz_dt_disturbed: Optional[Tensor] = None,
     ) -> Dict[str, Union[Tensor, float, Dict[str, float]]]:
         """
         Computes the full, weighted Koopman loss.
@@ -235,7 +263,7 @@ class KoopmanLoss(nn.Module):
             x_recon, x_true.select(*x_recon.keys())
         )
         pred_loss_dict = self._compute_rollout_loss(x_preds, x_future)
-        latent_loss = self._kl_divergence(latent_pred)
+        # latent_loss = self._kl_divergence(latent_pred)
         # --- Sum Weighted Losses for Backpropagation ---
         total_recon_loss = (
             sum(recon_loss_dict.values())
@@ -248,12 +276,11 @@ class KoopmanLoss(nn.Module):
             else torch.tensor(0.0, device=latent_pred.device)
         )
 
-        true_latents_loss = torch.tensor(0.0, device=latent_pred.device)
+        latent_loss = torch.tensor(0.0, device=latent_pred.device)
         if self.beta is not None and true_latents is not None:
-            true_latents_loss = self._true_latents_loss(
+            latent_loss = self._true_latents_loss(
                 true_latents=true_latents, latent_pred=latent_pred
             )
-            latent_loss = true_latents_loss
 
         total_loss = (
             total_recon_loss + self.alpha * total_pred_loss + self.beta * latent_loss
@@ -276,7 +303,7 @@ class KoopmanLoss(nn.Module):
             ), f"stability_weight must be positive, but got {self.stability_weight}"
             stability_loss = self.stability_loss(
                 latent_pred=latent_pred, disturbed_latents=disturbed_latents
-            )
+            ) + self._true_latents_loss(true_latents=dz_dt, latent_pred=dz_dt_disturbed)
             # Note: Using .detach() here means the stability loss acts as a regularizer
             # but gradients do not flow back through this specific calculation.
             total_loss = total_loss + self.stability_weight * stability_loss.detach()

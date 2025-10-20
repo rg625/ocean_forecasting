@@ -9,7 +9,7 @@ from torch import Tensor
 import torch
 import torch.distributed as dist
 import seaborn as sns
-from typing import List
+from typing import List, Optional, Dict
 
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
@@ -290,13 +290,14 @@ def denormalize_and_visualize(
 
 
 def plot_joint_rollout(
-    gt_dict,
-    pred_dict,
-    diff_pred_dict,
-    variable_name,
-    frame_stride=5,
-    re=1000,
-    pad=[0.012, 0.018, 0.015, 0.025],
+    gt_dict: TensorDict,
+    pred_dict: TensorDict,
+    diff_pred_dict: TensorDict,
+    variable_name: str,
+    frame_stride: int = 5,
+    re: int = 1000,
+    pad: Optional[List] = [0.012, 0.018, 0.015, 0.025],
+    highlight: Optional[bool] = False,
 ):
     """
     Plots the rollout comparison between ground truth and predicted sequence for a given variable.
@@ -320,7 +321,7 @@ def plot_joint_rollout(
 
     # Build indices: always include conditioning frames [0,1], then stride
     num_frames = min(gt.shape[0], pred.shape[0])
-    indices = [0, 1] + list(range(2, num_frames, frame_stride))
+    indices = [0] + list(range(1, num_frames, frame_stride))
     num_plots = min(len(indices), 15)
 
     fig = plt.figure(figsize=(1.8 * num_plots, 7.5))
@@ -332,11 +333,9 @@ def plot_joint_rollout(
     for i, idx in enumerate(indices[:num_plots]):
         # Frame label
         if i == 0:
-            t_label = "t=-1"
-        elif i == 1:
             t_label = "t=0"
         else:
-            t_label = f"t={idx-1}"
+            t_label = f"t={idx}"
 
         # ----- Ground Truth -----
         ax_gt = fig.add_subplot(spec[0, i])
@@ -435,28 +434,29 @@ def plot_joint_rollout(
     fig.canvas.draw()
 
     # ---- Highlight conditioning columns ----
-    pad_left, pad_right, pad_bottom, pad_top = pad
+    if highlight and pad is not None:
+        pad_left, pad_right, pad_bottom, pad_top = pad
 
-    n_highlight = min(2, num_plots)
-    for col_idx in range(n_highlight):
-        bboxes = [ax.get_position() for ax in columns_axes[col_idx]]
-        x0 = min(b.x0 for b in bboxes) - pad_left
-        x1 = max(b.x1 for b in bboxes) + pad_right
-        y0 = min(b.y0 for b in bboxes) - pad_bottom
-        y1 = max(b.y1 for b in bboxes) + pad_top
+        n_highlight = min(1, num_plots)
+        for col_idx in range(n_highlight):
+            bboxes = [ax.get_position() for ax in columns_axes[col_idx]]
+            x0 = min(b.x0 for b in bboxes) - pad_left
+            x1 = max(b.x1 for b in bboxes) + pad_right
+            y0 = min(b.y0 for b in bboxes) - pad_bottom
+            y1 = max(b.y1 for b in bboxes) + pad_top
 
-        rect = patches.Rectangle(
-            (x0, y0),
-            x1 - x0,
-            y1 - y0,
-            linewidth=3,
-            edgecolor="red",
-            facecolor="none",
-            transform=fig.transFigure,
-            clip_on=False,
-            zorder=10,
-        )
-        fig.add_artist(rect)
+            rect = patches.Rectangle(
+                (x0, y0),
+                x1 - x0,
+                y1 - y0,
+                linewidth=3,
+                edgecolor="red",
+                facecolor="none",
+                transform=fig.transFigure,
+                clip_on=False,
+                zorder=10,
+            )
+            fig.add_artist(rect)
 
     plt.show()
 
@@ -700,4 +700,64 @@ def plot_model_rollouts(
         y=0.98,
     )
     # plt.tight_layout(rect=[0.05, 0, 0.95, 0.92])  # leave space for suptitle
+    plt.show()
+
+
+def plot_stability_metrics(metrics: Dict, ttd_threshold: float = 0.1):
+    time_steps = len(metrics["slope_error_pred"])
+    time = np.arange(time_steps)
+
+    plt.figure(figsize=(12, 5))
+
+    # Slope Error
+    plt.subplot(1, 2, 1)
+    plt.plot(time, metrics["slope_error_pred"], label="Pred Error")
+    if metrics["slope_error_diff"] is not None:
+        plt.plot(time, metrics["slope_error_diff"], label="Diff Error")
+    if ttd_threshold is not None:
+        plt.axhline(ttd_threshold, color="red", linestyle="--", label="TTD Threshold")
+    plt.axvline(
+        metrics["ttd_pred"],
+        color="orange",
+        linestyle=":",
+        label=f'TTD Pred = {metrics["ttd_pred"]}',
+    )
+    if metrics["ttd_diff"] is not None:
+        plt.axvline(
+            metrics["ttd_diff"],
+            color="green",
+            linestyle=":",
+            label=f'TTD Diff = {metrics["ttd_diff"]}',
+        )
+    plt.xlabel("Timestep")
+    plt.ylabel("L2 Error")
+    plt.title("Slope Error Over Time")
+    plt.legend()
+    plt.grid(True)
+
+    # Energy Drift
+    plt.subplot(1, 2, 2)
+    plt.plot(time, metrics["energy_drift_pred"], label="Pred Energy Drift")
+    if metrics["energy_drift_diff"] is not None:
+        plt.plot(time, metrics["energy_drift_diff"], label="Diff Energy Drift")
+    plt.axvline(
+        metrics["ttd_pred"],
+        color="orange",
+        linestyle=":",
+        label=f'TTD Pred = {metrics["ttd_pred"]}',
+    )
+    if metrics["ttd_diff"] is not None:
+        plt.axvline(
+            metrics["ttd_diff"],
+            color="green",
+            linestyle=":",
+            label=f'TTD Diff = {metrics["ttd_diff"]}',
+        )
+    plt.xlabel("Timestep")
+    plt.ylabel("Energy Drift")
+    plt.title("Energy Drift Over Time")
+    plt.legend()
+    plt.grid(True)
+
+    plt.tight_layout()
     plt.show()

@@ -230,6 +230,8 @@ class Metric(nn.Module):
                 continue
             if ref_tensor.shape != other_tensor.shape:
                 logger.info(f"Skipping variable '{var}': shapes mismatch.")
+                logger.info(f"ref_tensor.shape: {ref_tensor.shape}")
+                logger.info(f"other_tensor.shape: {other_tensor.shape}")
                 continue
             # Ensure tensor is 4D [B, T, H, W], assuming grayscale if 3D [B, T, D]
             if ref_tensor.ndim == 3:

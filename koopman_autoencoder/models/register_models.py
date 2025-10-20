@@ -43,7 +43,9 @@ def build_kae(cfg, ckpt_path, metadata, val_dataset, device="cuda", rollout_step
 
     optimizer = optim.Adam(model.parameters(), lr=cfg.lr_scheduler.lr)
     if ckpt_path:
-        model, _, _, _ = load_checkpoint(ckpt_path, model=model, optimizer=optimizer)
+        model, _, _, _ = load_checkpoint(
+            ckpt_path, model=model, optimizer=optimizer, strict=True
+        )
     model.eval()
 
     # ✅ Bind rollout_steps now

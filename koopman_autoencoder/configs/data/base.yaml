@@ -4,9 +4,9 @@
 # data:
 dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
 data_dir: "./data"
-train_file: "/rds-d6/user/rg625/hpc-work/ocean_forecasting/acdm/128_inc/train.nc"
-val_file: "/rds-d6/user/rg625/hpc-work/ocean_forecasting/acdm/128_inc/val.nc"
-test_file: "/rds-d6/user/rg625/hpc-work/ocean_forecasting/acdm/128_inc/test.nc"
+train_file: "acdm/128_inc/train.nc"
+val_file: "acdm/128_inc/val.nc"
+test_file: "acdm/128_inc/test.nc"
 input_sequence_length: 2
 max_sequence_length: 8
 subsample: 2

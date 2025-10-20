@@ -83,6 +83,8 @@ class TrainingConfig:
 class LossConfig:
     alpha: float = MISSING
     beta: float = MISSING
+    loss_type: str = MISSING
+    ssim_weight: Optional[float] = None
     re_weight: Optional[float] = None
     stability_weight: Optional[float] = None
     weighting_type: str = MISSING

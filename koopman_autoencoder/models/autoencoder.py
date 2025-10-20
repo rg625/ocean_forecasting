@@ -38,6 +38,8 @@ class KoopmanOutput:
     z_preds: Tensor
     reynolds: Optional[Tensor]
     disturbed_latents: Optional[Tensor]
+    dz_dt: Optional[Tensor] = None
+    dz_dt_disturbed: Optional[Tensor] = None
 
 
 class KoopmanAutoencoder(nn.Module):
@@ -301,10 +303,14 @@ class KoopmanAutoencoder(nn.Module):
 
         # 5. Perform rollout for the disturbed trajectory if needed for stability loss
         disturbed_latents = None
+        dz_dt, dz_dt_disturbed = None, None
         if z0_disturbed is not None:
             disturbed_latents = self._autoregressive_rollout(
                 z0_disturbed, seq_length_int, re_for_prediction
             )
+            # We detach to ensure this loss only affects the operator, not the encoder
+            dz_dt = self.koopman_operator.dynamics.K(z0.detach())
+            dz_dt_disturbed = self.koopman_operator.dynamics.K(z0_disturbed.detach())
 
         # 6. Decode outputs for the main trajectory
         start, end = cuda_timer()
@@ -334,4 +340,6 @@ class KoopmanAutoencoder(nn.Module):
             z_preds=z_preds_stacked,
             reynolds=reynolds,
             disturbed_latents=disturbed_latents,
+            dz_dt=dz_dt,
+            dz_dt_disturbed=dz_dt_disturbed,
         )

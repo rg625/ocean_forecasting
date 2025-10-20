@@ -498,22 +498,55 @@ class QGDatasetMultiSim(QGDatasetBase):
         # This now calls the modified QGDatasetBase._prepare_data
         super()._prepare_data()
 
+    # def _compute_master_index(self):
+    #     """Creates a master list of all possible (sim, start_index) pairs."""
+    #     self.master_index = []
+    #     num_timesteps = self._data.sizes["t"]
+    #     # The total number of timesteps needed for one full sample
+    #     required_length = (
+    #         self.input_sequence_length + self.max_sequence_length
+    #     ) * self.subsample
+
+    #     # The number of valid starting positions
+    #     valid_starts = num_timesteps - required_length + 1
+    #     if valid_starts > 0:
+    #         for sim_idx in range(self.num_sims):
+    #             self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
+    #     if not self.master_index:
+    #         logger.warning("No valid sequences generated from dataset.")
+
     def _compute_master_index(self):
-        """Creates a master list of all possible (sim, start_index) pairs."""
+        """
+        Creates a master list of all possible (sim, start_index) pairs,
+        generating non-overlapping sequences based on the full sequence length.
+        """
         self.master_index = []
         num_timesteps = self._data.sizes["t"]
-        # The total number of timesteps needed for one full sample
-        required_length = (
+
+        # The step size (or stride) between the start of consecutive non-overlapping sequences.
+        # This is the span of indices in the original data that one full sequence
+        # (input + max_target) covers.
+        stride = (
             self.input_sequence_length + self.max_sequence_length
         ) * self.subsample
 
-        # The number of valid starting positions
-        valid_starts = num_timesteps - required_length + 1
-        if valid_starts > 0:
+        # The last possible starting index must allow for a full sequence to be drawn.
+        # A sequence starting at `s` will need data up to index `s + stride - 1`.
+        # So, `s + stride - 1 < num_timesteps` => `s <= num_timesteps - stride`.
+        last_possible_start = num_timesteps - stride
+
+        if last_possible_start >= 0:
             for sim_idx in range(self.num_sims):
-                self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
+                # Iterate with a step size equal to the stride for non-overlapping samples.
+                # The `stop` for range is exclusive, so we use `last_possible_start + 1`.
+                start_indices = range(0, last_possible_start + 1, stride)
+                self.master_index.extend([(sim_idx, i) for i in start_indices])
+
         if not self.master_index:
-            logger.warning("No valid sequences generated from dataset.")
+            logger.warning(
+                "No valid non-overlapping sequences generated from the dataset. "
+                "Check sequence lengths, subsampling rate, and total timesteps."
+            )
 
     def __len__(self) -> int:
         return len(self.master_index)

@@ -38,6 +38,71 @@ class AdaLNConv(nn.Module):
         )
 
 
+class AdaIN(nn.Module):
+    """Adaptive Instance Normalization with clamped modulation."""
+
+    def __init__(self, style_dim: int, channels: int):
+        super().__init__()
+        self.norm = nn.InstanceNorm2d(channels, affine=False)
+        self.style_proj = nn.Linear(style_dim, 2 * channels)
+
+    def forward(self, x, w):
+        x = self.norm(x)
+        style = self.style_proj(w).view(w.shape[0], -1, 1, 1)
+        gamma, beta = style.chunk(2, dim=1)
+        gamma = torch.tanh(gamma)  # stabilize modulation
+        beta = torch.tanh(beta)
+        return (1 + gamma) * x + beta
+
+
+class StyledConv(nn.Module):
+    """Styled convolution block with optional upsampling."""
+
+    def __init__(
+        self, C_in, C_out, style_dim, kernel_size=3, upsample=False, use_deconv=True
+    ):
+        super().__init__()
+        self.upsample = None
+        if upsample:
+            if use_deconv:
+                # Learnable upsampling (sharper)
+                self.upsample = nn.ConvTranspose2d(
+                    C_in, C_in, kernel_size=4, stride=2, padding=1
+                )
+            else:
+                # Smooth upsampling
+                self.upsample = nn.Upsample(
+                    scale_factor=2, mode="bilinear", align_corners=False
+                )
+        self.conv = nn.Conv2d(
+            C_in, C_out, kernel_size, padding=kernel_size // 2, padding_mode="circular"
+        )
+        self.mod = AdaIN(style_dim, C_out)
+        self.act = nn.LeakyReLU(0.2)
+
+    def forward(self, x, w):
+        if self.upsample is not None:
+            x = self.upsample(x)
+        x = self.conv(x)
+        x = self.mod(x, w)
+        x = self.act(x)
+        return x
+
+
+class MappingNetwork(nn.Module):
+    """Latent-to-style mapping network."""
+
+    def __init__(self, latent_dim, style_dim, n_layers=4):
+        super().__init__()
+        layers = [nn.Linear(latent_dim, style_dim), nn.LeakyReLU(0.2)]
+        for _ in range(n_layers - 1):
+            layers.extend([nn.Linear(style_dim, style_dim), nn.LeakyReLU(0.2)])
+        self.mapping = nn.Sequential(*layers)
+
+    def forward(self, z):
+        return self.mapping(z)
+
+
 class ConvBlock(nn.Module):
     def __init__(
         self,
@@ -369,7 +434,45 @@ class ConvEncoder(BaseEncoderDecoder):
         )
 
 
-class ConvDecoder(BaseEncoderDecoder):
+# class ConvDecoder(BaseEncoderDecoder):
+#     def __init__(
+#         self,
+#         C: int,
+#         H: int,
+#         W: int,
+#         latent_dim: int,
+#         hiddens: List[int],
+#         block_size: int = 1,
+#         kernel_size: Union[int, Tuple[int, int]] = 3,
+#         use_checkpoint: bool = False,
+#         re_embedding_dim: Optional[int] = None,
+#         re_cond_type: Optional[str] = None,
+#         **conv_kwargs,
+#     ):
+#         super().__init__(
+#             C,
+#             H,
+#             W,
+#             latent_dim,
+#             hiddens,
+#             block_size=block_size,
+#             kernel_size=kernel_size,
+#             is_encoder=False,
+#             use_checkpoint=use_checkpoint,
+#             re_embedding_dim=re_embedding_dim,
+#             re_cond_type=re_cond_type,
+#             **conv_kwargs,
+#         )
+
+
+# --- Final decoder ---
+class ConvDecoder(nn.Module):
+    """
+    Drop-in replacement for the original ConvDecoder.
+    Uses a StyleGAN-inspired upsampling decoder with AdaIN modulation.
+    Arguments and output are identical to the original.
+    """
+
     def __init__(
         self,
         C: int,
@@ -378,26 +481,66 @@ class ConvDecoder(BaseEncoderDecoder):
         latent_dim: int,
         hiddens: List[int],
         block_size: int = 1,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
+        kernel_size: int = 3,
         use_checkpoint: bool = False,
         re_embedding_dim: Optional[int] = None,
         re_cond_type: Optional[str] = None,
+        style_dim: Optional[int] = None,
         **conv_kwargs,
     ):
-        super().__init__(
-            C,
-            H,
-            W,
-            latent_dim,
-            hiddens,
-            block_size=block_size,
-            kernel_size=kernel_size,
-            is_encoder=False,
-            use_checkpoint=use_checkpoint,
-            re_embedding_dim=re_embedding_dim,
-            re_cond_type=re_cond_type,
-            **conv_kwargs,
+        super().__init__()
+
+        n_downsamples = len(hiddens)
+        H_start = H // (2**n_downsamples)
+        W_start = W // (2**n_downsamples)
+        style_dim = style_dim or latent_dim
+
+        self.mapping = MappingNetwork(latent_dim, style_dim)
+        self.initial_constant = nn.Parameter(
+            torch.randn(1, hiddens[-1], H_start, W_start)
         )
+
+        # Build styled upsampling blocks
+        layers = []
+        C_in = hiddens[-1]
+        layers.append(StyledConv(C_in, C_in, style_dim, upsample=False))
+        for i, C_out in enumerate(reversed(hiddens)):
+            use_deconv = (
+                i < len(hiddens) - 2
+            )  # early deconv for sharpness, last bilinear
+            layers.append(
+                StyledConv(C_in, C_out, style_dim, upsample=True, use_deconv=use_deconv)
+            )
+            C_in = C_out
+
+        self.conv_layers = nn.ModuleList(layers)
+        self.to_rgb = nn.Conv2d(hiddens[0], C, kernel_size=1, padding=0)
+
+        # Optional conditioning
+        self.re_conditioner = None
+        self.re_cond_type: Optional[str]  # <-- allow None
+        if re_cond_type is not None:
+            if re_embedding_dim is None:
+                raise ValueError(
+                    "'re_embedding_dim' must be provided for conditioning."
+                )
+            self.re_conditioner = AdaLNMLP(latent_dim, re_embedding_dim)
+            self.re_cond_type = re_cond_type
+        else:
+            self.re_cond_type = None
+
+    def forward(self, z, re: Optional[torch.Tensor] = None):
+        # Reynolds conditioning (if enabled)
+        if self.re_conditioner is not None and re is not None:
+            z = self.re_conditioner(z, re)
+
+        w = self.mapping(z)
+        x = self.initial_constant.expand(z.shape[0], -1, -1, -1)
+
+        for layer in self.conv_layers:
+            x = layer(x, w)
+
+        return self.to_rgb(x)
 
 
 class AdaLNMLP(nn.Module):

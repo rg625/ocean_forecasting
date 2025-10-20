@@ -171,6 +171,9 @@ class Trainer:
             input_td, target_td = input_td.to(self.device), target_td.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
 
+            # noise_level = 0.05 # This is a new hyperparameter
+            # noisy_input_td = input_td.apply(lambda t: t + torch.randn_like(t) * noise_level)
+
             with autocast(
                 device_type=str(self.device),
                 dtype=self.autocast_dtype,
@@ -198,6 +201,8 @@ class Trainer:
                     ),
                     out.reynolds,
                     out.disturbed_latents,
+                    out.dz_dt,
+                    out.dz_dt_disturbed,
                 )
             if not torch.isfinite(loss_dict["total_loss"]).all():
                 logger.critical(
@@ -270,6 +275,8 @@ class Trainer:
                     ),
                     reynolds=out.reynolds,
                     disturbed_latents=out.disturbed_latents,
+                    dz_dt=out.dz_dt,
+                    dz_dt_disturbed=out.dz_dt_disturbed,
                 )
                 detached_losses = {
                     k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)

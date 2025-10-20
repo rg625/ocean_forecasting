@@ -122,6 +122,7 @@ def main(cfg: DictConfig):
             is_continuous=cfg.model.is_continuous,
             **cfg.model.conv_kwargs,
         ).to(device)
+        # model = torch.compile(model)
         if is_ddp:
             model = DDP(model, device_ids=[local_rank])
     except Exception as e:
@@ -131,7 +132,10 @@ def main(cfg: DictConfig):
     # --- Optimizer, Loss, Metrics, and Scheduler ---
     model_params = model.module.parameters() if is_ddp else model.parameters()
     optimizer = optim.Adam(model_params, lr=cfg.lr_scheduler.lr)
-    criterion = KoopmanLoss(**cfg.loss)
+    if cfg.loss.get("ssim_weight", None) is not None:
+        criterion = KoopmanLoss(to_unit_range=train_dataset.to_unit_range, **cfg.loss)
+    else:
+        criterion = KoopmanLoss(**cfg.loss)
     eval_metrics = Metric(**cfg.metric) if cfg.metric else None
     # --- Learning Rate Scheduler and Checkpoint Loading ---
     logger.info("Initializing learning rate scheduler...")
@@ -154,7 +158,9 @@ def main(cfg: DictConfig):
         model_to_load: nn.Module = model.module if isinstance(model, DDP) else model
         assert isinstance(model_to_load, nn.Module)
         try:
-            _, _, _, start_epoch = load_checkpoint(cfg.ckpt, model_to_load, optimizer)
+            _, _, _, start_epoch = load_checkpoint(
+                cfg.ckpt, model_to_load, optimizer, strict=True
+            )
             # Ensure optimizer state is on the correct device after loading
             for state in optimizer.state.values():
                 for k, v in state.items():

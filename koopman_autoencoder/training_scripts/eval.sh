@@ -17,7 +17,7 @@ fi
 echo "Starting model evaluation using config: $EVAL_CONFIG_FILE"
 echo "---"
 
-python "$PYTHON_SCRIPT" --eval_config "$EVAL_CONFIG_FILE" --generate_plots
+python "$PYTHON_SCRIPT" --eval_config "$EVAL_CONFIG_FILE" # --generate_plots
 
 echo "---"
 echo "Evaluation script finished."

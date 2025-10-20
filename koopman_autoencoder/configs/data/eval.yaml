@@ -5,6 +5,7 @@ dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
 data_dir: "./data"
 train_file: "acdm/128_inc/train.nc"
 val_file: "acdm/128_inc/val.nc"
+# val_file: "acdm/128_reyVar/sim_0.nc"
 test_file: "acdm/128_inc/test.nc"
 input_sequence_length: 2
 max_sequence_length: 8
