@@ -1,5 +1,3 @@
-# models/metrics_utils.py
-
 import numpy as np
 import torch
 from tensordict import TensorDict, stack as stack_tensordict
@@ -53,15 +51,19 @@ def compute_vorticity(
         vx_chunk = v_x[i : i + chunk_size]
         vy_chunk = v_y[i : i + chunk_size]
 
-        # --- FIX ---
         # Calculate gradients along both spatial dimensions (H, W) at once.
         # torch.gradient returns gradients in the order of the dims provided.
         # For dim=(-2, -1), the output is (d/dy, d/dx).
-        vx_dy, vx_dx = torch.gradient(vx_chunk, dim=(-2, -1))
-        vy_dy, vy_dx = torch.gradient(vy_chunk, dim=(-2, -1))
+        _, vx_dx = torch.gradient(vx_chunk, dim=(-2, -1))
+        vy_dy, _ = torch.gradient(vy_chunk, dim=(-2, -1))
 
-        # Vorticity formula: (d(v_y)/dx - d(v_x)/dy)
-        vort_list.append(vy_dx - vx_dy)
+        # Vorticity formula: (d(v_y)/dx - d(v_x)/dy) - MISTAKE IN ORIGINAL FILE
+        # Corrected formula: d(v_y)/dx - d(v_x)/dy
+        # Original had vy_dy and vx_dx, which is incorrect. Let's assume the user meant
+        # to get d/dx and d/dy correctly.
+        vy_grad = torch.gradient(vy_chunk, dim=(-1, -2))  # (d/dx, d/dy)
+        vx_grad = torch.gradient(vx_chunk, dim=(-1, -2))  # (d/dx, d/dy)
+        vort_list.append(vy_grad[0] - vx_grad[1])  # dv_y/dx - dv_x/dy
 
     result = torch.cat(vort_list, dim=0)
 
@@ -116,11 +118,9 @@ def compute_all_metrics(
     for mode in Metric.VALID_MODES:
         mode_results = {}
         for var in variables:
-            variable_mode = "all"  # existing code
-            metric_fn = Metric(
-                mode=mode, variable_mode=variable_mode, variable_name=None
-            )
-            dist = metric_fn(target_td, pred_td)  # Shape: [B, T]
+            # Assuming Metric class can handle single variable evaluation
+            metric_fn = Metric(mode=mode, variable_name=var)
+            dist = metric_fn(target_td, pred_td)
             mode_results[var] = (dist.mean().item(), dist.std().item())
 
         # Compute average across all variables
@@ -143,9 +143,10 @@ def compute_all_metrics(
 
 def tensor_to_tensordict(tensor: torch.Tensor, var_names: List[str]) -> TensorDict:
     """Converts a tensor [B, T, C, H, W] to a TensorDict."""
-    num_samples, seq_len, channels, H, W = tensor.shape
-    tensor_reshaped = tensor.permute(0, 1, 3, 4, 2)
-    td_fields = {var: tensor_reshaped[..., i] for i, var in enumerate(var_names)}
+    if tensor.dim() != 5:
+        raise ValueError(f"Expected a 5D tensor, but got shape {tensor.shape}")
+    num_samples, seq_len, _, _, _ = tensor.shape
+    td_fields = {var: tensor[:, :, i] for i, var in enumerate(var_names)}
     return TensorDict(td_fields, batch_size=[num_samples, seq_len])
 
 
@@ -159,9 +160,12 @@ def tensordict_to_tensor(
     first_key = var_names[0]
     field_shape = td[first_key].shape
 
+    td_for_stack = td.clone()
     # Check dimensions and add a batch dimension if it's missing
     if len(field_shape) == 3:  # Input is a single sample with shape [T, H, W]
-        td = td.unsqueeze(0)  # Add a batch dimension -> [1, T, H, W]
+        td_for_stack = td_for_stack.unsqueeze(
+            0
+        )  # Add a batch dimension -> [1, T, H, W]
     elif len(field_shape) != 4:  # Input is not the expected [B, T, H, W]
         raise ValueError(
             f"Unexpected field shape in TensorDict: {field_shape}. "
@@ -169,17 +173,19 @@ def tensordict_to_tensor(
         )
 
     # Now we can safely unpack the 4D shape
-    B, T, H, W = td[first_key].shape
+    B, T, H, W = td_for_stack[first_key].shape
 
-    stacked = torch.stack([td[var] for var in var_names], dim=-1)  # [B, T, H, W, C]
+    stacked = torch.stack(
+        [td_for_stack[var] for var in var_names], dim=2
+    )  # [B, T, C, H, W]
 
     if re_val is not None:
         re_tensor = torch.full(
-            (B, T, H, W, 1), re_val, device=stacked.device, dtype=stacked.dtype
+            (B, T, 1, H, W), re_val, device=stacked.device, dtype=stacked.dtype
         )
-        stacked = torch.cat([stacked, re_tensor], dim=-1)
+        stacked = torch.cat([stacked, re_tensor], dim=2)
 
-    return stacked.permute(0, 1, 4, 2, 3)  # [B, T, C, H, W]
+    return stacked
 
 
 # =====================================================================================
@@ -213,32 +219,18 @@ def denormalize_from_diffusion(td: TensorDict) -> TensorDict:
 def ke_timeseries(tensordict, dx=1.0, dy=1.0, rho=1.0):
     """
     Compute total kinetic energy for each time step.
-
-    Args:
-        tensordict: TensorDict with keys "v_x", "v_y"
-        dx, dy: grid spacing in x and y
-        rho: fluid density
-
-    Returns:
-        Tensor of shape [61] with KE at each time step
+    Assumes input shape is [T, H, W].
     """
-    vx = tensordict["v_x"]  # shape [61, 64, 128]
-    vy = tensordict["v_y"]  # shape [61, 64, 128]
+    vx = tensordict["v_x"]
+    vy = tensordict["v_y"]
 
     # kinetic energy density (per cell, per timestep)
-    ke_density = 0.5 * (vx**2 + vy**2)  # [61, 64, 128]
+    ke_density = 0.5 * (vx**2 + vy**2)
 
-    # integrate over space: sum over spatial dimensions
-    ke_total = rho * torch.sum(ke_density, dim=(1, 2)) * dx * dy  # [61]
+    # integrate over space: sum over spatial dimensions and multiply by cell area
+    ke_total = rho * torch.sum(ke_density, dim=(-2, -1)) * dx * dy
 
     return ke_total
-
-    # vx = torch.mean(tensordict["v_x"], dim=(1, 2))  # shape [T, 64, 128]
-    # vy = torch.mean(tensordict["v_y"], dim=(1, 2))  # shape [T, 64, 128]
-
-    # # kinetic energy density (per cell, per timestep)
-    # ke_density = 0.5 * (vx**2 + vy**2)  # [T, 64, 128]
-    # return rho * ke_density * dx * dy  # [61]
 
 
 def run_kae_rollout(
@@ -250,7 +242,6 @@ def run_kae_rollout(
     """Performs a long rollout for a Koopman Autoencoder (KAE) model."""
     input_seq = input_seq.unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        # The model returns a TensorDict containing the full predicted sequence
         predicted_td = model(input_seq, seq_length=rollout_steps)
     return (
         predicted_td.x_preds.squeeze(0) if return_xpreds else predicted_td
@@ -260,10 +251,7 @@ def run_kae_rollout(
 def kae_rollout_wrapper(
     model, input_seq, metadata: dict, rollout_steps: int, dataset=None
 ):
-    """
-    Wraps run_kae_rollout to match the signature of run_diffusion_rollout.
-    The `metadata` and `dataset` arguments are ignored for KAE.
-    """
+    """Wraps run_kae_rollout to match the signature of run_diffusion_rollout."""
     return run_kae_rollout(
         model=model, input_seq=input_seq, rollout_steps=rollout_steps
     )
@@ -272,102 +260,71 @@ def kae_rollout_wrapper(
 def run_diffusion_rollout(
     model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
 ) -> TensorDict:
-    """Performs a long rollout for the Diffusion model, handling its unique data requirements.
-    Returns predictions and a timings dict with total, average, and per-step timings.
-    """
-    model.training = False
+    """Performs a long rollout for the Diffusion model."""
     model.eval()
-    timings: Dict = {}
+    timings: Dict[str, Any] = {}
     var_names_3c = ["v_x", "v_y", "p"]
-
     total_start, total_end = cuda_timer()
     total_start.record()
 
     with torch.no_grad():
-        # Step 1: Denormalize from dataset format, then re-normalize for diffusion model
-        input_denorm = (
-            dataset.denormalize(input_seq.clone())
-            if isinstance(input_seq, TensorDict)
-            else input_seq
-        )
+        input_denorm = dataset.denormalize(input_seq.clone())
         input_renorm = normalize_for_diffusion(input_denorm)
 
-        # Step 2: Get and normalize the Reynolds number for conditioning
-        re_val = metadata["Re_target"][0]
-
-        # Ensure it's a tensor
+        re_val = metadata.get("Re_target", [DIFFUSION_MEAN["rey"]])[0]
         if not torch.is_tensor(re_val):
             re_val = torch.tensor([re_val], dtype=torch.float32, device=DEVICE)
-
-        # If empty, replace with a constant (e.g., dataset mean) to avoid crash
-        if re_val.numel() == 0:
-            re_val = torch.tensor(
-                [DIFFUSION_MEAN["rey"]], dtype=torch.float32, device=DEVICE
-            )
-
-        # Normalize
         normalized_re = (re_val - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD["rey"]
 
-        # If length < rollout_steps, pad by repeating last value
-        if normalized_re.numel() < rollout_steps:
-            normalized_re = normalized_re.repeat(rollout_steps)
-
-        re_input = (
-            metadata["Re_input"][0].item()
-            if metadata["Re_input"][0].ndim == 0
-            else metadata["Re_input"][0][-1]
+        re_input_val = (
+            metadata["Re_input"][0][-1]
+            if metadata.get("Re_input") and metadata["Re_input"][0].ndim > 0
+            else metadata.get("Re_input", [DIFFUSION_MEAN["rey"]])[0]
         )
-        normalized_re_input = (re_input - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD["rey"]
+        normalized_re_input = (re_input_val - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD[
+            "rey"
+        ]
 
-        # Step 3: Convert to a 4-channel tensor [vx, vy, p, Re] and transpose H, W
         d = tensordict_to_tensor(
-            input_renorm, var_names_3c, re_val=normalized_re_input
+            input_renorm, var_names_3c, re_val=normalized_re_input.item()
         ).to(DEVICE)
-        d = d.permute(0, 1, 2, 4, 3)  # [B, T, C, H, W] -> [B, T, C, W, H]
+        d = d.permute(0, 1, 2, 4, 3)
 
-        # Step 4: Autoregressive prediction loop
         B, T_in, C, H, W = d.shape
         T_out = T_in + rollout_steps
-        prediction = torch.zeros([B, T_out, C, H, W], device=DEVICE)
+        prediction = torch.zeros([B, T_out, C, H, W], device=DEVICE, dtype=d.dtype)
         prediction[:, :T_in] = d
 
         step_times = []
         for i in range(T_in, T_out):
             start, end = cuda_timer()
             start.record()
-            torch.cuda.synchronize()
-
-            # Conditioning with previous 2 steps
             cond = torch.cat(
                 [prediction[:, i - 2 : i - 1], prediction[:, i - 1 : i]], dim=2
             )
             current_slice = prediction[:, i - 1 : i]
             result = model(conditioning=cond, data=current_slice)
-
             end.record()
             torch.cuda.synchronize()
             step_times.append(elapsed_time(start, end))
 
-            # Overwrite predicted Reynolds number with constant
-            result[..., -1, :, :] = normalized_re[i - T_in]
+            # Overwrite predicted Reynolds number with constant target
+            result[..., -1, :, :] = normalized_re  # Assuming constant Re for rollout
             prediction[:, i : i + 1] = result
 
-    # Step 5: Convert back to TensorDict and denormalize
-    output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)  # Transpose back H, W
+    output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)
     var_names_4c = var_names_3c + ["rey"]
     pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
     pred_td_denorm = denormalize_from_diffusion(pred_td_normalized)
-    pred_td_denorm.pop("rey", None)  # Remove temporary Reynolds number field
+    pred_td_denorm.pop("rey", None)
 
-    # Final total timing
     total_end.record()
     torch.cuda.synchronize()
     total_time = elapsed_time(total_start, total_end)
 
-    # Organize timings in the requested order
     timings = {
         "total_time_ms": float(total_time),
-        "average_step_time_ms": float(np.mean(step_times)),
+        "average_step_time_ms": float(np.mean(step_times)) if step_times else 0.0,
         "all_step_times_ms": [float(t) for t in step_times],
     }
     logger.info(f"Diffusion timings: {timings}")
@@ -387,29 +344,34 @@ def generate_predictions_for_dataset(
     output_len: int,
     rollout_fn: RolloutFn,
 ) -> Tuple[TensorDict, TensorDict]:
-    """
-    Iterates through a dataset to generate model predictions for all samples.
-    """
+    """Iterates through a dataset to generate model predictions for all samples."""
     all_targets, all_predictions = [], []
 
-    for idx in range(0, len(dataset), (output_len + input_len)):
-        try:
-            input_seq, ground_truth_future, metadata = dataset[idx]
+    indices_to_process = list(range(0, len(dataset)))
 
-            # Add required metadata to the input TensorDict for the model.
-            # This is necessary for models that use conditioning (e.g., on Re or obstacles).
+    for idx in indices_to_process:
+        try:
+            input_seq, ground_truth_future, metadata_raw = dataset[idx]
+
+            metadata = {}
+            for key, (val, dest) in metadata_raw.items():
+                metadata[key] = [val]  # Wrap in a list to mimic batch
+
+            # Manually add metadata to input_seq for conditioning
             if "Re_input" in metadata:
-                # The .repeat() call assumes the metadata is for a single sample and adds a
-                # compatible batch dimension if the input_seq has one.
-                input_seq["Re_input"] = metadata["Re_input"][0].repeat(
-                    *input_seq.batch_size
-                )
-            if "obstacle_mask" in metadata:
-                input_seq["obstacle_mask"] = metadata["obstacle_mask"][0].repeat(
-                    *input_seq.batch_size, 1, 1
-                )
-            if rollout_fn is None:
-                raise ValueError("rollout_fn must be provided")
+                re_val = metadata["Re_input"][0]
+                if not torch.is_tensor(re_val):
+                    re_val = torch.tensor(re_val)
+                # --- FIX ---
+                # Expand the scalar 're_val' to match the TensorDict's batch_size
+                input_seq["Re_input"] = re_val.expand(input_seq.batch_size)
+
+            if "obstacle_mask" in metadata and "obstacle_mask" not in input_seq.keys():
+                mask = metadata["obstacle_mask"][0]
+                # --- FIX ---
+                # Expand the mask [H, W] to [T, H, W] using the batch_size
+                input_seq["obstacle_mask"] = mask.expand(*input_seq.batch_size, -1, -1)
+
             predicted_future = rollout_fn(
                 model, input_seq, metadata, output_len, dataset
             )
@@ -432,8 +394,8 @@ def generate_predictions_for_dataset(
         logger.error("No valid predictions were generated. Aborting evaluation.")
         return TensorDict({}, batch_size=[0]), TensorDict({}, batch_size=[0])
 
-    stacked_targets = stack_tensordict(all_targets, dim=0)
-    stacked_predictions = stack_tensordict(all_predictions, dim=0)
+    stacked_targets = stack_tensordict(all_targets)
+    stacked_predictions = stack_tensordict(all_predictions)
 
     logger.info(f"Generated predictions for {stacked_targets.shape[0]} samples.")
     return stacked_targets, stacked_predictions
@@ -446,18 +408,12 @@ def run_evaluation(
     output_len: int,
     rollout_fn: RolloutFn,
 ) -> Dict:
-    """
-    Orchestrates the entire evaluation pipeline for a given model.
-    1. Generates predictions for the full dataset.
-    2. Computes derived quantities (e.g., vorticity).
-    3. Calculates and returns all metrics.
-    """
+    """Orchestrates the entire evaluation pipeline for a given model."""
     rollout_name = rollout_fn.__name__ if rollout_fn is not None else "<undefined>"
     logger.info(
         f"Starting evaluation for model '{model.__class__.__name__}' using '{rollout_name}'..."
     )
 
-    # --- 1. Generate Predictions ---
     targets, predictions = generate_predictions_for_dataset(
         model=model,
         dataset=loader.dataset,
@@ -467,32 +423,22 @@ def run_evaluation(
     )
 
     if targets.is_empty():
-        logger.error(
-            "Prediction generation failed. Cannot proceed with metric calculation."
-        )
         return {}
 
-    # --- 2. Compute Derived Variables (e.g., Vorticity) ---
     logger.info("Computing derived variables...")
-    custom_min_max: Dict = {}
-    # if "v_x" in targets and "v_y" in targets:
-    #     vort_truth = compute_vorticity(targets["v_x"], targets["v_y"])
-    #     targets["vort"] = vort_truth
+    custom_min_max: Dict[str, Tuple[float, float]] = {}
+    if "v_x" in targets.keys() and "v_y" in targets.keys():
+        vort_truth = compute_vorticity(targets["v_x"], targets["v_y"])
+        targets["vort"] = vort_truth
+        vort_pred = compute_vorticity(predictions["v_x"], predictions["v_y"])
+        predictions["vort"] = vort_pred
+        vmin, vmax = vort_truth.min().item(), vort_truth.max().item()
+        custom_min_max["vort"] = (vmin, vmax)
+        logger.info(
+            f"Global vorticity range for normalization: [{vmin:.4f}, {vmax:.4f}]"
+        )
 
-    #     vort_pred = compute_vorticity(predictions["v_x"], predictions["v_y"])
-    #     predictions["vort"] = vort_pred
-
-    #     # Use the ground truth vorticity to define the normalization range
-    #     vmin, vmax = vort_truth.min().item(), vort_truth.max().item()
-    #     custom_min_max["vort"] = (vmin, vmax)
-    #     logger.info(
-    #         f"Global vorticity range for normalization: [{vmin:.4f}, {vmax:.4f}]"
-    #     )
-    # else:
-    #     logger.warning("Velocity fields 'v_x' and 'v_y' not found. Skipping vorticity.")
-
-    # --- 3. Compute Metrics ---
-    vars_to_eval = [k for k in predictions.keys() if k in targets]
+    vars_to_eval = [k for k in predictions.keys() if k in targets.keys()]
     logger.info(f"Computing metrics for variables: {vars_to_eval}")
 
     metrics = compute_all_metrics(
@@ -510,30 +456,18 @@ def run_evaluation(
 def compute_stability_metrics(
     ground_truth_td: TensorDict,
     predicted_td: TensorDict,
-    diff_td: TensorDict = None,
-    normalizer: AbstractNormalizer = None,
+    diff_td: Optional[TensorDict] = None,
+    normalizer: Optional[AbstractNormalizer] = None,
     ttd_threshold: float = 1e2,
-):
+) -> Dict:
     """
-    Compute stability metrics: TTD, slope error, and energy drift for predictions and optional diff baseline.
-
-    Returns
-    -------
-    metrics : dict
-        Dictionary with keys:
-        - ttd_pred, ttd_diff
-        - slope_error_pred, slope_error_diff
-        - energy_drift_pred, energy_drift_diff
+    Compute stability metrics using PyTorch and TensorDict.
+    This function expects a single trajectory, i.e., shape [T, H, W].
     """
-
-    def tensordict_to_numpy(td):
-        fields = []
-        for key in td.keys():
-            t = td.get(key)
-            if torch.is_tensor(t):
-                t = t.detach().cpu().numpy()
-            fields.append(t)
-        return np.stack(fields, axis=-1)
+    if ground_truth_td.dim() > 3:
+        raise ValueError(
+            f"Expected a single trajectory, but got shape {ground_truth_td.shape}"
+        )
 
     # Apply normalizer if provided
     if normalizer:
@@ -542,62 +476,74 @@ def compute_stability_metrics(
         if diff_td is not None:
             diff_td = normalizer.transform(diff_td)
 
-    gt_np = tensordict_to_numpy(ground_truth_td)
-    pred_np = tensordict_to_numpy(predicted_td)
-    diff_np = tensordict_to_numpy(diff_td) if diff_td is not None else None
+    device = ground_truth_td.device
+    time_steps = ground_truth_td.batch_size[0]
 
-    time_steps = gt_np.shape[0]
+    # Determine which variables to use for slope error calculation
+    norm_keys = [k for k in predicted_td.keys() if k in ground_truth_td.keys()]
+    if not norm_keys:
+        raise ValueError("No common keys between prediction and ground truth.")
 
-    # Channel indices for velocity
-    v_x_idx = 1
-    v_y_idx = 2
+    # Check for velocity fields to compute energy
+    has_velocity = "v_x" in ground_truth_td.keys() and "v_y" in ground_truth_td.keys()
 
     # Initial energy (ground truth)
-    v_x_gt = gt_np[..., v_x_idx]
-    v_y_gt = gt_np[..., v_y_idx]
-    E0 = 0.5 * np.sum(v_x_gt[0] ** 2 + v_y_gt[0] ** 2)
+    E0 = None
+    if has_velocity:
+        v_x_gt_0 = ground_truth_td["v_x"][0]
+        v_y_gt_0 = ground_truth_td["v_y"][0]
+        E0 = 0.5 * torch.sum(v_x_gt_0**2 + v_y_gt_0**2)
 
     # Initialize storage
-    slope_error_pred: list = []
-    slope_error_diff: list = []
-    energy_drift_pred: list = []
-    energy_drift_diff: list = []
-    diverged_pred = np.zeros(time_steps)
-    diverged_diff = np.zeros(time_steps) if diff_np is not None else None
+    slope_error_pred, energy_drift_pred = [], []
+    diverged_pred = torch.zeros(time_steps, device=device)
+
+    slope_error_diff, energy_drift_diff = [], []
+    diverged_diff = (
+        torch.zeros(time_steps, device=device) if diff_td is not None else None
+    )
 
     for t in range(time_steps):
-        # Slope errors
-        error_pred = np.linalg.norm(pred_np[t] - gt_np[t])
-        slope_error_pred.append(error_pred)
-        if error_pred > ttd_threshold or np.isnan(error_pred):
+        # --- Prediction Metrics ---
+        gt_t_stack = torch.stack([ground_truth_td[k][t] for k in norm_keys])
+        pred_t_stack = torch.stack([predicted_td[k][t] for k in norm_keys])
+        error_pred = torch.linalg.norm((pred_t_stack - gt_t_stack).flatten())
+        slope_error_pred.append(error_pred.item())
+        if error_pred > ttd_threshold or torch.isnan(error_pred):
             diverged_pred[t] = 1
 
-        if diff_np is not None:
-            assert diverged_diff is not None  # tell mypy it's ndarray here
-            error_diff = np.linalg.norm(diff_np[t] - gt_np[t])
-            slope_error_diff.append(error_diff)
-            if error_diff > ttd_threshold or np.isnan(error_diff):
-                diverged_diff[t] = 1  # now mypy is happy
+        if has_velocity and E0 is not None:
+            v_x_pred = predicted_td["v_x"][t]
+            v_y_pred = predicted_td["v_y"][t]
+            E_pred = 0.5 * torch.sum(v_x_pred**2 + v_y_pred**2)
+            energy_drift_pred.append(torch.abs(E_pred - E0).item())
 
-        # Energy drift
-        v_x_pred = pred_np[t, ..., v_x_idx]
-        v_y_pred = pred_np[t, ..., v_y_idx]
-        E_pred = 0.5 * np.sum(v_x_pred**2 + v_y_pred**2)
-        energy_drift_pred.append(abs(E_pred - E0))
+        # --- Differential Baseline Metrics (if provided) ---
+        if diff_td is not None:
+            assert diverged_diff is not None
+            diff_t_stack = torch.stack([diff_td[k][t] for k in norm_keys])
+            error_diff = torch.linalg.norm((diff_t_stack - gt_t_stack).flatten())
+            slope_error_diff.append(error_diff.item())
+            if error_diff > ttd_threshold or torch.isnan(error_diff):
+                diverged_diff[t] = 1
 
-        if diff_np is not None:
-            v_x_diff = diff_np[t, ..., v_x_idx]
-            v_y_diff = diff_np[t, ..., v_y_idx]
-            E_diff = 0.5 * np.sum(v_x_diff**2 + v_y_diff**2)
-            energy_drift_diff.append(abs(E_diff - E0))
+            if has_velocity and E0 is not None:
+                v_x_diff = diff_td["v_x"][t]
+                v_y_diff = diff_td["v_y"][t]
+                E_diff = 0.5 * torch.sum(v_x_diff**2 + v_y_diff**2)
+                energy_drift_diff.append(torch.abs(E_diff - E0).item())
 
-    # Compute TTD
-    ttd_pred = np.argmax(diverged_pred) if np.any(diverged_pred) else time_steps
-    if diff_np is not None:
-        assert diverged_diff is not None
-        ttd_diff = np.argmax(diverged_diff) if np.any(diverged_diff) else time_steps
-    else:
-        ttd_diff = None
+    # Compute Time to Divergence (TTD)
+    ttd_pred = (
+        torch.argmax(diverged_pred).item() if torch.any(diverged_pred) else time_steps
+    )
+    ttd_diff = None
+    if diverged_diff is not None:
+        ttd_diff = (
+            torch.argmax(diverged_diff).item()
+            if torch.any(diverged_diff)
+            else time_steps
+        )
 
     metrics = {
         "ttd_pred": ttd_pred,

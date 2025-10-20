@@ -66,7 +66,7 @@ def build_diffusion(
         arch="direct-ddpm+Prev",
         diffSteps=20,
         diffSchedule="linear",
-        diffCondIntegration="noisy",
+        diffCondIntegration="clean" if "ncn" in ckpt_path else "noisy",
         trainingNoise=0.0,
     )
 

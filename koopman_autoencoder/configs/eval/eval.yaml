@@ -2,7 +2,7 @@ evaluations:
   - name: "continous_linear_1024"
     model_type: kae
     config_path: "experiment/continous_linear_1024.yaml"
-    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/model_outputs/continous_linear_1024/run-20251010_103706/checkpoints/epoch_180.pth"
+    checkpoint_path: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/continous_linear_1024/dummy-o9swywfe/checkpoints/epoch_1000.pth"
   # - name: "continous_linear_256"
   #   model_type: kae
   #   config_path: "experiment/continous_linear_256.yaml"
