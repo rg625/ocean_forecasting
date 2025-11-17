@@ -7,6 +7,8 @@ from .lsim.distance_model import DistanceModel as LSIM_Model
 
 from turbpred.params import LossParams
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 # input shape: B S C W H -> output shape: B S C
 def loss_lsim(lsimModel: nn.Module, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:

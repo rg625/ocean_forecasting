@@ -1,18 +1,28 @@
 import numpy as np
 import torch
 from tensordict import TensorDict, stack as stack_tensordict
-from typing import Protocol, Dict, Tuple, List, Optional, Any, cast
+from typing import (
+    Protocol,
+    Dict,
+    Tuple,
+    List,
+    Optional,
+    Any,
+    cast,
+    Generator,
+)  # Added Generator
 import logging
-from models.dataloader import QGDatasetBase, AbstractNormalizer
-from models.utils import cuda_timer, elapsed_time
+from .dataloader import QGDatasetBase, AbstractNormalizer
+from .utils import cuda_timer, elapsed_time
+from .metrics import Metric
+import os  # Added os for path operations
 
-# --- Basic Configuration ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Diffusion model-specific normalization constants
 DIFFUSION_MEAN = {"v_x": 0.444969, "v_y": 0.000299, "p": 0.000586, "rey": 550.0}
 DIFFUSION_STD = {"v_x": 0.206128, "v_y": 0.206128, "p": 0.003942, "rey": 262.678467}
@@ -50,17 +60,6 @@ def compute_vorticity(
     for i in range(0, v_x.size(0), chunk_size):
         vx_chunk = v_x[i : i + chunk_size]
         vy_chunk = v_y[i : i + chunk_size]
-
-        # Calculate gradients along both spatial dimensions (H, W) at once.
-        # torch.gradient returns gradients in the order of the dims provided.
-        # For dim=(-2, -1), the output is (d/dy, d/dx).
-        _, vx_dx = torch.gradient(vx_chunk, dim=(-2, -1))
-        vy_dy, _ = torch.gradient(vy_chunk, dim=(-2, -1))
-
-        # Vorticity formula: (d(v_y)/dx - d(v_x)/dy) - MISTAKE IN ORIGINAL FILE
-        # Corrected formula: d(v_y)/dx - d(v_x)/dy
-        # Original had vy_dy and vx_dx, which is incorrect. Let's assume the user meant
-        # to get d/dx and d/dy correctly.
         vy_grad = torch.gradient(vy_chunk, dim=(-1, -2))  # (d/dx, d/dy)
         vx_grad = torch.gradient(vx_chunk, dim=(-1, -2))  # (d/dx, d/dy)
         vort_list.append(vy_grad[0] - vx_grad[1])  # dv_y/dx - dv_x/dy
@@ -69,71 +68,6 @@ def compute_vorticity(
 
     # Remove the temporary batch dimension if it was added
     return result.squeeze(0) if is_single_sample else result
-
-
-def compute_all_metrics(
-    target: TensorDict,
-    prediction: TensorDict,
-    loader,
-    variables: List[str],
-    custom_min_max: Optional[Dict[str, Tuple[float, float]]] = None,
-    chunk_size: int = 8,
-) -> dict:
-    """
-    Computes a suite of metrics (L2, SSIM, PSNR) for specified variables.
-
-    This function normalizes data to a [0, 1] range before metric calculation,
-    as is standard for image-based metrics like SSIM and PSNR.
-    """
-    from models.metrics import Metric  # Local import to avoid circular dependency
-
-    results: Dict = {mode: {} for mode in Metric.VALID_MODES}
-
-    # --- Prepare Normalized Data ---
-    target_norm, prediction_norm = {}, {}
-
-    for var in variables:
-        if custom_min_max and var in custom_min_max:
-            vmin, vmax = custom_min_max[var]
-            eps = 1e-8
-            target_norm[var] = (target[var] - vmin) / (vmax - vmin + eps)
-            prediction_norm[var] = (prediction[var] - vmin) / (vmax - vmin + eps)
-        else:
-            # Process in CPU chunks to avoid OOM with large datasets.
-            target_chunks, pred_chunks = [], []
-            for start in range(0, target.shape[0], chunk_size):
-                end = start + chunk_size
-                t_chunk = loader.to_unit_range(target[start:end].cpu())[var]
-                p_chunk = loader.to_unit_range(prediction[start:end].cpu())[var]
-                target_chunks.append(t_chunk)
-                pred_chunks.append(p_chunk)
-            target_norm[var] = torch.cat(target_chunks, dim=0)
-            prediction_norm[var] = torch.cat(pred_chunks, dim=0)
-
-    # Move all normalized data to the device for metric computation
-    target_td = TensorDict(target_norm, batch_size=target.batch_size).to(DEVICE)
-    pred_td = TensorDict(prediction_norm, batch_size=prediction.batch_size).to(DEVICE)
-
-    # --- Calculate Metrics ---
-    for mode in Metric.VALID_MODES:
-        mode_results = {}
-        for var in variables:
-            # Assuming Metric class can handle single variable evaluation
-            metric_fn = Metric(mode=mode, variable_name=var)
-            dist = metric_fn(target_td, pred_td)
-            mode_results[var] = (dist.mean().item(), dist.std().item())
-
-        # Compute average across all variables
-        all_means = [v[0] for v in mode_results.values()]
-        all_stds = [v[1] for v in mode_results.values()]
-        if all_means:
-            mean_all = float(np.mean(all_means))
-            std_all = float(np.sqrt(np.mean(np.array(all_stds) ** 2)))
-            mode_results["all"] = (mean_all, std_all)
-
-        results[mode] = mode_results
-
-    return results
 
 
 # =====================================================================================
@@ -189,30 +123,7 @@ def tensordict_to_tensor(
 
 
 # =====================================================================================
-# SECTION 3: DIFFUSION MODEL-SPECIFIC NORMALIZATION HELPERS
-# =====================================================================================
-
-
-def normalize_for_diffusion(td: TensorDict) -> TensorDict:
-    """Applies Z-score normalization for the diffusion model."""
-    normalized_td = td.clone()
-    for key, mean in DIFFUSION_MEAN.items():
-        if key in td.keys():
-            normalized_td[key] = (td[key] - mean) / DIFFUSION_STD[key]
-    return normalized_td
-
-
-def denormalize_from_diffusion(td: TensorDict) -> TensorDict:
-    """Reverses the diffusion model's Z-score normalization."""
-    denormalized_td = td.clone()
-    for key, mean in DIFFUSION_MEAN.items():
-        if key in td.keys():
-            denormalized_td[key] = (td[key] * DIFFUSION_STD[key]) + mean
-    return denormalized_td
-
-
-# =====================================================================================
-# SECTION 4: MODEL-SPECIFIC ROLLOUT FUNCTIONS
+# SECTION 3: MODEL-SPECIFIC ROLLOUT FUNCTIONS
 # =====================================================================================
 
 
@@ -240,7 +151,12 @@ def run_kae_rollout(
     return_xpreds: Optional[bool] = True,
 ) -> TensorDict:
     """Performs a long rollout for a Koopman Autoencoder (KAE) model."""
-    input_seq = input_seq.unsqueeze(0).to(DEVICE)
+    input_seq = input_seq.unsqueeze(0).to(
+        DEVICE
+    )  # if input_seq.ndim == 4 else input_seq
+    # input_seq = input_seq.to(DEVICE)
+    # print(f"input_seq: {input_seq['cond_input'][0]}")
+
     with torch.no_grad():
         predicted_td = model(input_seq, seq_length=rollout_steps)
     return (
@@ -268,25 +184,25 @@ def run_diffusion_rollout(
     total_start.record()
 
     with torch.no_grad():
-        input_denorm = dataset.denormalize(input_seq.clone())
-        input_renorm = normalize_for_diffusion(input_denorm)
-
-        re_val = metadata.get("Re_target", [DIFFUSION_MEAN["rey"]])[0]
+        re_val = metadata.get("cond_target", [DIFFUSION_MEAN["rey"]])[0]
         if not torch.is_tensor(re_val):
             re_val = torch.tensor([re_val], dtype=torch.float32, device=DEVICE)
         normalized_re = (re_val - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD["rey"]
 
-        re_input_val = (
-            metadata["Re_input"][0][-1]
-            if metadata.get("Re_input") and metadata["Re_input"][0].ndim > 0
-            else metadata.get("Re_input", [DIFFUSION_MEAN["rey"]])[0]
+        cond_input_val = (
+            metadata["cond_input"][0][-1]
+            if metadata.get("cond_input") and metadata["cond_input"][0].ndim > 0
+            else metadata.get("cond_input", [DIFFUSION_MEAN["rey"]])[0]
         )
-        normalized_re_input = (re_input_val - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD[
-            "rey"
-        ]
+        # print(f"normalized_re: {normalized_re}")
+        # print(f"re_val: {re_val}")
+        normalized_cond_input = (
+            cond_input_val - DIFFUSION_MEAN["rey"]
+        ) / DIFFUSION_STD["rey"]
+        # print(f"normalized_cond_input: {normalized_cond_input}")
 
         d = tensordict_to_tensor(
-            input_renorm, var_names_3c, re_val=normalized_re_input.item()
+            input_seq, var_names_3c, re_val=normalized_cond_input.item()
         ).to(DEVICE)
         d = d.permute(0, 1, 2, 4, 3)
 
@@ -315,8 +231,8 @@ def run_diffusion_rollout(
     output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)
     var_names_4c = var_names_3c + ["rey"]
     pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
-    pred_td_denorm = denormalize_from_diffusion(pred_td_normalized)
-    pred_td_denorm.pop("rey", None)
+    # pred_td_denorm = dataset.denormalize(pred_td_normalized)
+    pred_td_normalized.pop("rey", None)
 
     total_end.record()
     torch.cuda.synchronize()
@@ -329,46 +245,49 @@ def run_diffusion_rollout(
     }
     logger.info(f"Diffusion timings: {timings}")
 
-    return cast(TensorDict, pred_td_denorm.squeeze(0))
+    return cast(TensorDict, pred_td_normalized.squeeze(0))
 
 
 # =====================================================================================
-# SECTION 5: UNIFIED EVALUATION ORCHESTRATION
+# SECTION 4: UNIFIED EVALUATION ORCHESTRATION
 # =====================================================================================
 
 
 def generate_predictions_for_dataset(
     model: torch.nn.Module,
     dataset: QGDatasetBase,
-    input_len: int,
     output_len: int,
     rollout_fn: RolloutFn,
-) -> Tuple[TensorDict, TensorDict]:
-    """Iterates through a dataset to generate model predictions for all samples."""
-    all_targets, all_predictions = [], []
-
+) -> Generator[Tuple[TensorDict, TensorDict, dict, int], None, None]:
+    """
+    Iterates through a dataset, generates model predictions,
+    and yields each (target, prediction, metadata, idx) tuple.
+    """
     indices_to_process = list(range(0, len(dataset)))
 
     for idx in indices_to_process:
         try:
             input_seq, ground_truth_future, metadata_raw = dataset[idx]
+            if "KoopmanAutoencoder" in model.__class__.__name__:
+                logger.info("Applying Mask for KAE")
+                input_seq = dataset.apply_mask(input_seq)
+                ground_truth_future = dataset.apply_mask(ground_truth_future)
 
             metadata = {}
             for key, (val, dest) in metadata_raw.items():
                 metadata[key] = [val]  # Wrap in a list to mimic batch
 
             # Manually add metadata to input_seq for conditioning
-            if "Re_input" in metadata:
-                re_val = metadata["Re_input"][0]
+            if "cond_input" in metadata:
+                re_val = metadata["cond_input"][0]
                 if not torch.is_tensor(re_val):
                     re_val = torch.tensor(re_val)
-                # --- FIX ---
+
                 # Expand the scalar 're_val' to match the TensorDict's batch_size
-                input_seq["Re_input"] = re_val.expand(input_seq.batch_size)
+                input_seq["cond_input"] = re_val.expand(input_seq.batch_size)
 
             if "obstacle_mask" in metadata and "obstacle_mask" not in input_seq.keys():
                 mask = metadata["obstacle_mask"][0]
-                # --- FIX ---
                 # Expand the mask [H, W] to [T, H, W] using the batch_size
                 input_seq["obstacle_mask"] = mask.expand(*input_seq.batch_size, -1, -1)
 
@@ -377,80 +296,245 @@ def generate_predictions_for_dataset(
             )
 
             denormalized_gt = dataset.denormalize(ground_truth_future.clone())
+            denormalized_pred = dataset.denormalize(predicted_future.clone())
 
-            if "diffusion" in rollout_fn.__name__:
-                denormalized_pred = predicted_future
-            else:
-                denormalized_pred = dataset.denormalize(predicted_future.clone())
-
-            all_targets.append(denormalized_gt)
-            all_predictions.append(denormalized_pred)
+            # Yield the result for this sample
+            yield denormalized_gt, denormalized_pred, metadata, idx
 
         except Exception as e:
             logger.error(f"Error processing sample at index {idx}: {e}", exc_info=True)
             continue
 
-    if not all_predictions:
-        logger.error("No valid predictions were generated. Aborting evaluation.")
-        return TensorDict({}, batch_size=[0]), TensorDict({}, batch_size=[0])
 
-    stacked_targets = stack_tensordict(all_targets)
-    stacked_predictions = stack_tensordict(all_predictions)
+def compute_metrics_from_data(
+    targets: TensorDict,
+    predictions: TensorDict,
+    metric_names: Optional[List[str]] = ["L2", "LSIM"],
+) -> Tuple[Dict, Dict]:
+    """
+    Computes metrics from already-loaded targets and predictions TensorDicts.
 
-    logger.info(f"Generated predictions for {stacked_targets.shape[0]} samples.")
-    return stacked_targets, stacked_predictions
+    Returns:
+        A tuple of (results_summary, raw_errors_bt):
+        - results_summary: Dict of {metric: {var: (mean, std)}}
+        - raw_errors_bt: Dict of {metric: {var: [B, T] tensor}}
+    """
+    if targets.is_empty():
+        logger.warning("compute_metrics_from_data received empty targets. Skipping.")
+        return {}, {}
+
+    # Define the variables of interest for metric computation
+    loss_relevant_fields = ["v_x", "v_y", "p"]
+
+    # Filter targets and predictions to only contain relevant fields
+    # This ensures 'variable_mode=all' only averages over these fields
+    try:
+        # Check which keys are actually available in *both* tensordicts
+        available_keys_in_targets = set(targets.keys())
+        available_keys_in_preds = set(predictions.keys())
+
+        available_fields = [
+            k
+            for k in loss_relevant_fields
+            if k in available_keys_in_targets and k in available_keys_in_preds
+        ]
+
+        missing_keys = [k for k in loss_relevant_fields if k not in available_fields]
+
+        if missing_keys:
+            logger.warning(
+                f"Missing fields in dataset: {missing_keys}. Proceeding with available fields."
+            )
+
+        if not available_fields:
+            logger.error("No loss_relevant_fields found in data. Aborting evaluation.")
+            return {}, {}
+
+        # Now select only the keys that are guaranteed to exist
+        targets_filtered = targets.select(*available_fields)
+        predictions_filtered = predictions.select(*available_fields)
+
+        # Update loss_relevant_fields to only include what's available for the rest of the function
+        loss_relevant_fields = available_fields
+
+    except KeyError as e:
+        logger.error(f"Missing one of the required fields. Error: {e}", exc_info=True)
+        return {}, {}
+
+    results_summary: Dict[str, Dict[str, Tuple[float, float]]] = {}
+    raw_errors_bt: Dict[str, Dict[str, torch.Tensor]] = {}
+
+    assert metric_names is not None
+    for metric_name in metric_names:
+        logger.info(f"Computing metric: {metric_name}")
+        results_summary[metric_name] = {}
+        raw_errors_bt[metric_name] = {}
+
+        # 1. Compute per-variable metrics
+        for var in loss_relevant_fields:
+            try:
+                metric_fn_var = Metric(
+                    mode=metric_name, variable_mode="single", variable_name=var
+                )
+                # metric_fn returns [B, T] tensor
+                distances_bt = metric_fn_var(targets_filtered, predictions_filtered)
+
+                if distances_bt.numel() == 0:
+                    logger.warning(
+                        f"Metric {metric_name} for {var} returned no results."
+                    )
+                    continue
+
+                # Save the raw [B, T] tensor of errors
+                raw_errors_bt[metric_name][var] = distances_bt
+
+                # Average over time to get one value per batch sample [B]
+                distances_b = distances_bt.mean(dim=1)
+
+                # Store mean and std over the batch for the summary
+                results_summary[metric_name][var] = (
+                    distances_b.mean().item(),
+                    distances_b.std().item(),
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to compute metric {metric_name} for {var}: {e}",
+                    exc_info=True,
+                )
+
+        # 2. Compute "all" (averaged over variables) metric
+        if len(loss_relevant_fields) > 1:
+            try:
+                metric_fn_all = Metric(mode=metric_name, variable_mode="all")
+
+                # metric_fn_all returns [B, T] tensor (averaged over variables)
+                distances_all_bt = metric_fn_all(targets_filtered, predictions_filtered)
+
+                if distances_all_bt.numel() == 0:
+                    logger.warning(
+                        f"Metric {metric_name} for 'all' returned no results."
+                    )
+                    continue
+
+                # Save the raw [B, T] tensor of errors
+                raw_errors_bt[metric_name]["all"] = distances_all_bt
+
+                # Average over time to get one value per batch sample [B]
+                distances_all_b = distances_all_bt.mean(dim=1)
+
+                # Store mean and std over the batch for the summary
+                results_summary[metric_name]["all"] = (
+                    distances_all_b.mean().item(),
+                    distances_all_b.std().item(),
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to compute metric {metric_name} for 'all': {e}",
+                    exc_info=True,
+                )
+        elif len(loss_relevant_fields) == 1:
+            # If only one field, "all" is the same as the single variable
+            var_name = loss_relevant_fields[0]
+            if var_name in results_summary[metric_name]:
+                results_summary[metric_name]["all"] = results_summary[metric_name][
+                    var_name
+                ]
+                raw_errors_bt[metric_name]["all"] = raw_errors_bt[metric_name][var_name]
+
+    logger.info(f"Metric computation complete. Results: {results_summary}")
+    return results_summary, raw_errors_bt
 
 
 def run_evaluation(
     model: torch.nn.Module,
     loader,
-    input_len: int,
     output_len: int,
     rollout_fn: RolloutFn,
-) -> Dict:
-    """Orchestrates the entire evaluation pipeline for a given model."""
+    metric_names: Optional[List[str]] = ["L2", "LSIM"],
+    save_individual_dir: Optional[str] = None,  # New argument
+) -> Tuple[Dict, Dict, TensorDict, TensorDict]:
+    """
+    Orchestrates the entire evaluation pipeline for a given model
+    and computes metrics per-variable and averaged across variables.
+
+    Optionally saves individual rollouts to `save_individual_dir`.
+
+    Returns:
+        A tuple of (metrics_summary, raw_errors_bt, targets, predictions)
+    """
     rollout_name = rollout_fn.__name__ if rollout_fn is not None else "<undefined>"
     logger.info(
         f"Starting evaluation for model '{model.__class__.__name__}' using '{rollout_name}'..."
     )
 
-    targets, predictions = generate_predictions_for_dataset(
+    all_targets, all_predictions = [], []
+    prediction_generator = generate_predictions_for_dataset(
         model=model,
         dataset=loader.dataset,
-        input_len=input_len,
         output_len=output_len,
         rollout_fn=rollout_fn,
     )
 
-    if targets.is_empty():
-        return {}
+    logger.info("Generating predictions...")
+    if save_individual_dir:
+        logger.info(f"Saving individual rollouts to: {save_individual_dir}")
 
-    logger.info("Computing derived variables...")
-    custom_min_max: Dict[str, Tuple[float, float]] = {}
-    if "v_x" in targets.keys() and "v_y" in targets.keys():
-        vort_truth = compute_vorticity(targets["v_x"], targets["v_y"])
-        targets["vort"] = vort_truth
-        vort_pred = compute_vorticity(predictions["v_x"], predictions["v_y"])
-        predictions["vort"] = vort_pred
-        vmin, vmax = vort_truth.min().item(), vort_truth.max().item()
-        custom_min_max["vort"] = (vmin, vmax)
-        logger.info(
-            f"Global vorticity range for normalization: [{vmin:.4f}, {vmax:.4f}]"
+    for gt, pred, metadata, idx in prediction_generator:
+        # --- Save individual rollout logic ---
+        if save_individual_dir:
+            try:
+                # Extract Reynolds number for filename
+                re_val_raw = metadata.get("cond_target", [0.0])[0]
+                if torch.is_tensor(re_val_raw) and re_val_raw.numel() > 0:
+                    re_val = re_val_raw.item()
+                elif isinstance(re_val_raw, (int, float)):
+                    re_val = re_val_raw
+                else:
+                    re_val = 0.0  # Default
+
+                # Format for filename, e.g., "Re550p00_sample0001.pt"
+                re_str = f"Re{re_val:.2f}".replace(".", "p")
+                filename = f"{re_str}_sample{idx:04d}.pt"
+
+                save_path = os.path.join(save_individual_dir, filename)
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+                torch.save(
+                    {
+                        "target": gt.cpu(),
+                        "prediction": pred.cpu(),
+                        "metadata": metadata,
+                    },
+                    save_path,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to save individual rollout for sample {idx}: {e}"
+                )
+        # --- End of save logic ---
+
+        # Keep collecting for aggregate metrics
+        all_targets.append(gt)
+        all_predictions.append(pred)
+
+    if not all_predictions:
+        logger.warning(
+            "generate_predictions_for_dataset returned no data. Skipping evaluation."
         )
+        empty_td = TensorDict({}, batch_size=[0])
+        return {}, {}, empty_td, empty_td
 
-    vars_to_eval = [k for k in predictions.keys() if k in targets.keys()]
-    logger.info(f"Computing metrics for variables: {vars_to_eval}")
+    targets = stack_tensordict(all_targets)
+    predictions = stack_tensordict(all_predictions)
 
-    metrics = compute_all_metrics(
-        target=targets,
-        prediction=predictions,
-        loader=loader,
-        variables=vars_to_eval,
-        custom_min_max=custom_min_max,
+    logger.info(f"Generated predictions for {targets.shape[0]} samples.")
+
+    metrics_summary, raw_errors_bt = compute_metrics_from_data(
+        targets, predictions, metric_names
     )
 
     logger.info("Evaluation complete.")
-    return metrics
+    return metrics_summary, raw_errors_bt, targets, predictions
 
 
 def compute_stability_metrics(

@@ -107,7 +107,7 @@ class KoopmanLoss(nn.Module):
         self, pred: TensorDict, true: TensorDict
     ) -> Dict[str, Tensor]:
         """Computes reconstruction loss safely over common keys."""
-        mse_dict: Dict = {}
+        mse_dict: Dict[str, Tensor] = {}
         common_keys = pred.keys() & true.keys()
         if not common_keys:
             logger.warning(
@@ -115,23 +115,36 @@ class KoopmanLoss(nn.Module):
             )
             return {}
 
-        if self.ssim_weight is not None and self.to_unit_range is not None:
+        # Only compute SSIM tensors if both utilities are available
+        use_ssim = (
+            self.ssim_weight is not None
+            and self.ssim_weight != 0
+            and getattr(self, "to_unit_range", None) is not None
+        )
+
+        if use_ssim:
+            assert (
+                self.to_unit_range is not None
+            ), "Expeted to unit range method to be callable"
             pred_ssim = self.to_unit_range(pred)
             true_ssim = self.to_unit_range(true)
 
         for key in common_keys:
-
+            # Compute base L1 or L2 term
             if self.loss_type == "l1":
                 diff = torch.abs(pred[key] - self._blur(true[key]))
             else:  # 'l2'
                 diff = (pred[key] - self._blur(true[key])) ** 2
 
             mse_per_sample = reduce(diff, "b ... -> b", "mean")
-            mse_dict[key] = reduce(
-                mse_per_sample, "b ->", "mean"
-            ) + self.ssim_weight * self._ssim_loss(
-                pred_ssim[key], self._blur(true_ssim[key])
-            )
+            base_loss = reduce(mse_per_sample, "b ->", "mean")
+
+            # Add SSIM term if enabled
+            if use_ssim:
+                ssim_loss = self._ssim_loss(pred_ssim[key], self._blur(true_ssim[key]))
+                base_loss = base_loss + self.ssim_weight * ssim_loss
+
+            mse_dict[key] = base_loss
 
         return mse_dict
 
@@ -292,7 +305,7 @@ class KoopmanLoss(nn.Module):
             assert (
                 self.re_weight > 0
             ), f"re_weight must be positive, but got {self.re_weight}"
-            re_loss = self._compute_re_loss(reynolds, x_future["Re_target"])
+            re_loss = self._compute_re_loss(reynolds, x_future["cond_target"])
             total_loss = total_loss + self.re_weight * re_loss
 
         stability_loss = torch.tensor(0.0, device=latent_pred.device)

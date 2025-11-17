@@ -8,12 +8,12 @@ from dataclasses import dataclass
 import logging
 
 # Assume these are correctly defined elsewhere
-from models.utils import cuda_timer, elapsed_time
-from models.networks import (
+from .utils import cuda_timer, elapsed_time
+from .networks import (
     ConvEncoder,
     ConvDecoder,
 )
-from models.modules import (
+from .modules import (
     HistoryEncoder,
     TransformerConfig,
     KoopmanOperator,
@@ -54,18 +54,19 @@ class KoopmanAutoencoder(nn.Module):
         height: int = 64,
         width: int = 64,
         latent_dim: int = 32,
-        re_embedding_dim: Optional[int] = 64,
-        re_cond_type: Literal[None, "late_fusion", "adaln"] = None,
+        cond_embedding_dim: Optional[int] = 64,
+        cond_type: Literal[None, "late_fusion", "adaln"] = None,
         operator_mode: Literal["linear", "eigen", "mlp"] = "linear",
         hidden_dims: List[int] = [64, 128, 64],
         block_size: int = 2,
         kernel_size: Union[int, Tuple[int, int]] = 3,
         use_checkpoint: bool = False,
         transformer_config: Optional[TransformerConfig] = None,
-        predict_re: bool = False,
-        re_grad_enabled: bool = False,
+        predict_cond: bool = False,
+        cond_grad_enabled: bool = False,
         disturb_std: float = 1e-2,
         is_continuous: Optional[bool] = False,
+        cond_expansion_type: Optional[str] = None,
         **conv_kwargs,
     ):
         super().__init__()
@@ -80,13 +81,13 @@ class KoopmanAutoencoder(nn.Module):
         self.data_variables = data_variables
         self.input_frames = input_frames
         self.latent_dim = latent_dim
+        self.cond_type = cond_type
         self.total_input_channels = sum(self.data_variables.values())
         self.use_checkpoint = use_checkpoint
-        self.predict_re = predict_re
-        self.re_grad_enabled = re_grad_enabled
+        self.predict_cond = predict_cond
+        self.cond_grad_enabled = cond_grad_enabled
         self.disturb_std = disturb_std
         self.timings: Dict = {}
-
         # --- Module Initialization ---
         common_args = {
             "H": height,
@@ -96,6 +97,7 @@ class KoopmanAutoencoder(nn.Module):
             "block_size": block_size,
             "kernel_size": kernel_size,
             "use_checkpoint": use_checkpoint,
+            "cond_expansion_type": cond_expansion_type,
             **conv_kwargs,
         }
 
@@ -107,8 +109,8 @@ class KoopmanAutoencoder(nn.Module):
             self.history_encoder = HistoryEncoder(
                 C=self.total_input_channels,
                 transformer_config=transformer_config,
-                re_embedding_dim=re_embedding_dim,
-                re_cond_type=re_cond_type,
+                cond_embedding_dim=cond_embedding_dim,
+                cond_type=cond_type,
                 **common_args,
             )
 
@@ -116,18 +118,19 @@ class KoopmanAutoencoder(nn.Module):
         self.decoder = ConvDecoder(C=self.total_input_channels, **common_args)
 
         assert isinstance(
-            re_embedding_dim, int
-        ), f"expected 're_embedding_dim' to be int but got {type(re_embedding_dim)} instead."
+            cond_embedding_dim, int
+        ), f"expected 'cond_embedding_dim' to be int but got {type(cond_embedding_dim)} instead."
         self.koopman_operator = KoopmanOperator(
             latent_dim=latent_dim,
-            re_embedding_dim=re_embedding_dim,
+            cond_embedding_dim=cond_embedding_dim,
             mode=operator_mode,
             use_checkpoint=use_checkpoint,
             is_continuous=is_continuous,
+            cond_expansion_type=cond_expansion_type,  # <-- Pass to operator
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
-            if predict_re
+            if predict_cond
             else None
         )
 
@@ -135,11 +138,12 @@ class KoopmanAutoencoder(nn.Module):
         """Applies Z-score normalization to a Reynolds number tensor."""
         if re_value is None:
             return None
-        RE_MEAN, RE_STD = 550.0, 261.1513
-        return (re_value - RE_MEAN) / RE_STD
+        # RE_MEAN, RE_STD = 550.0, 261.1513
+        # return (re_value - RE_MEAN) / RE_STD
+        return re_value
 
     def present_encoding(
-        self, x: TensorDict, re_input: Optional[Tensor] = None
+        self, x: TensorDict, cond_input: Optional[Tensor] = None
     ) -> Tensor:
         """Encodes present data into the latent space."""
         present_list = [x[var][:, -1] for var in self.data_variables]
@@ -147,12 +151,14 @@ class KoopmanAutoencoder(nn.Module):
             if num_channels == 1 and present_list[i].ndim == 3:
                 present_list[i] = present_list[i].unsqueeze(1)
         stacked_present = torch.cat(present_list, dim=1)
-        if re_input is not None:
-            re_input = re_input[..., :-1] if re_input.ndim == 2 else re_input[-1]
-        return self.encoder(stacked_present, re=re_input)
+        if cond_input is not None:
+            cond_input = cond_input[
+                ..., :-1
+            ]  # Get condition for the last (present) frame
+        return self.encoder(stacked_present, cond=cond_input)
 
     def history_encoding(
-        self, x: TensorDict, re_input: Optional[Tensor] = None
+        self, x: TensorDict, cond_input: Optional[Tensor] = None
     ) -> Tensor:
         """Encodes history data into the latent space."""
 
@@ -163,16 +169,16 @@ class KoopmanAutoencoder(nn.Module):
             if num_channels == 1 and history_list[i].ndim == 4:
                 history_list[i] = history_list[i].unsqueeze(2)
         stacked_history = torch.cat(history_list, dim=2)
-        re_history = re_input[:, :-1] if re_input is not None else None
-        latent_history = self.history_encoder(stacked_history, re=re_history)
+        cond_history = cond_input[:, :-1] if cond_input is not None else None
+        latent_history = self.history_encoder(stacked_history, cond=cond_history)
         return latent_history
 
-    def encode(self, x: TensorDict, re_input: Optional[Tensor] = None) -> Tensor:
+    def encode(self, x: TensorDict, cond_input: Optional[Tensor] = None) -> Tensor:
         """Encodes input data (history + present) into the latent space."""
-        latent_present = self.present_encoding(x=x, re_input=re_input)
+        latent_present = self.present_encoding(x=x, cond_input=cond_input)
 
         if self.input_frames > 1 and self.history_encoder is not None:
-            latent_history = self.history_encoding(x=x, re_input=re_input)
+            latent_history = self.history_encoding(x=x, cond_input=cond_input)
             return (latent_history + latent_present) / 2
         return latent_present
 
@@ -197,19 +203,42 @@ class KoopmanAutoencoder(nn.Module):
     def _prepare_inputs(self, x: TensorDict, seq_length: Union[int, Tensor]):
         """Handles input preparation and normalization."""
         obstacle_mask = x.get("obstacle_mask")
-        re_input = self.re_norm(x.get("Re_input"))
-        keys_to_exclude = [k for k in ["obstacle_mask", "Re_input"] if k in x]
+
+        cond_tensor = x.get("cond_input")
+
+        # Check for configuration mismatch
+        if self.cond_type in ["late_fusion", "adaln"] and cond_tensor is None:
+            raise ValueError(
+                f"Model is configured with cond_type='{self.cond_type}', "
+                "but no 'cond_input' tensor was found in the batch. "
+                "Ensure 'data.selection_param' is set in your config."
+            )
+
+        cond_input = self.re_norm(cond_tensor)
+
+        # Dynamically find all metadata keys to exclude from x_data
+        keys_to_exclude = [
+            k
+            for k in x.keys()
+            if k not in self.data_variables and k in x  # k in x is redundant but safe
+        ]
+        if "obstacle_mask" not in keys_to_exclude and "obstacle_mask" in x:
+            keys_to_exclude.append("obstacle_mask")
+        if "cond_input" not in keys_to_exclude and "cond_input" in x:
+            keys_to_exclude.append("cond_input")
+
         x_data = x.exclude(*keys_to_exclude)
+
         seq_len_int = (
             int(seq_length.view(-1)[0].item())
             if isinstance(seq_length, Tensor)
             else int(seq_length)
         )
-        return obstacle_mask, re_input, x_data, seq_len_int
+        return obstacle_mask, cond_input, x_data, seq_len_int
 
-    def _encode_initial_states(self, x_data: TensorDict, re_input: Optional[Tensor]):
+    def _encode_initial_states(self, x_data: TensorDict, cond_input: Optional[Tensor]):
         """Encodes initial states and creates a perturbed version if needed."""
-        z0 = self.encode(x_data, re_input=re_input)
+        z0 = self.encode(x_data, cond_input=cond_input)
         z0_disturbed = None
         if self.training and (self.disturb_std is not None):
             noise = torch.randn_like(z0) * self.disturb_std
@@ -217,7 +246,7 @@ class KoopmanAutoencoder(nn.Module):
         return z0, z0_disturbed
 
     def _autoregressive_rollout(
-        self, z_init: Tensor, seq_length: int, re_for_prediction: Optional[Tensor]
+        self, z_init: Tensor, seq_length: int, cond_for_prediction: Optional[Tensor]
     ):
         """Performs autoregressive rollout in the latent space."""
         if seq_length <= 0:
@@ -226,10 +255,14 @@ class KoopmanAutoencoder(nn.Module):
         z_preds_list = []
         z_current = z_init
         for frame in range(seq_length):
-            assert (
-                re_for_prediction is not None
-            ), f"Cannot Index {type(re_for_prediction)} type"
-            z_current = self.koopman_operator(z_current, re=re_for_prediction[:, frame])
+            # Use the condition for the *specific* frame
+            frame_cond = (
+                cond_for_prediction[:, frame]
+                if cond_for_prediction is not None
+                else None
+            )
+
+            z_current = self.koopman_operator(z_current, cond=frame_cond)
             z_preds_list.append(z_current)
         return torch.stack(z_preds_list, dim=1)
 
@@ -257,45 +290,51 @@ class KoopmanAutoencoder(nn.Module):
         self,
         x: TensorDict,
         seq_length: Union[int, Tensor],
-        re_future: Optional[Tensor] = None,
+        re_future: Optional[Tensor] = None,  # This arg is specific, let's keep it
     ) -> KoopmanOutput:
         """Forward pass: Encode, roll out predictions, and decode."""
         total_start, total_end = cuda_timer()
         total_start.record()
+
         # 1. Prepare inputs
-        obstacle_mask, re_input, x_data, seq_length_int = self._prepare_inputs(
+        obstacle_mask, cond_input, x_data, seq_length_int = self._prepare_inputs(
             x, seq_length
         )
 
         # 2. Encode initial states (original and optionally disturbed)
         start, end = cuda_timer()
         start.record()
-        z0, z0_disturbed = self._encode_initial_states(x_data, re_input)
+        z0, z0_disturbed = self._encode_initial_states(x_data, cond_input)
         end.record()
         torch.cuda.synchronize()
         self.timings["encode"] = elapsed_time(start, end)
 
-        # 3. Get conditioning Reynolds number for the prediction phase
-        input_re_for_prediction = (
-            re_input[:, -1]
-            if (re_input is not None and re_input.ndim == 2)
-            else re_input
-        )
-        if re_future is not None:
-            assert (
-                len(re_future.squeeze()) == seq_length_int
-            ), f"Expected a corresponding Re/Ma number for each predicted frame, but got {len(re_future.squeeze())} Re/Ma numbers and {seq_length_int} frames to predict"
-            re_for_prediction = self.re_norm(re_future)
-        else:
-            re_for_prediction = input_re_for_prediction.view(-1, 1).repeat(
-                1, seq_length_int
+        # 3. Get conditioning tensor for the prediction phase
+        # We need to find the *target* condition, not the input one
+        cond_for_prediction = x.get("cond_target")
+
+        if cond_for_prediction is None:
+            # Fallback: repeat the last *input* condition
+            # This is less ideal but maintains behavior
+            last_input_cond = (
+                cond_input[:, -1]
+                if (cond_input is not None and cond_input.ndim == 2)
+                else cond_input
             )
+            if last_input_cond is not None:
+                cond_for_prediction = last_input_cond.view(-1, 1).repeat(
+                    1, seq_length_int
+                )
+
+        # Ensure it's normalized if it exists
+        if cond_for_prediction is not None:
+            cond_for_prediction = self.re_norm(cond_for_prediction)
 
         # 4. Perform autoregressive rollout for the main trajectory
         start, end = cuda_timer()
         start.record()
         z_preds_stacked = self._autoregressive_rollout(
-            z0, seq_length_int, re_for_prediction
+            z0, seq_length_int, cond_for_prediction
         )
         end.record()
         torch.cuda.synchronize()
@@ -306,11 +345,16 @@ class KoopmanAutoencoder(nn.Module):
         dz_dt, dz_dt_disturbed = None, None
         if z0_disturbed is not None:
             disturbed_latents = self._autoregressive_rollout(
-                z0_disturbed, seq_length_int, re_for_prediction
+                z0_disturbed, seq_length_int, cond_for_prediction
             )
             # We detach to ensure this loss only affects the operator, not the encoder
-            dz_dt = self.koopman_operator.dynamics.K(z0.detach())
-            dz_dt_disturbed = self.koopman_operator.dynamics.K(z0_disturbed.detach())
+            if self.koopman_operator.is_continuous and hasattr(
+                self.koopman_operator.dynamics, "K"
+            ):
+                dz_dt = self.koopman_operator.dynamics.K(z0.detach())
+                dz_dt_disturbed = self.koopman_operator.dynamics.K(
+                    z0_disturbed.detach()
+                )
 
         # 6. Decode outputs for the main trajectory
         start, end = cuda_timer()
@@ -324,9 +368,9 @@ class KoopmanAutoencoder(nn.Module):
 
         # 7. Predict Reynolds number from the main trajectory (optional)
         reynolds = None
-        if self.predict_re and self.re_predictor is not None:
+        if self.predict_cond and self.re_predictor is not None:
             z_all = torch.cat([z0.unsqueeze(1), z_preds_stacked], dim=1)
-            z_for_re = z_all if self.re_grad_enabled else z_all.detach()
+            z_for_re = z_all if self.cond_grad_enabled else z_all.detach()
             reynolds = self.re_predictor(z_for_re)
 
         total_end.record()

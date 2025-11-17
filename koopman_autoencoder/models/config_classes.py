@@ -1,5 +1,3 @@
-# models/config_classes.py
-
 from omegaconf import MISSING
 from typing import Dict, Any, Tuple, Optional, List
 from dataclasses import dataclass, field
@@ -12,12 +10,6 @@ from .modules import (
 class NormalizationConfig:
     type: str = "MeanStdNormalizer"  # Default to a sensible choice
     sim: int = 0
-
-
-@dataclass
-class SplitConfig:
-    path: str
-    select_re: Optional[float] = None
 
 
 @dataclass
@@ -36,13 +28,16 @@ class DataConfig:
     quantile_range: Tuple[float, float] = (2.5, 97.5)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
 
-    train_re: Optional[Any] = None
-    val_re: Optional[Any] = None
-    test_re: Optional[Any] = None
+    # Defines ALL scalar control parameters to load from the dataset (e.g., ["Re", "Ma", "forcing"])
+    control_parameters: List[str] = field(default_factory=list)
 
-    train_ma: Optional[Any] = None
-    val_ma: Optional[Any] = None
-    test_ma: Optional[Any] = None
+    # Defines the ONE parameter to use for filtering (must be one of the keys in control_parameters)
+    selection_param: Optional[str] = None
+
+    # Defines the selection criteria for each split, passed to dataloader's 'select_cond'
+    train_select_cond: Optional[Any] = None
+    val_select_cond: Optional[Any] = None
+    test_select_cond: Optional[Any] = None
 
 
 @dataclass
@@ -55,14 +50,14 @@ class ModelConfig:
     kernel_size: int = MISSING
     conv_kwargs: Dict[str, Any] = field(default_factory=dict)
     latent_dim: int = MISSING
-    re_embedding_dim: Optional[int] = None
-    re_cond_type: Optional[str] = None
+    cond_embedding_dim: Optional[int] = None
+    cond_type: Optional[str] = None
     operator_mode: str = MISSING
     # Use the specific TransformerConfig dataclass for type safety
     transformer: ModelTransformerConfig = field(default_factory=ModelTransformerConfig)
-    predict_re: bool = False
+    predict_cond: bool = False
     # Explicitly control if the Reynolds loss regularizes the main model.
-    re_grad_enabled: bool = False
+    cond_grad_enabled: bool = False
     disturb_std: Optional[float] = None
     is_continuous: Optional[bool] = False
 

@@ -1,4 +1,3 @@
-# models/metrics.py
 import torch
 import torch.nn as nn
 import numpy as np
@@ -8,7 +7,16 @@ from typing import Optional, List
 from pathlib import Path
 import logging
 
-from .lsim.distance_model import DistanceModel
+# LSIM is an optional dependency
+try:
+    from .lsim.distance_model import DistanceModel
+
+    LSIM_AVAILABLE = True
+except ImportError:
+    DistanceModel = None  # type: ignore[assignment, misc]
+    LSIM_AVAILABLE = False
+    logging.warning("LSIM models not found. LSIM metric will not be available.")
+
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -21,32 +29,22 @@ class Metric(nn.Module):
     Computes image-based comparison metrics between two sets of video data
     represented as TensorDicts.
 
-    This module supports standard image metrics (L1, L2, SSIM, PSNR, VI) via
-    scikit-image and learned perceptual metrics (LSIM_BASE) using
-    the official DistanceModel wrapper.
+    This module supports standard image metrics (L1, L2, SSIM, PSNR, VI) and
+    learned perceptual metrics (LSIM).
 
-    Args:
-        mode (str): The metric to compute. Valid modes are "L1", "L2", "SSIM",
-                    "PSNR", "VI", "LSIM_BASE".
-        variable_mode (str): How to select variables from the TensorDict.
-                             Must be 'single' or 'all'. Defaults to "single".
-        variable_name (Optional[str]): The name of the variable to compute the
-                                       metric on if `variable_mode` is 'single'.
-                                       Defaults to None.
-        lsim_model_path (Optional[str | Path]): Path to the pretrained LSIM
-                                                model weights. Required if
-                                                `mode` is "LSIM" or
-                                                "". Defaults to
-                                                "./models/LSIM/Models/LSiM.pth".
+    The `forward` method returns a tensor of distances.
+    - If `variable_mode='single'`, returns shape [B, T].
+    - If `variable_mode='all'`, returns shape [B, T, C], where C is the
+      number of variables (channels) being compared.
 
-    Raises:
-        ValueError: If an invalid `mode` or `variable_mode` is provided, or if
-                    required arguments are missing.
+    This output shape is designed to match the dimensional averaging logic
+    of the original evaluation snippets (e.g., `mseScalar`, `lsimScalar`).
     """
 
     VALID_MODES = ["L1", "L2", "SSIM", "PSNR", "VI", "LSIM"]
-    SKIMAGE_MODES = ["L1", "L2", "SSIM", "PSNR", "VI"]
+    SKIMAGE_MODES = ["SSIM", "PSNR", "VI"]  # L1/L2 are handled in PyTorch
     LSIM_MODES = ["LSIM"]
+    PYTORCH_MODES = ["L1", "L2"]
 
     def __init__(
         self,
@@ -65,6 +63,11 @@ class Metric(nn.Module):
             raise ValueError("`variable_mode` must be 'single' or 'all'")
         if variable_mode == "single" and not variable_name:
             raise ValueError("`variable_name` must be provided for 'single' mode")
+
+        if mode in self.LSIM_MODES and not LSIM_AVAILABLE:
+            raise ImportError(
+                "LSIM metric selected, but LSIM dependencies are not installed or found."
+            )
         if mode in self.LSIM_MODES and not lsim_model_path:
             raise ValueError("`lsim_model_path` must be provided for LSIM modes")
 
@@ -75,8 +78,9 @@ class Metric(nn.Module):
 
         # --- Setup LSIM Model if required ---
         if self.mode in self.LSIM_MODES:
-            if not lsim_model_path:
-                raise ValueError("`lsim_model_path` must be provided for LSIM modes")
+            assert (
+                lsim_model_path is not None
+            ), "LSIM model path must be provided for LSIM modes"
             self._setup_lsim(Path(lsim_model_path))
 
         self.eval()  # Set to evaluation mode by default
@@ -92,60 +96,114 @@ class Metric(nn.Module):
         use_gpu = self.device.type == "cuda"
         self.lsim_model = DistanceModel(baseType="lsim", isTrain=False, useGPU=use_gpu)
         self.lsim_model.load(str(model_path))
-        logger.info("LSIM DistanceModel loaded successfully.")
+
+        # Set to eval mode and freeze weights, as in the reference loss script
+        self.lsim_model.eval()
+        for param in self.lsim_model.parameters():
+            param.requires_grad = False
+
+        logger.info("LSIM DistanceModel loaded and frozen.")
 
     def _compute_lsim_distance(
         self, ref: torch.Tensor, other: torch.Tensor
     ) -> torch.Tensor:
         """
-        Computes the LSIM distance using the DistanceModel wrapper.
+        Computes the LSIM distance using the DistanceModel wrapper,
+        replicating the vectorized logic from the reference `loss_lsim`.
+
+        Args:
+            ref (torch.Tensor): Ground truth tensor of shape [B, T, H, W].
+            other (torch.Tensor): Predicted tensor of shape [B, T, H, W].
+
+        Returns:
+            torch.Tensor: A tensor of shape [B, T] with the LSIM distance
+                          for each frame.
         """
-        assert ref.ndim == 4, f"Input tensors must be 4D, but got shape {ref.shape}"
+        assert (
+            ref.ndim == 4
+        ), f"Input tensors must be 4D [B, T, H, W], but got shape {ref.shape}"
+        ref = ref.to(self.device)
+        other = other.to(self.device)
         B, T, H, W = ref.shape
-        distances_list = []
 
-        for i in range(B):
-            batch_distances = []
-            for j in range(T):
-                # Convert the single frame to a numpy array
-                ref_np_2d = (ref[i, j].clamp(0, 1) * 255).byte().cpu().numpy()
-                other_np_2d = (other[i, j].clamp(0, 1) * 255).byte().cpu().numpy()
+        # Add a channel dimension: [B, T, 1, H, W]
+        ref_5d = ref.unsqueeze(2)
+        other_5d = other.unsqueeze(2)
 
-                # The LSIM library's internal transform expects a 4D array: (B, H, W, C)
-                # First, add the channel dimension to make it 3D
-                ref_np_3d = ref_np_2d[..., np.newaxis]
-                other_np_3d = other_np_2d[..., np.newaxis]
+        # --- 1. Per-sequence normalization to [0, 255] ---
+        # Normalization is per-sequence (B) across T, H, W.
+        ref_min = torch.amin(ref_5d, dim=(1, 3, 4), keepdim=True)
+        ref_max = torch.amax(ref_5d, dim=(1, 3, 4), keepdim=True)
+        other_min = torch.amin(other_5d, dim=(1, 3, 4), keepdim=True)
+        other_max = torch.amax(other_5d, dim=(1, 3, 4), keepdim=True)
 
-                # Then, add a batch dimension of 1
-                ref_np_4d = np.expand_dims(ref_np_3d, axis=0)
-                other_np_4d = np.expand_dims(other_np_3d, axis=0)
+        # Use a combined min/max for both tensors to ensure same scaling
+        all_min = torch.min(ref_min, other_min)
+        all_max = torch.max(ref_max, other_max)
 
-                # The computeDistance method now receives the correctly shaped array
-                dist_val = self.lsim_model.computeDistance(ref_np_4d, other_np_4d)
+        epsilon = 1e-6  # Prevent division by zero
+        ref_norm = 255 * (ref_5d - all_min) / (all_max - all_min + epsilon)
+        other_norm = 255 * (other_5d - all_min) / (all_max - all_min + epsilon)
 
-                # Append the result as a standard Python float
-                batch_distances.append(float(dist_val))
-            distances_list.append(batch_distances)
+        # --- 2. Reshape and Expand for LSIM model ---
+        # Flatten B, T into the batch dimension.
+        # (B, T, 1, H, W) -> (B*T, 1, H, W)
+        ref_reshaped = ref_norm.reshape(-1, 1, H, W)
+        other_reshaped = other_norm.reshape(-1, 1, H, W)
 
-        # Convert the list of lists to a single tensor at the end
-        return torch.tensor(distances_list, dtype=torch.float32, device=ref.device)
+        # Expand the channel dimension to 3, as required by the LSIM model.
+        # -> [B*T, 1, 3, H, W]
+        ref_expanded = ref_reshaped.expand(-1, 3, -1, -1).unsqueeze(
+            1
+        )  # [B*T, 1, 3, H, W]
+        other_expanded = other_reshaped.expand(-1, 3, -1, -1).unsqueeze(
+            1
+        )  # [B*T, 1, 3, H, W]
+
+        # --- 3. Compute LSIM distance ---
+        # Pass tensors directly to the model (as it's an nn.Module)
+        in_dict = {"reference": ref_expanded, "other": other_expanded}
+
+        with torch.no_grad():
+            # Model returns a flat tensor of distances, shape [B*T]
+            distances_flat = self.lsim_model(in_dict)
+
+        # --- 4. Reshape output ---
+        # Reshape flat distances [B*T] back to [B, T]
+        distances_bt = distances_flat.reshape(B, T)
+
+        return distances_bt.to(ref.device)
 
     def _compute_skimage_distance(
         self, ref: torch.Tensor, other: torch.Tensor
     ) -> torch.Tensor:
         """
-        Computes scikit-image metrics between two 4D tensors [B, T, H, W].
-        Assumes input tensors are normalized in the [0, 1] range.
+        Computes scikit-image metrics (SSIM, PSNR, VI) or fast PyTorch
+        metrics (L1, L2) between two 4D tensors [B, T, H, W].
+
+        This function computes metrics on the *raw data* without normalization,
+        matching the logic of F.mse_loss.
         """
         assert ref.ndim == 4, f"Input tensors must be 4D, but got shape {ref.shape}"
+
+        # --- PYTORCH MODES (L1, L2): Fast, GPU-native ---
+        # This matches `F.mse_loss` and `F.l1_loss` logic
+        if self.mode == "L2":
+            # Compute MSE (L2) per-frame by averaging over spatial dimensions (H, W)
+            # Input: [B, T, H, W] -> Output: [B, T]
+            return torch.mean((ref - other) ** 2, dim=(-2, -1))
+
+        if self.mode == "L1":
+            # Compute MAE (L1) per-frame
+            # Input: [B, T, H, W] -> Output: [B, T]
+            return torch.mean(torch.abs(ref - other), dim=(-2, -1))
+
+        # --- SKIMAGE MODES (SSIM, PSNR, VI): Slow, requires CPU ---
         B, T, H, W = ref.shape
 
         # Move to CPU and convert to numpy once for efficiency
         ref_np = ref.cpu().numpy()
         other_np = other.cpu().numpy()
-        # Clip values to valid [0, 1] range to avoid overflow warnings
-        ref_np = np.clip(ref_np, 0.0, 1.0)
-        other_np = np.clip(other_np, 0.0, 1.0)
 
         distances = np.zeros((B, T), dtype=np.float32)
 
@@ -153,35 +211,37 @@ class Metric(nn.Module):
             for j in range(T):
                 r, o = ref_np[i, j], other_np[i, j]
 
-                if self.mode == "L2":
-                    # MSE on [0, 1] range is already normalized
-                    distances[i, j] = sk_metrics.mean_squared_error(r, o)
-                elif self.mode == "L1":
-                    # MAE on [0, 1] range is already normalized
-                    distances[i, j] = np.mean(np.abs(r - o))
-                elif self.mode == "SSIM":
+                # --- Robust data_range calculation for non-normalized data ---
+                r_min, r_max = r.min(), r.max()
+                o_min, o_max = o.min(), o.max()
+                data_range = max(r_max, o_max) - min(r_min, o_min)
+                if data_range < 1e-6:
+                    # If data range is zero (e.g., all black), distance is zero
+                    distances[i, j] = 0.0
+                    continue
+
+                if self.mode == "SSIM":
                     # SSIM is a similarity [0, 1], so 1 - SSIM is a distance
                     distances[i, j] = 1.0 - sk_metrics.structural_similarity(
-                        r, o, data_range=1.0
+                        r, o, data_range=data_range
                     )
                 elif self.mode == "PSNR":
                     # PSNR is inverted to act as a distance (lower is better)
-                    # A small epsilon prevents division by zero for identical images
                     mse = sk_metrics.mean_squared_error(r, o)
-                    psnr = 20 * np.log10(1.0) - 10 * np.log10(mse + 1e-9)
+                    if mse < 1e-9:
+                        psnr = 100.0  # Arbitrarily high for identical images
+                    else:
+                        psnr = 20 * np.log10(data_range) - 10 * np.log10(mse)
                     distances[i, j] = -psnr
                 elif self.mode == "VI":
-                    # VI requires integer inputs
-                    # Clip to [0,1] and replace NaN/inf with 0
-                    r_safe = np.nan_to_num(
-                        np.clip(r, 0.0, 1.0), nan=0.0, posinf=1.0, neginf=0.0
-                    )
-                    o_safe = np.nan_to_num(
-                        np.clip(o, 0.0, 1.0), nan=0.0, posinf=1.0, neginf=0.0
-                    )
+                    # VI requires integer inputs. We scale to [0, 255] based on
+                    # the dynamic data range for robust comparison.
+                    r_norm = (r - min(r_min, o_min)) / data_range
+                    o_norm = (o - min(r_min, o_min)) / data_range
 
-                    r_int = (r_safe * 255).astype(np.uint8)
-                    o_int = (o_safe * 255).astype(np.uint8)
+                    r_int = (r_norm * 255).astype(np.uint8)
+                    o_int = (o_norm * 255).astype(np.uint8)
+
                     distances[i, j] = np.mean(
                         sk_metrics.variation_of_information(r_int, o_int)
                     )
@@ -197,15 +257,26 @@ class Metric(nn.Module):
             other (TensorDict): The predicted data.
 
         Returns:
-            torch.Tensor: A tensor of shape [B, T] with the computed distances.
-                          If `variable_mode` is 'all', the distances are
-                          averaged across all valid variables.
+            torch.Tensor:
+            - If `variable_mode='single'`, returns shape [B, T].
+            - If `variable_mode='all'`, returns shape [B, T, C], where C
+              is the number of variables (channels).
         """
+
+        reference = reference.to(self.device)
+        other = other.to(self.device)
         if self.variable_mode == "single":
+            if (
+                self.variable_name not in reference.keys()
+                or self.variable_name not in other.keys()
+            ):
+                raise ValueError(
+                    f"Specified variable_name '{self.variable_name}' not found in TensorDicts."
+                )
             keys_to_process = [self.variable_name]
         else:  # 'all'
             # Process all keys present in both dicts, excluding metadata
-            excluded_keys = {"seq_length", "Re_target", "Re_input", "obstacle_mask"}
+            excluded_keys = {"seq_length", "cond_target", "cond_input", "obstacle_mask"}
             keys_to_process = [
                 k
                 for k in reference.keys()
@@ -233,13 +304,11 @@ class Metric(nn.Module):
                 logger.info(f"ref_tensor.shape: {ref_tensor.shape}")
                 logger.info(f"other_tensor.shape: {other_tensor.shape}")
                 continue
-            # Ensure tensor is 4D [B, T, H, W], assuming grayscale if 3D [B, T, D]
-            if ref_tensor.ndim == 3:
-                # Assuming 3D is [B, T, Features], which is not image-like. Skip.
-                logger.info(f"Skipping variable '{var}': not an image-like 4D tensor.")
-                continue
+            # Ensure tensor is 4D [B, T, H, W]
             if ref_tensor.ndim != 4:
-                logger.info(f"Skipping variable '{var}': not an image-like 4D tensor.")
+                logger.info(
+                    f"Skipping variable '{var}': not an image-like 4D tensor (expected [B, T, H, W])."
+                )
                 continue
 
             # --- Dispatch to correct computation function ---
@@ -253,6 +322,9 @@ class Metric(nn.Module):
         if not per_var_results:
             return torch.empty(0)
 
-        # Stack and average across variables if in 'all' mode
-        # If 'single' mode, this just returns the single result
-        return torch.stack(per_var_results, dim=0).mean(dim=0)
+        # --- CHANGE: Stack results to match user's snippet logic ---
+        if self.variable_mode == "single":
+            return per_var_results[0]  # Returns [B, T]
+        else:
+            # Stacks list of [B, T] tensors into [B, T, C]
+            return torch.stack(per_var_results, dim=2).mean(dim=-1)

@@ -6,6 +6,8 @@ import numpy as np
 from .base_models import Alexnet, Vgg16, Squeezenet, DfpNet, LSiM_Base, LSiM_Skip
 from .dataset_distance import TransformsInference
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 class DistanceModel(nn.Module):
     def __init__(
@@ -21,7 +23,7 @@ class DistanceModel(nn.Module):
         useGPU=False,
     ):
         super(DistanceModel, self).__init__()
-        self.useGPU = useGPU
+        self.useGPU = torch.cuda.is_available()
         self.useDropout = True
         self.featureDistance = featureDistance
         self.normMode = normMode
@@ -48,8 +50,8 @@ class DistanceModel(nn.Module):
         self.normM2 = []
         for i in range(self.basenet.N_slices):
             if self.useGPU:
-                self.normAcc += [torch.tensor([0.0], requires_grad=False).cuda()]
-                self.normM2 += [torch.tensor([0.0], requires_grad=False).cuda()]
+                self.normAcc += [torch.tensor([0.0], requires_grad=False).to(DEVICE)]
+                self.normM2 += [torch.tensor([0.0], requires_grad=False).to(DEVICE)]
             else:
                 self.normAcc += [torch.tensor([0.0], requires_grad=False)]
                 self.normM2 += [torch.tensor([0.0], requires_grad=False)]
@@ -113,7 +115,7 @@ class DistanceModel(nn.Module):
 
         # GPU and evaluation mode setup
         if self.useGPU:
-            self.cuda()
+            self.to(DEVICE)
 
         if self.isTrain:
             self.train()
@@ -125,8 +127,8 @@ class DistanceModel(nn.Module):
         input2 = x["other"]
 
         if self.useGPU:
-            input1 = input1.cuda()
-            input2 = input2.cuda()
+            input1 = input1.to(DEVICE)
+            input2 = input2.to(DEVICE)
 
         sizeIn = input1.shape
         input1 = input1.view(sizeIn[0] * sizeIn[1], sizeIn[2], sizeIn[3], sizeIn[4])
@@ -137,7 +139,9 @@ class DistanceModel(nn.Module):
         outBase1 = self.basenet(input1)
         outBase2 = self.basenet(input2)
 
-        result = torch.tensor([[0.0]]).cuda() if self.useGPU else torch.tensor([[0.0]])
+        result = (
+            torch.tensor([[0.0]]).to(DEVICE) if self.useGPU else torch.tensor([[0.0]])
+        )
 
         for i in range(len(outBase1)):
             updateNorm = self.isTrain and self.useNormUpdate
@@ -255,8 +259,8 @@ class DistanceModel(nn.Module):
         input2 = sample["other"]
 
         if self.useGPU:
-            input1 = input1.cuda()
-            input2 = input2.cuda()
+            input1 = input1.to(DEVICE)
+            input2 = input2.to(DEVICE)
 
         sizeIn = input1.shape
         input1 = input1.view(sizeIn[0] * sizeIn[1], sizeIn[2], sizeIn[3], sizeIn[4])
@@ -393,21 +397,32 @@ class DistanceModel(nn.Module):
 
     # load model and normalization accumulators
     def load(self, path):
-        if self.normMode != "normUnit":
-            if self.useGPU:
-                print("Loading model from %s" % path)
-                loaded = torch.load(path)
-            else:
-                print("CPU - Loading model from %s" % path)
-                loaded = torch.load(path, map_location=torch.device("cpu"))
+        print(f"Loading model from {path}")
+
+        # Always load on CPU first (safest)
+        loaded = torch.load(path, map_location=torch.device("cpu"))
+
+        # Handle both stateDict-style and direct saves
+        if isinstance(loaded, dict) and "stateDict" in loaded:
             self.load_state_dict(loaded["stateDict"])
-            self.normAcc = loaded["normAcc"]
-            self.normM2 = loaded["normM2"]
-            self.normCount = loaded["normCount"]
+            self.normAcc = loaded.get("normAcc", self.normAcc)
+            self.normM2 = loaded.get("normM2", self.normM2)
+            self.normCount = loaded.get("normCount", self.normCount)
         else:
-            if self.useGPU:
-                print("Loading model from %s" % path)
-                self.load_state_dict(torch.load(path))
-            else:
-                print("CPU - Loading model from %s" % path)
-                self.load_state_dict(torch.load(path, map_location=torch.device("cpu")))
+            self.load_state_dict(loaded)
+
+        # Move model to correct device
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.to(device)
+
+        # Move normalization accumulators to the same device
+        if hasattr(self, "normAcc"):
+            self.normAcc = [t.to(device) for t in self.normAcc]
+        if hasattr(self, "normM2"):
+            self.normM2 = [t.to(device) for t in self.normM2]
+        if hasattr(self, "normCount"):
+            self.normCount = [
+                t.to(device) if torch.is_tensor(t) else t for t in self.normCount
+            ]
+
+        print(f"✅ LSiM model and normalization tensors moved to {device}")

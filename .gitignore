@@ -27,6 +27,9 @@
 *.out
 *.err
 *.tex
+*.dict
+*.loss
+*.pdf
 
 
 wget-log

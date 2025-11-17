@@ -12,7 +12,7 @@ from omegaconf import OmegaConf
 from hydra import initialize, compose
 
 # Re-importing locally to make this file self-contained and reflect fix
-from models.metrics import Metric
+from .metrics import Metric
 from .config_classes import Config
 from .dataloader import (
     QGDatasetBase,
@@ -125,7 +125,7 @@ def get_normalizer(cfg: Config) -> AbstractNormalizer:
 
 
 def load_datasets(
-    cfg: Config, ignore_re_ma: Optional[bool] = False
+    cfg: Config, ignore_cond: Optional[bool] = False
 ) -> Tuple[QGDatasetBase, QGDatasetBase, QGDatasetBase]:
     """
     Loads the training, validation, and test datasets based on the provided config.
@@ -134,9 +134,14 @@ def load_datasets(
     try:
         DatasetClass = get_dataset_class(cfg.data.dataset_type)
 
-        common_args = {}
+        common_args: Dict[str, Any] = {}
+
         if cfg.data.static_variables:
             common_args["static_variables"] = cfg.data.static_variables
+        if cfg.data.control_parameters:
+            common_args["control_parameters"] = cfg.data.control_parameters
+        if cfg.data.selection_param:
+            common_args["selection_param"] = cfg.data.selection_param
 
         train_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.train_file,
@@ -145,9 +150,8 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=None if ignore_re_ma else cfg.data.train_re,
-            select_ma=None if ignore_re_ma else cfg.data.train_ma,
-            **common_args,
+            select_cond=None if ignore_cond else cfg.data.train_select_cond,
+            **common_args,  # This will now pass all the new args
         )
         val_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.val_file,
@@ -156,9 +160,8 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=None if ignore_re_ma else cfg.data.val_re,
-            select_ma=None if ignore_re_ma else cfg.data.val_ma,
-            **common_args,
+            select_cond=None if ignore_cond else cfg.data.val_select_cond,
+            **common_args,  # This will now pass all the new args
         )
         test_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.test_file,
@@ -167,9 +170,8 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
-            select_re=None if ignore_re_ma else cfg.data.test_re,
-            select_ma=None if ignore_re_ma else cfg.data.test_ma,
-            **common_args,
+            select_cond=None if ignore_cond else cfg.data.test_select_cond,
+            **common_args,  # This will now pass all the new args
         )
 
         logger.info(

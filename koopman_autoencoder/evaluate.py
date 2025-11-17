@@ -1,4 +1,3 @@
-# evaluate_models_no_re_no_plot.py
 import os
 import logging
 import argparse
@@ -23,6 +22,7 @@ try:
         run_evaluation,
         kae_rollout_wrapper,
         run_diffusion_rollout,
+        compute_metrics_from_data,
     )
 except Exception:
     raise
@@ -60,6 +60,8 @@ SCRIPT_CONFIG = {
         },
     },
 }
+torch.manual_seed(1)
+torch.cuda.manual_seed(1)
 
 # =====================================================================================
 # HELPER FUNCTIONS
@@ -100,9 +102,7 @@ def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module,
         input_frames = int(cfg.data.input_sequence_length)
 
     try:
-        re_cond_type = cast(
-            Optional[Literal["late_fusion", "adaln"]], cfg.model.re_cond_type
-        )
+        cond_type = cast(Optional[Literal["late_fusion", "adaln"]], cfg.model.cond_type)
         operator_mode = cast(Literal["linear", "eigen", "mlp"], cfg.model.operator_mode)
 
         model = KoopmanAutoencoder(
@@ -111,14 +111,14 @@ def load_kae_model(model_config: dict, device: torch.device) -> Tuple[nn.Module,
             height=cfg.model.height,
             width=cfg.model.width,
             latent_dim=cfg.model.latent_dim,
-            re_embedding_dim=cfg.model.re_embedding_dim,
-            re_cond_type=re_cond_type,
+            cond_embedding_dim=cfg.model.cond_embedding_dim,
+            cond_type=cond_type,
             operator_mode=operator_mode,
             hidden_dims=cfg.model.hidden_dims,
             transformer_config=cfg.model.transformer,
             use_checkpoint=False,
-            predict_re=cfg.model.predict_re,
-            re_grad_enabled=cfg.model.re_grad_enabled,
+            predict_cond=cfg.model.predict_cond,
+            cond_grad_enabled=cfg.model.cond_grad_enabled,
             is_continuous=cfg.model.is_continuous,
             **cfg.model.conv_kwargs,
         ).to(device)
@@ -169,7 +169,9 @@ def load_acdm_model(model_config: dict, device: torch.device) -> nn.Module:
         arch="direct-ddpm+Prev",
         diffSteps=20,
         diffSchedule="linear",
-        diffCondIntegration="noisy",
+        diffCondIntegration=(
+            "clean" if model_config.get("model_type") == "acdm_ncn" else "noisy"
+        ),
         trainingNoise=0.0,
     )
     p_d = DataParams(
@@ -226,6 +228,10 @@ def main(args):
         logger.error("Evaluation config not found: %s", args.eval_config)
         return
 
+    # --- Create data directory ---
+    os.makedirs(args.data_dir, exist_ok=True)
+    logger.info(f"Using data directory: {args.data_dir}")
+
     with open(args.eval_config, "r") as f:
         try:
             eval_config = yaml.safe_load(f)
@@ -271,39 +277,118 @@ def main(args):
         for model_config in evaluations:
             model_name = model_config.get("name", "<unnamed>")
             model_type = model_config.get("model_type", "").lower()
-            logger.info(f"Evaluating model: {model_name} ({model_type})")
-            model = None
-            rollout_fn = None
+            logger.info(
+                f"Processing model: {model_name} ({model_type}) in mode: {args.mode}"
+            )
+
+            # Define path for *aggregate* saved data
+            data_path = os.path.join(
+                args.data_dir, f"{model_name}_{split_name}_data.pt"
+            )
 
             try:
-                if model_type == "kae":
-                    model, cfg = load_kae_model(model_config, DEVICE)
-                    rollout_fn = kae_rollout_wrapper
-                elif model_type in ("acdm", "acdm_ncn"):
-                    model = load_acdm_model(model_config, DEVICE)
-                    rollout_fn = cast(
-                        Optional[Callable[..., Any]], run_diffusion_rollout
+                if args.mode == "generate":
+                    model = None
+                    rollout_fn = None
+
+                    if model_type == "kae":
+                        model, cfg = load_kae_model(model_config, DEVICE)
+                        rollout_fn = kae_rollout_wrapper
+                    elif model_type in ("acdm", "acdm_ncn"):
+                        model = load_acdm_model(model_config, DEVICE)
+                        rollout_fn = cast(
+                            Optional[Callable[..., Any]], run_diffusion_rollout
+                        )
+                    else:
+                        logger.warning(f"Unknown model type '{model_type}'. Skipping.")
+                        continue
+
+                    if rollout_fn is None:
+                        continue
+
+                    output_len: int = int(cast(int, SCRIPT_CONFIG["rollout_steps"]))
+
+                    # --- New: Define directory for individual rollouts ---
+                    individual_save_dir = os.path.join(
+                        args.data_dir, model_name, split_name
                     )
-                else:
-                    logger.warning(f"Unknown model type '{model_type}'. Skipping.")
-                    continue
+                    logger.info(
+                        f"Individual rollouts will be saved to: {individual_save_dir}"
+                    )
+                    # --- End New ---
 
-                if rollout_fn is None:
-                    continue
+                    # run_evaluation now returns metrics, targets, and predictions
+                    metrics_summary, raw_errors_bt, targets, predictions = (
+                        run_evaluation(
+                            model=model,
+                            loader=loader,
+                            output_len=output_len,
+                            rollout_fn=rollout_fn,
+                            metric_names=["L2", "LSIM"],
+                            save_individual_dir=individual_save_dir,  # Pass the new dir
+                        )
+                    )
 
-                input_len: int = int(cast(int, SCRIPT_CONFIG["input_len"]))
-                output_len: int = int(cast(int, SCRIPT_CONFIG["rollout_steps"]))
+                    # Save the *aggregate* data and computed errors
+                    if not targets.is_empty():
+                        logger.info(
+                            f"Saving *aggregate* data and errors to {data_path}..."
+                        )
 
-                metrics = run_evaluation(
-                    model=model,
-                    loader=loader,
-                    input_len=input_len,
-                    output_len=output_len,
-                    rollout_fn=rollout_fn,
-                )
-                all_results_split[split_name][model_name] = metrics or {}
+                        # Move raw errors to CPU for saving
+                        raw_errors_bt_cpu = {
+                            k: {v_k: v_t.cpu() for v_k, v_t in v_d.items()}
+                            for k, v_d in raw_errors_bt.items()
+                        }
+
+                        torch.save(
+                            {
+                                "targets": targets.cpu(),
+                                "predictions": predictions.cpu(),
+                                "raw_errors_bt": raw_errors_bt_cpu,
+                                "metrics_summary": metrics_summary,
+                            },
+                            data_path,
+                        )
+                        logger.info("Aggregate save complete.")
+
+                    all_results_split[split_name][model_name] = metrics_summary or {}
+
+                elif args.mode == "analyze":
+                    if not os.path.exists(data_path):
+                        logger.warning(
+                            f"Aggregate data file not found: {data_path}. Skipping analysis."
+                        )
+                        all_results_split[split_name][model_name] = {}
+                        continue
+
+                    logger.info(f"Loading aggregate data from {data_path}...")
+                    data = torch.load(data_path, map_location="cpu")  # Load to CPU
+
+                    # Check for new format, with fallback for old data
+                    if "metrics_summary" in data:
+                        logger.info("Loaded pre-computed metrics_summary.")
+                        metrics_summary = data["metrics_summary"]
+                        # raw_errors_bt = data.get("raw_errors_bt")
+                        # You can load raw_errors_bt here for custom plotting
+                    else:
+                        # Fallback for old data format
+                        logger.info(
+                            "metrics_summary not found, recomputing from raw data..."
+                        )
+                        targets = data["targets"].to(DEVICE)
+                        predictions = data["predictions"].to(DEVICE)
+
+                        metrics_summary, raw_errors_bt = compute_metrics_from_data(
+                            targets=targets,
+                            predictions=predictions,
+                            metric_names=["L2", "LSIM"],
+                        )
+
+                    all_results_split[split_name][model_name] = metrics_summary or {}
+
             except Exception as e:
-                logger.exception(f"Failed evaluation for model '{model_name}': {e}")
+                logger.exception(f"Failed processing for model '{model_name}': {e}")
                 all_results_split[split_name][model_name] = {}
 
     # --- Generate LaTeX Table ---
@@ -327,7 +412,7 @@ def main(args):
         def format_val(mean, std):
             if mean is None or std is None or np.isnan(mean) or np.isnan(std):
                 return "-"
-            scale, precision = 1e-4, 2
+            scale, precision = 1e-4, 4
             return f"${mean / scale:.{precision}f} \\pm {std / scale:.{precision}f}$"
 
         column_spec = "@{}lc" + "c" * len(metric_order) + "@{}"
@@ -386,7 +471,7 @@ def main(args):
         return "\n".join(table)
 
     latex_table = generate_comparison_latex_table(all_results_split)
-    print(latex_table)
+    logger.info(latex_table)
 
     try:
         output_filename = "metrics_table_split_comparison.tex"
@@ -404,6 +489,19 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Path to the YAML evaluation configuration file.",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="generate",
+        choices=["generate", "analyze"],
+        help="Operation mode: 'generate' runs models and saves data, 'analyze' loads data and computes metrics.",
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="./evaluation_data",
+        help="Directory to save/load raw prediction data.",
     )
     args = parser.parse_args()
     main(args)

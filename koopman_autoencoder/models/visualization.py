@@ -41,7 +41,7 @@ def plot_comparison(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for var in x.keys():
-        if var in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]:
+        if var in ["seq_length", "cond_target", "cond_input", "obstacle_mask"]:
             continue
         x_var = x[var][0]  # shape: (T, H, W)
         x_recon_var = x_recon[var][0]  # shape: (T, H, W)
@@ -147,7 +147,7 @@ def plot_energy_spectrum(
     plt.figure(figsize=(12, 6))  # Adjusted size for better readability in W&B
 
     for var in variables:
-        if var in ["seq_length", "Re_target", "Re_input", "obstacle_mask"]:
+        if var in ["seq_length", "cond_target", "cond_input", "obstacle_mask"]:
             continue
         # Compute isotropic energy spectrum for each variable
         k_bins, true_spec = compute_isotropic_energy_spectrum(true_fields[var])
@@ -189,22 +189,22 @@ def compute_re(
     Compute Reynolds number and log in W&B
     """
     Re_logs = {}
-    true_Re = true_fields["Re_target"].detach().cpu().numpy()
+    true_cond = true_fields["cond_target"].detach().cpu().numpy()
     v_x = pred_fields["v_x"]
     v_y = pred_fields["v_y"]
     v = torch.sqrt(v_x**2 + v_y**2).mean(dim=(1, 2, 3))
-    pred_Re = v.detach().cpu().numpy() * L / nu
+    pred_cond = v.detach().cpu().numpy() * L / nu
 
     if output_dir:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        Re_logs[f"figures/{mode}/true_Re"] = true_Re[
+        Re_logs[f"figures/{mode}/true_Re"] = true_cond[
             0
         ]  # indexed to ony show one sample per batch
-        Re_logs[f"figures/{mode}/pred_Re"] = pred_Re[
+        Re_logs[f"figures/{mode}/pred_Re"] = pred_cond[
             0
         ]  # indexed to ony show one sample per batch
-        Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_Re[:, 0] - pred_Re)
+        Re_logs[f"figures/{mode}/diff_Re"] = np.mean(true_cond[:, 0] - pred_cond)
         # Log to W&B
         if is_main_process():
             wandb.log(Re_logs)
@@ -281,12 +281,12 @@ def denormalize_and_visualize(
         mode=mode,
     )
 
-    compute_re(
-        true_fields=target,
-        pred_fields=x_preds,
-        output_dir=output_dir,
-        mode=mode,
-    )
+    # compute_re(
+    #     true_fields=target,
+    #     pred_fields=x_preds,
+    #     output_dir=output_dir,
+    #     mode=mode,
+    # )
 
 
 def plot_joint_rollout(

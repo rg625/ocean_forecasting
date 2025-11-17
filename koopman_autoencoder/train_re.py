@@ -108,8 +108,8 @@ def main(cfg: DictConfig):
             hidden_dims=cfg.model.hidden_dims,
             transformer_config=cfg.model.transformer,
             use_checkpoint=cfg.training.use_checkpoint,
-            predict_re=cfg.model.predict_re,
-            re_grad_enabled=cfg.model.re_grad_enabled,
+            predict_cond=cfg.model.predict_cond,
+            cond_grad_enabled=cfg.model.cond_grad_enabled,
             **cfg.model.conv_kwargs,
         ).to(device)
         if is_ddp:

@@ -93,10 +93,11 @@ class Trainer:
                     "bfloat16 not supported on this device, falling back to float32."
                 )
 
-        elif precision not in ["float32", None]:
-            raise ValueError(f"Unsupported precision: '{precision}'")
-        else:
+        elif precision in ["float32", None]:
+            self.autocast_dtype = torch.float32
             logger.info("Using float32 full precision.")
+        else:
+            raise ValueError(f"Unsupported precision: '{precision}'")
 
     def _init_history(self):
         self.history: Dict[str, Dict[str, List[float]]] = {
@@ -150,13 +151,13 @@ class Trainer:
         squashed_td_to_encode = TensorDict(squashed_dict, batch_size=[B * T, 1])
 
         # Flatten the Reynolds number tensor to match the squashed batch dimension.
-        re_target_flat = None
-        if "Re_target" in target_td:
-            re_target_flat = rearrange(target_td["Re_target"], "b t -> (b t)")
+        cond_target_flat = None
+        if "cond_target" in target_td:
+            cond_target_flat = rearrange(target_td["cond_target"], "b t -> (b t)")
 
         # Get the "true" latent vectors by encoding the ground-truth future states.
         true_latents_flat = model_module.present_encoding(
-            squashed_td_to_encode, re_input=re_target_flat
+            squashed_td_to_encode, cond_input=cond_target_flat
         )
         return rearrange(true_latents_flat, "(b t) d -> b t d", b=B)
 
