@@ -310,7 +310,11 @@ class KoopmanLoss(nn.Module):
 
         stability_loss = torch.tensor(0.0, device=latent_pred.device)
         # Only compute and add the loss if the weight is specified and inputs are available
-        if self.stability_weight is not None and disturbed_latents is not None:
+        if (
+            self.stability_weight is not None
+            and disturbed_latents is not None
+            and dz_dt_disturbed is not None
+        ):
             assert (
                 self.stability_weight > 0
             ), f"stability_weight must be positive, but got {self.stability_weight}"

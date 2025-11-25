@@ -289,8 +289,8 @@ class BaseEncoderDecoder(nn.Module):
 
         # --- NEW: Add expansion map (same as in modules.py) ---
         self.expansion_map: Dict[str, nn.Module] = {
-            "re": re_expansion,
-            "ma": ma_expansion,
+            "Re": re_expansion,
+            "Ma": ma_expansion,
             "forcing": forcing_expansion,
         }
         # --- END NEW ---

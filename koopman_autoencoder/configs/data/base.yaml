@@ -20,6 +20,10 @@ normalization:
   type: "MeanStdNormalizer"
   sim: 0
 quantile_range: [2.5, 97.5]
-train_re: null
-val_re: null
-test_re: null
+
+control_parameters: ["Re"]
+selection_param: "Re"
+
+train_select_cond: null
+val_select_cond: null
+test_select_cond: null

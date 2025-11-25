@@ -88,5 +88,5 @@ re_expansion = FourierExpansion(100, 1000)
 ma_expansion = FourierExpansion(1e-13, 1.0)
 """:class:`.FourierExpansion`: Fourier expansion for the absolute Mach number encoding."""
 
-forcing_expansion = FourierExpansion(1e-13, 1.0)
+forcing_expansion = FourierExpansion(1.9e-12, 7.1e-12)
 """:class:`.FourierExpansion`: Fourier expansion for the absolute forcing amplitude encoding."""

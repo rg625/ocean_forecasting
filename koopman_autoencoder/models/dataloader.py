@@ -20,6 +20,17 @@ logger = logging.getLogger(__name__)
 INC_MEAN = {"v_x": 0.444969, "v_y": 0.000299, "p": 0.000586, "Re": 550.0}
 INC_STD = {"v_x": 0.206128, "v_y": 0.206128, "p": 0.003942, "Re": 262.678467}
 
+QG_MEAN = {
+    "q1": 6.130118365440265e-07,
+    "q2": -6.069969143104177e-07,
+    "forcing": 4.598683515047508e-12,
+}
+QG_STD = {
+    "q1": 4.220613803016554e-05,
+    "q2": 2.8499078149814454e-06,
+    "forcing": 1.5010150481725185e-12,
+}
+
 
 class DatasetConfigurationError(Exception):
     """Custom exception for dataset configuration errors."""
@@ -59,22 +70,24 @@ class MeanStdNormalizer(AbstractNormalizer):
 
     def fit(self, data: TensorDict):
         self.normalized_vars = list(data.keys())
-        self.means = TensorDict(
-            {key: torch.mean(tensor).float() for key, tensor in data.items()},
-            batch_size=[],
-        )
-        self.stds = TensorDict(
-            {key: torch.std(tensor).float() for key, tensor in data.items()},
-            batch_size=[],
-        )
         # self.means = TensorDict(
-        #     {key: val for key, val in INC_MEAN.items()},
+        #     {key: torch.mean(tensor).float() for key, tensor in data.items()},
         #     batch_size=[],
         # )
         # self.stds = TensorDict(
-        #     {key: val for key, val in INC_STD.items()},
+        #     {key: torch.std(tensor).float() for key, tensor in data.items()},
         #     batch_size=[],
         # )
+        means = QG_MEAN if "q1" in self.normalized_vars else INC_MEAN
+        stds = QG_STD if "q1" in self.normalized_vars else INC_STD
+        self.means = TensorDict(
+            {key: val for key, val in means.items()},
+            batch_size=[],
+        )
+        self.stds = TensorDict(
+            {key: val for key, val in stds.items()},
+            batch_size=[],
+        )
         logger.info("Fitted MeanStdNormalizer.")
 
     def transform(self, data: TensorDict) -> TensorDict:
@@ -523,44 +536,8 @@ class QGDatasetMultiSim(QGDatasetBase):
         # This now calls the QGDatasetBase._prepare_data
         super()._prepare_data()
 
-    def _compute_master_index(self):
-        """Creates a master list of all possible (sim, start_index) pairs."""
-        self.master_index = []
-        if "t" in self._data.sizes:
-            num_timesteps = self._data.sizes["t"]
-        elif "time" in self._data.sizes:
-            num_timesteps = self._data.sizes["time"]
-        else:
-            raise ValueError("Missing time dimension")
-
-        required_length_in_steps = self.input_sequence_length + self.max_sequence_length
-        if required_length_in_steps == 0:
-            logger.warning("Total sequence length (input+max) is 0.")
-            return
-
-        # The total number of *original data points* needed for one full sequence
-        required_index_span = (
-            (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
-        ) + 1
-
-        # The number of valid starting positions
-        valid_starts = num_timesteps - required_index_span + 1
-
-        if valid_starts > 0:
-            for sim_idx in range(self.num_sims):
-                self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
-        if not self.master_index:
-            logger.warning(
-                f"No valid sequences generated from dataset. "
-                f"Sims: {self.num_sims}, Timesteps: {num_timesteps}, "
-                f"Required span: {required_index_span}, Valid starts: {valid_starts}"
-            )
-
     # def _compute_master_index(self):
-    #     """
-    #     Creates a master list of all possible (sim, start_index) pairs,
-    #     generating non-overlapping sequences based on the full sequence length.
-    #     """
+    #     """Creates a master list of all possible (sim, start_index) pairs."""
     #     self.master_index = []
     #     if "t" in self._data.sizes:
     #         num_timesteps = self._data.sizes["t"]
@@ -569,30 +546,66 @@ class QGDatasetMultiSim(QGDatasetBase):
     #     else:
     #         raise ValueError("Missing time dimension")
 
-    #     # The step size (or stride) between the start of consecutive non-overlapping sequences.
-    #     # This is the span of indices in the original data that one full sequence
-    #     # (input + max_target) covers.
-    #     stride = (
-    #         self.input_sequence_length + self.max_sequence_length
-    #     ) * self.subsample
+    #     required_length_in_steps = self.input_sequence_length + self.max_sequence_length
+    #     if required_length_in_steps == 0:
+    #         logger.warning("Total sequence length (input+max) is 0.")
+    #         return
 
-    #     # The last possible starting index must allow for a full sequence to be drawn.
-    #     # A sequence starting at `s` will need data up to index `s + stride - 1`.
-    #     # So, `s + stride - 1 < num_timesteps` => `s <= num_timesteps - stride`.
-    #     last_possible_start = num_timesteps - stride
+    #     # The total number of *original data points* needed for one full sequence
+    #     required_index_span = (
+    #         (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
+    #     ) + 1
 
-    #     if last_possible_start >= 0:
+    #     # The number of valid starting positions
+    #     valid_starts = num_timesteps - required_index_span + 1
+
+    #     if valid_starts > 0:
     #         for sim_idx in range(self.num_sims):
-    #             # Iterate with a step size equal to the stride for non-overlapping samples.
-    #             # The `stop` for range is exclusive, so we use `last_possible_start + 1`.
-    #             start_indices = range(0, last_possible_start + 1, stride)
-    #             self.master_index.extend([(sim_idx, i) for i in start_indices])
-
+    #             self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
     #     if not self.master_index:
     #         logger.warning(
-    #             "No valid non-overlapping sequences generated from the dataset. "
-    #             "Check sequence lengths, subsampling rate, and total timesteps."
+    #             f"No valid sequences generated from dataset. "
+    #             f"Sims: {self.num_sims}, Timesteps: {num_timesteps}, "
+    #             f"Required span: {required_index_span}, Valid starts: {valid_starts}"
     #         )
+
+    def _compute_master_index(self):
+        """
+        Creates a master list of all possible (sim, start_index) pairs,
+        generating non-overlapping sequences based on the full sequence length.
+        """
+        self.master_index = []
+        if "t" in self._data.sizes:
+            num_timesteps = self._data.sizes["t"]
+        elif "time" in self._data.sizes:
+            num_timesteps = self._data.sizes["time"]
+        else:
+            raise ValueError("Missing time dimension")
+
+        # The step size (or stride) between the start of consecutive non-overlapping sequences.
+        # This is the span of indices in the original data that one full sequence
+        # (input + max_target) covers.
+        stride = (
+            self.input_sequence_length + self.max_sequence_length
+        ) * self.subsample
+
+        # The last possible starting index must allow for a full sequence to be drawn.
+        # A sequence starting at `s` will need data up to index `s + stride - 1`.
+        # So, `s + stride - 1 < num_timesteps` => `s <= num_timesteps - stride`.
+        last_possible_start = num_timesteps - stride
+
+        if last_possible_start >= 0:
+            for sim_idx in range(self.num_sims):
+                # Iterate with a step size equal to the stride for non-overlapping samples.
+                # The `stop` for range is exclusive, so we use `last_possible_start + 1`.
+                start_indices = range(0, last_possible_start + 1, stride)
+                self.master_index.extend([(sim_idx, i) for i in start_indices])
+
+        if not self.master_index:
+            logger.warning(
+                "No valid non-overlapping sequences generated from the dataset. "
+                "Check sequence lengths, subsampling rate, and total timesteps."
+            )
 
     def __len__(self) -> int:
         return len(self.master_index)
