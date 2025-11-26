@@ -318,27 +318,27 @@ def main(config_path):
     # =========================================================================
 
     # STAGE 1: Generate the raw ensemble data
-    print("\n--- STAGE 1: Generating Ensemble Data ---")
-    generate_ensemble(config)  # UNCOMMENTED
+    # print("\n--- STAGE 1: Generating Ensemble Data ---")
+    # generate_ensemble(config)  # UNCOMMENTED
 
-    # STAGE 2: Post-process the data
-    print("\n--- STAGE 2: Processing Ensemble Data ---")
-    # A. Clean raw data
-    clean_splits = {
-        "train": (raw_train_dir, clean_train_dir),
-        "val": (raw_val_dir, clean_val_dir),
-        "test": (raw_test_dir, clean_test_dir),
-    }
-    # Loop through each data split and apply the cleaning process
-    for split_name, (input_dir, output_dir) in clean_splits.items():
-        print(f"Cleaning {split_name} data...")
-        process_ensemble_files(
-            input_dir=input_dir,
-            output_dir=output_dir,
-            action="clean",
-            params={"drop_samples": config['ensemble']['drop_samples']},
-        )
-    # B. Filter variables for all sets
+    # # STAGE 2: Post-process the data
+    # print("\n--- STAGE 2: Processing Ensemble Data ---")
+    # # A. Clean raw data
+    # clean_splits = {
+    #     "train": (raw_train_dir, clean_train_dir),
+    #     "val": (raw_val_dir, clean_val_dir),
+    #     "test": (raw_test_dir, clean_test_dir),
+    # }
+    # # Loop through each data split and apply the cleaning process
+    # for split_name, (input_dir, output_dir) in clean_splits.items():
+    #     print(f"Cleaning {split_name} data...")
+    #     process_ensemble_files(
+    #         input_dir=input_dir,
+    #         output_dir=output_dir,
+    #         action="clean",
+    #         params={"drop_samples": config['ensemble']['drop_samples']},
+    #     )
+    # # B. Filter variables for all sets
     filter_params = {"keep_vars": ["q1", "q2", "forcing"]}
     process_ensemble_files(clean_train_dir, final_train_dir, "filter", filter_params)
     process_ensemble_files(clean_val_dir, final_val_dir, "filter", filter_params)
