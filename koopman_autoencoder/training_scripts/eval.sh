@@ -1,23 +1,33 @@
-#!/bin/bash
-# #############################################################################
-# Script to run the static evaluation pipeline based on the provided config.
-# #############################################################################
+# # !/bin/bash
 
-PYTHON_SCRIPT="evaluate.py"
-EVAL_CONFIG_FILE=$1
-OTHER_ARGS="${@:2}" # Captures optional flags like --generate_plots
+# Configuration Arrays
+# arch in python script corresponds to "discrete" or "continous" (TYPES in your bash vars)
+TYPES=("discrete" "continous")
+# type in python script corresponds to "linear" or "mlp" (ARCHS in your bash vars)
+ARCHS=("linear" "mlp")
+# dimension
+SIZES=(128 1024)
 
-if [ -z "$EVAL_CONFIG_FILE" ]; then
-    echo "Error: No evaluation config file provided."
-    echo "Usage: $0 path/to/your/evaluation_config.yaml"
-    exit 1
-fi
-# ... (you can keep the other file existence checks if you wish) ...
+# Output Directory
+OUT_DIR="/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling/lowRey2/"
 
-echo "Starting model evaluation using config: $EVAL_CONFIG_FILE"
-echo "---"
+for size in "${SIZES[@]}"; do
+  for type in "${TYPES[@]}"; do
+    for arch in "${ARCHS[@]}"; do
 
-python "$PYTHON_SCRIPT" --eval_config "$EVAL_CONFIG_FILE" --generate_plots
+      # Construct config name: arch_type_dim
+      # Note: 'type' var here maps to 'model_arch' (discrete/continuous)
+      #       'arch' var here maps to 'model_type' (linear/mlp)
+      CONFIG_NAME="${type}_${arch}_${size}"
 
-echo "---"
-echo "Evaluation script finished."
+      echo "---------------------------------------------------"
+      echo "Running Evaluation for: $CONFIG_NAME"
+      echo "---------------------------------------------------"
+
+      python evaluate.py \
+        --config_name "$CONFIG_NAME" \
+        --out_dir "$OUT_DIR"
+
+    done
+  done
+done

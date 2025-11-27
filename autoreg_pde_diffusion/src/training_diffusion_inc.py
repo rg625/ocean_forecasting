@@ -52,7 +52,7 @@ if __name__ == "__main__":
         trainingNoise=0.0,
     )
     p_ml = None
-    pretrainPath = ""
+    pretrainPath = "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/runs/2D_Inc/128_acdm-r20_00/Model.pth"
 
     ### ACDM_ncn
     # modelName = "2D_Inc/128_acdm-r20_ncn"
@@ -78,10 +78,10 @@ if __name__ == "__main__":
 
     trainSet = TurbulenceDataset(
         "Training",
-        ["data"],
+        ["/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/data/"],
         filterTop=["128_inc"],
         filterSim=[(10, 81)],
-        filterFrame=[(800, 1300)],
+        filterFrame=[(20, 1300)],
         sequenceLength=[p_d.sequenceLength],
         randSeqOffset=p_d.randSeqOffset,
         simFields=p_d.simFields,
@@ -92,7 +92,7 @@ if __name__ == "__main__":
     testSets = {
         "lowRey": TurbulenceDataset(
             "Test Low Reynolds 100-200",
-            ["data"],
+            ["/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/data/"],
             filterTop=["128_inc"],
             filterSim=[[82, 84, 86, 88, 90]],
             filterFrame=[(1000, 1150)],
@@ -103,7 +103,7 @@ if __name__ == "__main__":
         ),
         "highRey": TurbulenceDataset(
             "Test High Reynolds 900-1000",
-            ["data"],
+            ["/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/data/"],
             filterTop=["128_inc"],
             filterSim=[[0, 2, 4, 6, 8]],
             filterFrame=[(1000, 1150)],
@@ -114,7 +114,7 @@ if __name__ == "__main__":
         ),
         "varReyIn": TurbulenceDataset(
             "Test Varying Reynolds Number (200-900)",
-            ["data"],
+            ["/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/data/"],
             filterTop=["128_reyVar"],
             filterSim=[[0]],
             filterFrame=[(300, 800)],
@@ -257,4 +257,4 @@ if __name__ == "__main__":
         pretrainPath=pretrainPath,
         useGPU=useGPU,
         gpuID=gpuID,
-    )  # type:ignore
+    )

@@ -3,7 +3,9 @@
 
 # loss:
 alpha: 1.0
-beta: 0.001
+beta: 1.0
+loss_type: "l2"
+ssim_weight: null # 0.1
 re_weight: null # 0.0
 stability_weight: 0.001 # null
 weighting_type: "uniform"

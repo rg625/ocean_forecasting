@@ -2,7 +2,7 @@
 # base config for linear decay
 
 # lr_scheduler:
-lr: 1.0e-4
+lr: 5.0e-4
 warmup: 100
 decay: 900
-final_lr: 1.0e-5
+final_lr: 5.0e-5

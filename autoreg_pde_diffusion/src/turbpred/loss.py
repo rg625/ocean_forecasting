@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, List
 
-from lsim.distance_model import DistanceModel as LSIM_Model
+from .lsim.distance_model import DistanceModel as LSIM_Model
 
 from turbpred.params import LossParams
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # input shape: B S C W H -> output shape: B S C
@@ -56,7 +58,9 @@ class PredictionLoss(nn.modules.loss._Loss):
         if self.dimension == 2:
             # load lsim
             self.lsim = LSIM_Model(baseType="lsim", isTrain=False, useGPU=self.useGPU)
-            self.lsim.load("src/lsim/models/LSiM.pth")
+            self.lsim.load(
+                "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/turbpred/lsim/models/LSiM.pth"
+            )
             self.lsim.eval()
             # freeze lsim weights
             for param in self.lsim.parameters():

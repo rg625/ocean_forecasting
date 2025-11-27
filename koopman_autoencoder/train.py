@@ -110,18 +110,20 @@ def main(cfg: DictConfig):
             height=cfg.model.height,
             width=cfg.model.width,
             latent_dim=cfg.model.latent_dim,
-            re_embedding_dim=cfg.model.re_embedding_dim,
-            re_cond_type=cfg.model.re_cond_type,
+            cond_embedding_dim=cfg.model.cond_embedding_dim,
+            cond_type=cfg.model.cond_type,
             operator_mode=cfg.model.operator_mode,
             hidden_dims=cfg.model.hidden_dims,
             transformer_config=cfg.model.transformer,
             use_checkpoint=cfg.training.use_checkpoint,
-            predict_re=cfg.model.predict_re,
-            re_grad_enabled=cfg.model.re_grad_enabled,
+            predict_cond=cfg.model.predict_cond,
+            cond_grad_enabled=cfg.model.cond_grad_enabled,
             disturb_std=cfg.model.disturb_std,
             is_continuous=cfg.model.is_continuous,
+            cond_expansion_type=cfg.data.selection_param,
             **cfg.model.conv_kwargs,
         ).to(device)
+        # model = torch.compile(model)
         if is_ddp:
             model = DDP(model, device_ids=[local_rank])
     except Exception as e:
@@ -131,7 +133,10 @@ def main(cfg: DictConfig):
     # --- Optimizer, Loss, Metrics, and Scheduler ---
     model_params = model.module.parameters() if is_ddp else model.parameters()
     optimizer = optim.Adam(model_params, lr=cfg.lr_scheduler.lr)
-    criterion = KoopmanLoss(**cfg.loss)
+    if cfg.loss.get("ssim_weight", None) is not None:
+        criterion = KoopmanLoss(to_unit_range=train_dataset.to_unit_range, **cfg.loss)
+    else:
+        criterion = KoopmanLoss(**cfg.loss)
     eval_metrics = Metric(**cfg.metric) if cfg.metric else None
     # --- Learning Rate Scheduler and Checkpoint Loading ---
     logger.info("Initializing learning rate scheduler...")
@@ -154,7 +159,9 @@ def main(cfg: DictConfig):
         model_to_load: nn.Module = model.module if isinstance(model, DDP) else model
         assert isinstance(model_to_load, nn.Module)
         try:
-            _, _, _, start_epoch = load_checkpoint(cfg.ckpt, model_to_load, optimizer)
+            _, _, _, start_epoch = load_checkpoint(
+                cfg.ckpt, model_to_load, optimizer, strict=True
+            )
             # Ensure optimizer state is on the correct device after loading
             for state in optimizer.state.values():
                 for k, v in state.items():

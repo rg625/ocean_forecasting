@@ -7,6 +7,7 @@ random_sequence_length: False
 num_epochs: 1000
 patience: 100
 use_checkpoint: False
-save_latest_every: 20
+save_latest_every: 10
 num_visual_batches: 1
+# precision: float32
 precision: bfloat16

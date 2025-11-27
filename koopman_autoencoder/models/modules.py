@@ -7,16 +7,14 @@ from torch.utils.checkpoint import checkpoint
 from torch import Tensor
 from einops import rearrange
 import abc
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 from dataclasses import dataclass
+from torch.nn.utils import spectral_norm
 
-# Note: The following import assumes that 'networks.py' and 'modules.py' are in the same
-# directory and 'networks.py' contains the definitions for ConvEncoder and AdaLNMLP.
 from .networks import ConvEncoder, AdaLNMLP
+from .fourier import re_expansion, ma_expansion, forcing_expansion
 
-# ======================================================================================
 # Helper and Encoder Modules
-# ======================================================================================
 
 
 class PositionalEncoding(nn.Module):
@@ -65,7 +63,7 @@ class HistoryEncoder(ConvEncoder):
     ):
         # Initialize the parent ConvEncoder with all provided arguments.
         super().__init__(latent_dim=latent_dim, **kwargs)
-
+        self.norm = nn.LayerNorm(latent_dim)
         # Initialize positional encoding if requested.
         self.pos_enc = (
             PositionalEncoding(latent_dim, max_len=transformer_config.max_len)
@@ -84,13 +82,13 @@ class HistoryEncoder(ConvEncoder):
             num_layers=transformer_config.num_layers,
         )
 
-    def forward(self, x: Tensor, re: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
         """
         Forward pass for the HistoryEncoder.
 
         Args:
             x (Tensor): Input tensor of image frames. Shape: (B, T, C, H, W).
-            re (Optional[Tensor]): Optional Reynolds number conditioning. Shape: (B, T).
+            cond (Optional[Tensor]): Optional Reynolds/Mach number conditioning or Forcing. Shape: (B, T).
 
         Returns:
             Tensor: A single latent vector representing the sequence. Shape: (B, D).
@@ -101,27 +99,27 @@ class HistoryEncoder(ConvEncoder):
         x_flat = rearrange(x, "b t c h w -> (b t) c h w")
 
         # Prepare the Reynolds number tensor for batch processing if provided.
-        re_expanded = None
-        if self.re_cond_type is not None:
-            if re is None:
+        cond_expanded = None
+        if self.cond_type is not None:
+            if cond is None:
                 raise ValueError(
-                    f"re tensor must be provided for conditioning type '{self.re_cond_type}'"
+                    f"Re/Ma/Forcing tensor must be provided for conditioning type '{self.cond_type}'"
                 )
-            if re.ndim != 2 or re.shape != (B, T):
+            if cond.ndim != 2 or cond.shape != (B, T):
                 raise ValueError(
-                    f"Expected Re tensor of shape (B, T) = ({B}, {T}), but got {re.shape}"
+                    f"Expected Re/Ma/Forcing tensor of shape (B, T) = ({B}, {T}), but got {cond.shape}"
                 )
             # Flatten Re from (B, T) to (B*T,)
-            re_expanded = re.reshape(-1)
+            cond_expanded = cond.reshape(-1)
 
         # Pass the flattened images through the parent ConvEncoder to get features.
         # Output shape: (B*T, D)
-        features = super().forward(x_flat, re=re_expanded)
+        features = super().forward(x_flat, cond=cond_expanded)
 
         # Un-flatten the features back into a sequence for the Transformer.
         # Shape: (B*T, D) -> (B, T, D)
         features = rearrange(features, "(b t) d -> b t d", t=T)
-
+        features = self.norm(features)
         # Add positional information and process with the Transformer.
         features = self.pos_enc(features)
         out = self.transformer(features)
@@ -130,9 +128,7 @@ class HistoryEncoder(ConvEncoder):
         return out.mean(dim=1)
 
 
-# ======================================================================================
 # ROBUST KOOPMAN OPERATOR IMPLEMENTATION
-# ======================================================================================
 
 
 class BaseKoopmanOperator(nn.Module, abc.ABC):
@@ -147,10 +143,11 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
     def __init__(
         self,
         latent_dim: int,
-        re_embedding_dim: int,
+        cond_embedding_dim: int,
         mode: Literal["linear", "eigen", "mlp"],
         assume_orthogonal_eigenvectors: bool,
         use_checkpoint: bool,
+        cond_expansion_type: Optional[str] = None,
     ):
         super().__init__()
         if mode not in ["linear", "eigen", "mlp"]:
@@ -160,15 +157,57 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
         self.mode = mode
         self.assume_orthogonal = assume_orthogonal_eigenvectors
         self.use_checkpoint = use_checkpoint
-        self.conditioner = AdaLNMLP(latent_dim, re_embedding_dim)
+        self.conditioner = AdaLNMLP(
+            latent_dim=latent_dim, cond_embedding_dim=cond_embedding_dim
+        )
 
-    def _apply_conditioning(self, z: Tensor, re: Optional[Tensor]) -> Tensor:
+        self.cond_expansion_type = cond_expansion_type
+        self.expansion_map: Dict[str, nn.Module] = {
+            "Re": re_expansion,
+            "Ma": ma_expansion,
+            "forcing": forcing_expansion,
+        }
+
+    def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
+        """
+        Fourier-expand the condition tensor using the configured expansion type.
+        """
+        if cond is None:
+            return None
+
+        if self.cond_expansion_type is None or self.cond_expansion_type == "none":
+            raise ValueError(
+                "cond_expansion_type must be set in the model config "
+                "(e.g., 'Re', 'Ma', 'forcing') if the operator is conditioned."
+            )
+
+        if self.cond_expansion_type not in self.expansion_map:
+            raise KeyError(
+                f"Unknown cond_expansion_type: '{self.cond_expansion_type}'. "
+                f"Available types are: {list(self.expansion_map.keys())}"
+            )
+
+        # Look up the correct expansion function
+        expansion_func = self.expansion_map[self.cond_expansion_type]
+
+        if cond.ndim == 1:
+            cond = cond.unsqueeze(-1)  # shape (B, 1)
+        elif cond.ndim == 2 and cond.shape[1] != 1:
+            cond = cond.mean(dim=1, keepdim=True)  # average over T if (B, T)
+
+        # Use the dynamically selected function
+        cond_encoded = expansion_func(cond, d=self.conditioner.cond_embedding_dim)
+
+        return cond_encoded.squeeze(-2)  # (B, D)
+
+    def _apply_conditioning(self, z: Tensor, cond: Optional[Tensor]) -> Tensor:
         """
         Applies AdaLNMLP conditioning to the output tensor if `re` is provided.
         This models a parameter-dependent forcing or adjustment term.
         """
-        if re is not None:
-            return self.conditioner(z, re)
+        cond_encoded = self._encode_cond(cond=cond)
+        if cond_encoded is not None:
+            return self.conditioner(z, cond_encoded)
         return z
 
     @abc.abstractmethod
@@ -188,7 +227,9 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if self.mode == "linear":
-            self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            self.K = spectral_norm(
+                nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            )
         elif self.mode == "eigen":
             # --- Parameters for Eigendecomposition ---
             # Unconstrained log-magnitude, mapped to <= 0 by softplus for stability.
@@ -202,9 +243,9 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             self.eigenvectors = nn.Parameter(torch.linalg.qr(eigenvectors_init).Q)
         elif self.mode == "mlp":
             self.K = nn.Sequential(
-                nn.Linear(self.latent_dim, self.latent_dim // 8),
-                nn.ReLU(),
-                nn.Linear(self.latent_dim // 8, self.latent_dim),
+                spectral_norm(nn.Linear(self.latent_dim, self.latent_dim // 8)),
+                nn.SiLU(),
+                spectral_norm(nn.Linear(self.latent_dim // 8, self.latent_dim)),
             )
 
     @property
@@ -243,11 +284,10 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             return z_recomposed.real
 
     def forward(
-        self, z: Tensor, re: Optional[Tensor] = None, dt: Optional[float] = None
+        self, z: Tensor, cond: Optional[Tensor] = None, dt: Optional[float] = None
     ) -> Tensor:
         """Evolves the state by one discrete step, ignoring dt."""
-        # --- REVERTED: Conditioning is applied to the INPUT state `z` ---
-        z_conditioned = self._apply_conditioning(z, re)
+        z_conditioned = self._apply_conditioning(z, cond=cond)
 
         if self.use_checkpoint and self.training:
             return checkpoint(self._forward_impl, z_conditioned, use_reentrant=True)
@@ -295,15 +335,16 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         real_part = -F.softplus(self.unconstrained_real_parts)
         return torch.complex(real_part, self.imaginary_parts)
 
-    def _get_derivative(self, z: Tensor, re: Optional[Tensor]) -> Tensor:
+    def _get_derivative(self, z: Tensor, cond: Optional[Tensor]) -> Tensor:
         """
         Computes the derivative dz/dt = f(z), then applies conditioning.
         This models f(z, Re) where Re acts as a forcing term.
         """
-        dz_dt = self.K(z)
-        return self._apply_conditioning(dz_dt, re)
+        dz_dt = self.K(z) - z
+        # dz_dt = self.K(z)
+        return self._apply_conditioning(dz_dt, cond=cond)
 
-    def _forward_eigen(self, z: Tensor, dt: float, re: Optional[Tensor]) -> Tensor:
+    def _forward_eigen(self, z: Tensor, dt: float, cond: Optional[Tensor]) -> Tensor:
         """
         Applies the exact analytical solution for the linear ODE:
         z(t+dt) = P * exp(diag(λ)*dt) * P_inv * z(t), then applies conditioning.
@@ -330,45 +371,44 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         # Reconstruct the state in the original basis.
         z_evolved = (P_c @ z_evolved_eig).T
 
-        return self._apply_conditioning(z_evolved.real, re)
+        return self._apply_conditioning(z_evolved.real, cond=cond)
 
-    def _forward_rk4(self, z: Tensor, dt: float, re: Optional[Tensor]) -> Tensor:
+    def _forward_rk4(self, z: Tensor, dt: float, cond: Optional[Tensor]) -> Tensor:
         """
         Integrates the learned derivative using the Runge-Kutta 4th Order method.
         This is a highly stable and accurate explicit numerical integration scheme.
         """
         # k1 is the slope at the beginning of the interval.
-        k1 = self._get_derivative(z, re)
+        k1 = self._get_derivative(z, cond=cond)
         # k2 is the slope at the midpoint, using k1 to step.
-        k2 = self._get_derivative(z + 0.5 * dt * k1, re)
+        k2 = self._get_derivative(z + 0.5 * dt * k1, cond=cond)
         # k3 is the slope at the midpoint, using k2 to step.
-        k3 = self._get_derivative(z + 0.5 * dt * k2, re)
+        k3 = self._get_derivative(z + 0.5 * dt * k2, cond=cond)
         # k4 is the slope at the end of the interval, using k3 to step.
-        k4 = self._get_derivative(z + dt * k3, re)
+        k4 = self._get_derivative(z + dt * k3, cond=cond)
         # The final state is a weighted average of the slopes.
         return z + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
     def forward(
-        self, z: Tensor, re: Optional[Tensor] = None, dt: Optional[float] = None
+        self, z: Tensor, cond: Optional[Tensor] = None, dt: Optional[float] = None
     ) -> Tensor:
         """Evolves the state by one continuous step of size dt."""
         if dt is None:
             raise ValueError("`dt` must be provided for ContinuousKoopmanOperator.")
 
         # Define the function to be checkpointed. This lambda captures the non-tensor `dt`.
-        def step_fn(z_arg, re_arg):
+        def step_fn(z_arg, cond_arg):
             if self.mode == "eigen":
-                return self._forward_eigen(z_arg, dt, re_arg)
+                return self._forward_eigen(z_arg, dt, cond_arg)
             else:  # 'linear' or 'mlp'
-                return self._forward_rk4(z_arg, dt, re_arg)
+                return self._forward_rk4(z_arg, dt, cond_arg)
 
         if self.use_checkpoint and self.training:
-            return checkpoint(step_fn, z, re, use_reentrant=True)
+            return checkpoint(step_fn, z, cond, use_reentrant=True)
         else:
-            return step_fn(z, re)
+            return step_fn(z, cond_arg=cond)
 
 
-# --- FINAL WRAPPER: The user-facing class ---
 class KoopmanOperator(nn.Module):
     """
     A robust, user-facing wrapper that selects and steps through a Koopman operator.
@@ -378,21 +418,23 @@ class KoopmanOperator(nn.Module):
     def __init__(
         self,
         latent_dim: int,
-        re_embedding_dim: int,
+        cond_embedding_dim: int,
         mode: Literal["linear", "eigen", "mlp"] = "linear",
         assume_orthogonal_eigenvectors: bool = True,
         use_checkpoint: bool = False,
         is_continuous: Optional[bool] = False,
+        cond_expansion_type: Optional[str] = None,
     ):
         super().__init__()
 
         # Collect constructor arguments to pass to the appropriate operator.
         operator_kwargs = {
             "latent_dim": latent_dim,
-            "re_embedding_dim": re_embedding_dim,
+            "cond_embedding_dim": cond_embedding_dim,
             "mode": mode,
             "assume_orthogonal_eigenvectors": assume_orthogonal_eigenvectors,
             "use_checkpoint": use_checkpoint,
+            "cond_expansion_type": cond_expansion_type,
         }
 
         # Store a default training timestep.
@@ -409,14 +451,14 @@ class KoopmanOperator(nn.Module):
             self.dynamics = DiscreteKoopmanOperator(**operator_kwargs)
 
     def forward(
-        self, z: Tensor, re: Optional[Tensor] = None, dt: Optional[float] = None
+        self, z: Tensor, cond: Optional[Tensor] = None, dt: Optional[float] = None
     ) -> Tensor:
         """
         Performs a single, well-defined prediction step.
 
         Args:
             z (Tensor): The current latent state, z_t.
-            re (Optional[Tensor]): The Reynolds number for conditioning.
+            cond (Optional[Tensor]): The Reynolds/Mach or Forcing number for conditioning.
             dt (Optional[float]): The time step. Required if `is_continuous=True`.
                                  Defaults to a fixed value during training if not provided.
 
@@ -428,7 +470,7 @@ class KoopmanOperator(nn.Module):
         # During evaluation, `dt` MUST be explicitly provided for the continuous model.
         if dt is None:
             dt = self.dt_train
-        return self.dynamics(z, re=re, dt=dt)
+        return self.dynamics(z, cond=cond, dt=dt)
 
 
 class Re(nn.Module):

@@ -1,5 +1,3 @@
-# models/dataloader.py
-
 import torch
 import xarray as xr
 import numpy as np
@@ -18,6 +16,20 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+INC_MEAN = {"v_x": 0.444969, "v_y": 0.000299, "p": 0.000586, "Re": 550.0}
+INC_STD = {"v_x": 0.206128, "v_y": 0.206128, "p": 0.003942, "Re": 262.678467}
+
+QG_MEAN = {
+    "q1": 6.130118365440265e-07,
+    "q2": -6.069969143104177e-07,
+    "forcing": 4.598683515047508e-12,
+}
+QG_STD = {
+    "q1": 4.220613803016554e-05,
+    "q2": 2.8499078149814454e-06,
+    "forcing": 1.5010150481725185e-12,
+}
 
 
 class DatasetConfigurationError(Exception):
@@ -58,12 +70,22 @@ class MeanStdNormalizer(AbstractNormalizer):
 
     def fit(self, data: TensorDict):
         self.normalized_vars = list(data.keys())
+        # self.means = TensorDict(
+        #     {key: torch.mean(tensor).float() for key, tensor in data.items()},
+        #     batch_size=[],
+        # )
+        # self.stds = TensorDict(
+        #     {key: torch.std(tensor).float() for key, tensor in data.items()},
+        #     batch_size=[],
+        # )
+        means = QG_MEAN if "q1" in self.normalized_vars else INC_MEAN
+        stds = QG_STD if "q1" in self.normalized_vars else INC_STD
         self.means = TensorDict(
-            {key: torch.mean(tensor).float() for key, tensor in data.items()},
+            {key: val for key, val in means.items()},
             batch_size=[],
         )
         self.stds = TensorDict(
-            {key: torch.std(tensor).float() for key, tensor in data.items()},
+            {key: val for key, val in stds.items()},
             batch_size=[],
         )
         logger.info("Fitted MeanStdNormalizer.")
@@ -83,7 +105,7 @@ class MeanStdNormalizer(AbstractNormalizer):
     def inverse_transform(self, data: TensorDict) -> TensorDict:
         if self.means is None:
             raise DatasetConfigurationError(
-                "Normalizer has not been fitted (means is None)."
+                "NormalNormalizer has not been fitted (means is None)."
             )
         if self.stds is None:
             raise DatasetConfigurationError(
@@ -95,7 +117,7 @@ class MeanStdNormalizer(AbstractNormalizer):
             if key in self.normalized_vars:
                 mean = self.means[key].to(tensor.device)
                 std = self.stds[key].to(tensor.device)
-                denormalized[key] = tensor * std + mean
+                denormalized[key] = (tensor * std) + mean
             else:
                 denormalized[key] = tensor
         return TensorDict(denormalized, batch_size=data.batch_size)
@@ -241,14 +263,16 @@ class QGDatasetBase(Dataset):
     def __len__(self) -> int:
         time_dim_index = self.raw_data_td.batch_dims - 1
         num_timesteps = self.raw_data_td.batch_size[time_dim_index]
-        required_timesteps = (
+
+        # Calculate the total number of original data points needed for one full sequence
+        required_index_span = (
             (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
         ) + 1
 
-        if num_timesteps < required_timesteps:
+        if num_timesteps < required_index_span:
             return 0
 
-        total_len = num_timesteps - required_timesteps + 1
+        total_len = num_timesteps - required_index_span + 1
         return int(max(0, total_len))
 
     def __getitem__(self, idx: Union[int, Tuple[int, int]]):
@@ -281,7 +305,8 @@ class QGDatasetBase(Dataset):
         ]
 
         # Create a metadata dictionary. A custom collate function can handle this.
-        metadata = {"seq_length": target_length}
+        # Note: In QGDatasetMultiSim, this is a (data, destination) tuple
+        metadata = {"seq_length": (target_length, "target")}
 
         # Return a 3-tuple that a custom_collate_fn would expect
         return input_seq, target_seq, metadata
@@ -305,8 +330,8 @@ class QGDatasetBase(Dataset):
 # --- Multi-Simulation Dataset ---
 class QGDatasetMultiSim(QGDatasetBase):
     """
-    Dataset for multiple simulations, handling dynamic and static variables
-    based on the provided configuration.
+    Dataset for multiple simulations, handling dynamic, static, and scalar
+    control parameters in a generic, scalable way.
     """
 
     def __init__(
@@ -321,17 +346,28 @@ class QGDatasetMultiSim(QGDatasetBase):
         **kwargs,
     ):
         # Store the keys for dynamic and static variables
-        self.select_re = kwargs.pop("select_re", None)
+        self.select_cond = kwargs.pop("select_cond", None)
         self.dynamic_keys = list(variables.keys())
         self.static_keys = list(static_variables.keys()) if static_variables else []
         self.subsample = subsample
         all_variables_to_load = {**variables, **(static_variables or {})}
 
+        self.control_parameters: List[str] = kwargs.pop("control_parameters", [])
+        self.selection_param: Optional[str] = kwargs.pop("selection_param", None)
+
+        if self.selection_param and self.selection_param not in self.control_parameters:
+            logger.warning(
+                f"selection_param '{self.selection_param}' is not in control_parameters list."
+            )
+            self.control_parameters.append(self.selection_param)
+
+        # This will hold all loaded control parameter tensors (e.g., {"Re": tensor, "Ma": tensor})
+        self.control_params: Dict[str, torch.Tensor] = {}
+
         # These attributes will be populated in _load_data
         self.num_sims: int = 0
         self.master_index: List[Tuple[int, int]] = []
         self.static_tensors: Dict[str, torch.Tensor] = {}
-        self.Re: Optional[torch.Tensor] = None
         self.obstacle_mask: Optional[torch.Tensor] = None  # Initialize as None
 
         super().__init__(
@@ -341,86 +377,72 @@ class QGDatasetMultiSim(QGDatasetBase):
             max_sequence_length,
             variables=all_variables_to_load,
             subsample=subsample,
+            **kwargs,  # Pass remaining kwargs (if any)
         )
 
     def _load_data(self):
         """
-        Loads data, correctly separating dynamic and static variables to prevent
-        the 'batch dimension mismatch' error.
+        Loads data, correctly separating dynamic, static, and control variables
+        and performing generic filtering.
         This method completely overrides the base class's _load_data.
         """
         with xr.open_dataset(self.data_path) as ds:
             self._data = ds
 
-            # --- Multi-sim specific setup ---
             if "sim" not in self._data.dims:
                 raise DatasetConfigurationError(
                     "Expected 'sim' dimension in the dataset."
                 )
             self.num_sims = self._data.sizes["sim"]
 
-            self.Re = None
-            if "Re" in self._data:
-                self.Re = torch.from_numpy(self._data["Re"].values).float()
-
-            if self.select_re is not None:
-                if self.Re is None:
-                    raise ValueError(
-                        "select_re was specified, but 'Re' not found in dataset."
-                    )
-
-                mask = torch.zeros_like(self.Re, dtype=torch.bool)
-
-                # --- CHANGE: Added ListConfig to the type checks ---
-                if isinstance(self.select_re, (list, tuple, ListConfig)) and all(
-                    isinstance(item, (list, tuple, ListConfig))
-                    for item in self.select_re
-                ):
-                    logger.info(
-                        f"Filtering simulations with Reynolds number in intervals: {self.select_re}"
-                    )
-                    for re_range in self.select_re:
-                        re_min, re_max = re_range
-                        mask |= (self.Re >= re_min) & (self.Re <= re_max)
-
-                elif isinstance(self.select_re, (float, int)):
-                    logger.info(
-                        f"Filtering simulations with Reynolds number == {self.select_re}"
-                    )
-                    mask = self.Re == self.select_re
-
-                elif isinstance(self.select_re, (list, tuple, ListConfig)):
-                    if len(self.select_re) == 2 and all(
-                        isinstance(v, (float, int)) for v in self.select_re
-                    ):
-                        re_min, re_max = self.select_re
-                        logger.info(
-                            f"Filtering simulations with Reynolds number in interval [{re_min}, {re_max}]"
-                        )
-                        mask = (self.Re >= re_min) & (self.Re <= re_max)
-                    else:
-                        logger.info(
-                            f"Filtering simulations with Reynolds numbers in list: {self.select_re}"
-                        )
-                        mask = torch.isin(self.Re, torch.tensor(list(self.select_re)))
-
+            # --- MODULAR CHANGES ---
+            # 2. Load all specified control parameters
+            for param_name in self.control_parameters:
+                if param_name in self._data:
+                    self.control_params[param_name] = torch.from_numpy(
+                        self._data[param_name].values
+                    ).float()
                 else:
-                    raise ValueError(
-                        f"Invalid type for 'select_re': {type(self.select_re)}"
+                    logger.warning(
+                        f"Control parameter '{param_name}' not found in dataset."
                     )
+
+            # 3. Handle selection/filtering generically
+            if self.selection_param and self.select_cond is not None:
+                if self.selection_param not in self.control_params:
+                    raise ValueError(
+                        f"Selection parameter '{self.selection_param}' was specified but not found in dataset."
+                    )
+
+                control_tensor = self.control_params[self.selection_param]
+                mask = self._build_selection_mask(
+                    tensor=control_tensor,
+                    selection=self.select_cond,
+                    name=self.selection_param,
+                )
 
                 selected_indices = mask.nonzero(as_tuple=True)[0]
                 if len(selected_indices) == 0:
-                    raise ValueError(f"No simulations found with Re={self.select_re}")
+                    raise ValueError(
+                        f"No simulations found with {self.selection_param} criteria: {self.select_cond}"
+                    )
 
                 logger.info(
-                    f"Filtering {self.num_sims} simulations → {len(selected_indices)} with Re={self.select_re}"
+                    f"Filtering {self.num_sims} simulations → {len(selected_indices)} "
+                    f"with {self.selection_param} in {self.select_cond}"
                 )
-                self.Re = self.Re[selected_indices]
+
+                # Filter the dataset view
                 ds = ds.isel(sim=selected_indices)
                 self.num_sims = len(selected_indices)
 
-            # --- Segregated Variable Loading ---
+                # CRITICAL: Filter all loaded control parameter tensors
+                for param_name, tensor in self.control_params.items():
+                    self.control_params[param_name] = tensor[selected_indices]
+
+            # --- END MODULAR CHANGES ---
+
+            # --- Segregated Variable Loading (Unchanged) ---
             # 1. Load ONLY DYNAMIC variables for the main TensorDict
             dynamic_tensors = {
                 var: torch.from_numpy(ds[var].values).float()
@@ -439,6 +461,7 @@ class QGDatasetMultiSim(QGDatasetBase):
                     mask_tensor[0] if mask_tensor.ndim > 2 else mask_tensor
                 )
 
+            # --- Setup raw_data_td (Unchanged) ---
             sample_var_name = self.dynamic_keys[0]
             sample_tensor_shape = dynamic_tensors[sample_var_name].shape
             num_feature_dims = 2  # (x, y)
@@ -447,7 +470,6 @@ class QGDatasetMultiSim(QGDatasetBase):
 
             self.raw_data_td = TensorDict(dynamic_tensors, batch_size=batch_size)
 
-            # Initialize mins/maxs required by the base class's `to_unit_range` method
             self.mins = TensorDict(
                 {key: torch.min(tensor) for key, tensor in self.raw_data_td.items()},
                 batch_size=[],
@@ -457,41 +479,133 @@ class QGDatasetMultiSim(QGDatasetBase):
                 batch_size=[],
             )
 
+    def _build_selection_mask(
+        self, tensor: torch.Tensor, selection, name: str
+    ) -> torch.Tensor:
+        """Helper to build a boolean mask given selection criteria. (Unchanged)"""
+        mask = torch.zeros_like(tensor, dtype=torch.bool)
+
+        if isinstance(selection, (list, tuple, ListConfig)) and all(
+            isinstance(item, (list, tuple, ListConfig)) for item in selection
+        ):
+            logger.info(f"Filtering simulations with {name} in intervals: {selection}")
+            for rng in selection:
+                vmin, vmax = rng
+                mask |= (tensor >= vmin) & (tensor <= vmax)
+
+        elif isinstance(selection, (float, int)):
+            logger.info(f"Filtering simulations with {name} == {selection}")
+            mask = tensor == selection
+
+        elif isinstance(selection, (list, tuple, ListConfig)):
+            if len(selection) == 2 and all(
+                isinstance(v, (float, int)) for v in selection
+            ):
+                vmin, vmax = selection
+                logger.info(
+                    f"Filtering simulations with {name} in interval [{vmin}, {vmax}]"
+                )
+                mask = (tensor >= vmin) & (tensor <= vmax)
+            else:
+                logger.info(f"Filtering simulations with {name} in list: {selection}")
+                mask = torch.isin(tensor, torch.tensor(list(selection)))
+
+        else:
+            raise ValueError(f"Invalid type for '{name}' selection: {type(selection)}")
+
+        return mask
+
     def denormalize(self, data: TensorDict) -> TensorDict:
         denormalized = self.normalizer.inverse_transform(data)
         return self.apply_mask(denormalized)
 
     def to_unit_range(self, data: TensorDict) -> TensorDict:
-        super().to_unit_range(data=data)
-        return self.apply_mask(data)
+        """Scales data to [0, 1] range based on global min/max."""
+        # This now correctly uses the scaled data from the super() call
+        scaled_data = super().to_unit_range(data=data)
+        return self.apply_mask(scaled_data)
 
     @property
     def normalizer_vars(self) -> List[str]:
-        """Specifies that only dynamic variables should be normalized."""
+        """Specifies that only dynamic variables should be normalized. (Unchanged)"""
         return self.dynamic_keys
 
     def _prepare_data(self):
-        """Computes the master index before preparing the data."""
+        """Computes the master index before preparing the data. (Unchanged)"""
         self._compute_master_index()
-        # This now calls the modified QGDatasetBase._prepare_data
+        # This now calls the QGDatasetBase._prepare_data
         super()._prepare_data()
 
+    # def _compute_master_index(self):
+    #     """Creates a master list of all possible (sim, start_index) pairs."""
+    #     self.master_index = []
+    #     if "t" in self._data.sizes:
+    #         num_timesteps = self._data.sizes["t"]
+    #     elif "time" in self._data.sizes:
+    #         num_timesteps = self._data.sizes["time"]
+    #     else:
+    #         raise ValueError("Missing time dimension")
+
+    #     required_length_in_steps = self.input_sequence_length + self.max_sequence_length
+    #     if required_length_in_steps == 0:
+    #         logger.warning("Total sequence length (input+max) is 0.")
+    #         return
+
+    #     # The total number of *original data points* needed for one full sequence
+    #     required_index_span = (
+    #         (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
+    #     ) + 1
+
+    #     # The number of valid starting positions
+    #     valid_starts = num_timesteps - required_index_span + 1
+
+    #     if valid_starts > 0:
+    #         for sim_idx in range(self.num_sims):
+    #             self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
+    #     if not self.master_index:
+    #         logger.warning(
+    #             f"No valid sequences generated from dataset. "
+    #             f"Sims: {self.num_sims}, Timesteps: {num_timesteps}, "
+    #             f"Required span: {required_index_span}, Valid starts: {valid_starts}"
+    #         )
+
     def _compute_master_index(self):
-        """Creates a master list of all possible (sim, start_index) pairs."""
+        """
+        Creates a master list of all possible (sim, start_index) pairs,
+        generating non-overlapping sequences based on the full sequence length.
+        """
         self.master_index = []
-        num_timesteps = self._data.sizes["t"]
-        # The total number of timesteps needed for one full sample
-        required_length = (
+        if "t" in self._data.sizes:
+            num_timesteps = self._data.sizes["t"]
+        elif "time" in self._data.sizes:
+            num_timesteps = self._data.sizes["time"]
+        else:
+            raise ValueError("Missing time dimension")
+
+        # The step size (or stride) between the start of consecutive non-overlapping sequences.
+        # This is the span of indices in the original data that one full sequence
+        # (input + max_target) covers.
+        stride = (
             self.input_sequence_length + self.max_sequence_length
         ) * self.subsample
 
-        # The number of valid starting positions
-        valid_starts = num_timesteps - required_length + 1
-        if valid_starts > 0:
+        # The last possible starting index must allow for a full sequence to be drawn.
+        # A sequence starting at `s` will need data up to index `s + stride - 1`.
+        # So, `s + stride - 1 < num_timesteps` => `s <= num_timesteps - stride`.
+        last_possible_start = num_timesteps - stride
+
+        if last_possible_start >= 0:
             for sim_idx in range(self.num_sims):
-                self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
+                # Iterate with a step size equal to the stride for non-overlapping samples.
+                # The `stop` for range is exclusive, so we use `last_possible_start + 1`.
+                start_indices = range(0, last_possible_start + 1, stride)
+                self.master_index.extend([(sim_idx, i) for i in start_indices])
+
         if not self.master_index:
-            logger.warning("No valid sequences generated from dataset.")
+            logger.warning(
+                "No valid non-overlapping sequences generated from the dataset. "
+                "Check sequence lengths, subsampling rate, and total timesteps."
+            )
 
     def __len__(self) -> int:
         return len(self.master_index)
@@ -500,6 +614,7 @@ class QGDatasetMultiSim(QGDatasetBase):
         """
         Applies an obstacle mask by dynamically broadcasting it to the shape of
         each tensor in the TensorDict. This is the most robust method.
+        (Unchanged)
         """
         if self.obstacle_mask is None:
             return x
@@ -548,14 +663,23 @@ class QGDatasetMultiSim(QGDatasetBase):
         ]
 
         # --- Prepare a single metadata dictionary with destination markers ---
-        metadata = {}
-        metadata["obstacle_mask"] = (self.obstacle_mask, "input")
+        metadata = {
+            "seq_length": (target_length, "target"),
+        }
 
-        # seq_length and Re -> marked for 'target'
-        metadata["seq_length"] = (target_length, "target")
-        if self.Re is not None:
-            metadata["Re_target"] = (self.Re[sim_idx], "target")
-            metadata["Re_input"] = (self.Re[sim_idx], "input")
+        if self.obstacle_mask is not None:
+            metadata["obstacle_mask"] = (self.obstacle_mask, "input")
+
+        # 4. Loop through all loaded control params and add them to metadata
+        for param_name, param_tensor in self.control_params.items():
+            value = param_tensor[sim_idx]
+            # metadata[f"{param_name}_target"] = (value, "target")
+            # metadata[f"{param_name}_input"] = (value, "input")
+
+            # If this is the main selection param, add the generic 'cond' key
+            if param_name == self.selection_param:
+                metadata["cond_target"] = (value, "target")
+                metadata["cond_input"] = (value, "input")
 
         input_seq = self.apply_mask(input_seq)
         target_seq = self.apply_mask(target_seq)
@@ -563,36 +687,44 @@ class QGDatasetMultiSim(QGDatasetBase):
         # This returns the standard 3-tuple
         return input_seq, target_seq, metadata
 
-    def create_subset_for_re(self, re_val: int) -> Subset:
+    def create_subset_for_condition(
+        self, param_name: str, param_value: Union[float, int]
+    ) -> Subset:
         """
-        Creates a torch.utils.data.Subset containing only the samples for a specific Reynolds number.
+        Creates a torch.utils.data.Subset containing only the samples
+        for a specific value of a given control parameter.
         """
-        if self.Re is None:
+        if param_name not in self.control_params:
             raise ValueError(
-                "Cannot create subset for Re because 'Re' was not found in the dataset."
+                f"Cannot create subset for '{param_name}' because it was not "
+                f"loaded. Available parameters are: {list(self.control_params.keys())}"
             )
 
-        logger.info(f"Creating a subset for Re = {re_val}...")
+        logger.info(f"Creating a subset for {param_name} = {param_value}...")
 
-        # Find which simulation indices correspond to the desired Reynolds number
-        # Note: self.Re is 1D tensor of size [num_sims]
-        sim_indices_with_re = (self.Re == re_val).nonzero(as_tuple=True)[0]
+        # Get the 1D tensor for the requested parameter
+        param_tensor = self.control_params[param_name]
 
-        if len(sim_indices_with_re) == 0:
+        # Find which simulation indices correspond to the desired value
+        sim_indices_with_value = (param_tensor == param_value).nonzero(as_tuple=True)[0]
+
+        if len(sim_indices_with_value) == 0:
             logger.warning(
-                f"No simulations found for Re = {re_val} in this dataset split. Returning an empty subset."
+                f"No simulations found for {param_name} = {param_value} in this dataset split. "
+                "Returning an empty subset."
             )
             return Subset(self, [])
 
         # Find all master_index entries that belong to these simulation indices
-        # self.master_index is a list of (sim_idx, time_idx) tuples
         subset_indices = [
             i
             for i, (sim_idx, _) in enumerate(self.master_index)
-            if sim_idx in sim_indices_with_re
+            if sim_idx in sim_indices_with_value
         ]
 
-        logger.info(f"Found {len(subset_indices)} samples for Re = {re_val}.")
+        logger.info(
+            f"Found {len(subset_indices)} samples for {param_name} = {param_value}."
+        )
         return Subset(self, subset_indices)
 
 
@@ -668,7 +800,8 @@ class FixedLengthBatchSampler(Sampler[List[Tuple[int, int]]]):
 class DataLoaderWrapper(DataLoader):
     def __init__(self, dataset: QGDatasetBase, *args, **kwargs):
         super().__init__(dataset, *args, **kwargs)
-        self.dataset: QGDatasetBase
+        # Ensure the dataset attribute is correctly typed for methods
+        self.dataset: QGDatasetBase | QGDatasetMultiSim
 
     def denormalize(self, x: TensorDict) -> TensorDict:
         return self.dataset.denormalize(x)
@@ -695,14 +828,33 @@ def custom_collate_fn(batch: List[Tuple[TensorDict, TensorDict, Dict]]):
     for key in meta_dicts[0].keys():
         # --- 1. Unpack data and destination from the batch ---
         # The value for each item is a (data, destination) tuple.
-        data_list = [d[key][0] for d in meta_dicts]
-        destination_marker = meta_dicts[0][key][1]  # 'input' or 'target'
+        try:
+            data_list = [d[key][0] for d in meta_dicts]
+            destination_marker = meta_dicts[0][key][1]  # 'input' or 'target'
+        except KeyError:
+            logger.warning(
+                f"Metadata key '{key}' not found in all batch items. Skipping."
+            )
+            continue
+        except (TypeError, IndexError):
+            logger.warning(f"Metadata for key '{key}' has malformed value. Skipping.")
+            continue
 
         # --- 2. Batch the data ---
         if isinstance(data_list[0], torch.Tensor):
-            meta_tensor = torch.stack(data_list)
+            try:
+                meta_tensor = torch.stack(data_list)
+            except RuntimeError as e:
+                logger.warning(f"Could not stack metadata for key '{key}'. Error: {e}")
+                continue
         else:
-            meta_tensor = torch.tensor(data_list)
+            try:
+                meta_tensor = torch.tensor(data_list)
+            except (ValueError, TypeError) as e:
+                logger.warning(
+                    f"Could not convert metadata to tensor for key '{key}'. Error: {e}"
+                )
+                continue
 
         # --- 3. Identify the destination TensorDict ---
         if destination_marker == "input":
@@ -711,17 +863,30 @@ def custom_collate_fn(batch: List[Tuple[TensorDict, TensorDict, Dict]]):
             destination_td = batched_targets
         else:
             # Skip any items with an unknown destination
+            logger.warning(
+                f"Unknown destination '{destination_marker}' for key '{key}'. Skipping."
+            )
             continue
 
         # --- 4. Expand and assign to the correct destination ---
-        seq_len = destination_td.batch_size[1]
+        try:
+            # Check if destination_td is empty (batch size 0)
+            if destination_td.batch_size[0] == 0:
+                continue
 
-        meta_tensor_reshaped = meta_tensor.unsqueeze(1)
-        expand_shape = list(meta_tensor_reshaped.shape)
-        expand_shape[1] = seq_len
-        meta_tensor_expanded = meta_tensor_reshaped.expand(*expand_shape)
+            seq_len = destination_td.batch_size[1]
 
-        destination_td.set(key, meta_tensor_expanded)
+            meta_tensor_reshaped = meta_tensor.unsqueeze(1)
+            expand_shape = list(meta_tensor_reshaped.shape)
+            expand_shape[1] = seq_len
+            meta_tensor_expanded = meta_tensor_reshaped.expand(*expand_shape)
+
+            destination_td.set(key, meta_tensor_expanded)
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to expand and assign metadata for key '{key}'. Error: {e}"
+            )
 
     return batched_inputs, batched_targets
 

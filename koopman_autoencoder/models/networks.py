@@ -1,12 +1,16 @@
-# models/networks.py
-
 from itertools import pairwise
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 from einops import rearrange
 from torch import Tensor
-from typing import List, Union, Tuple, Any, Optional
+from typing import List, Union, Tuple, Any, Optional, Dict
+import torch.nn.functional as F
+
+# --- NEW IMPORTS ---
+from .fourier import re_expansion, ma_expansion, forcing_expansion
+
+# --- END NEW IMPORTS ---
 
 
 class AdaLNConv(nn.Module):
@@ -38,6 +42,71 @@ class AdaLNConv(nn.Module):
         )
 
 
+class AdaIN(nn.Module):
+    """Adaptive Instance Normalization with clamped modulation."""
+
+    def __init__(self, style_dim: int, channels: int):
+        super().__init__()
+        self.norm = nn.InstanceNorm2d(channels, affine=False)
+        self.style_proj = nn.Linear(style_dim, 2 * channels)
+
+    def forward(self, x, w):
+        x = self.norm(x)
+        style = self.style_proj(w).view(w.shape[0], -1, 1, 1)
+        gamma, beta = style.chunk(2, dim=1)
+        gamma = torch.tanh(gamma)  # stabilize modulation
+        beta = torch.tanh(beta)
+        return (1 + gamma) * x + beta
+
+
+class StyledConv(nn.Module):
+    """Styled convolution block with optional upsampling."""
+
+    def __init__(
+        self, C_in, C_out, style_dim, kernel_size=3, upsample=False, use_deconv=True
+    ):
+        super().__init__()
+        self.upsample = None
+        if upsample:
+            if use_deconv:
+                # Learnable upsampling (sharper)
+                self.upsample = nn.ConvTranspose2d(
+                    C_in, C_in, kernel_size=4, stride=2, padding=1
+                )
+            else:
+                # Smooth upsampling
+                self.upsample = nn.Upsample(
+                    scale_factor=2, mode="bilinear", align_corners=False
+                )
+        self.conv = nn.Conv2d(
+            C_in, C_out, kernel_size, padding=kernel_size // 2, padding_mode="circular"
+        )
+        self.mod = AdaIN(style_dim, C_out)
+        self.act = nn.LeakyReLU(0.2)
+
+    def forward(self, x, w):
+        if self.upsample is not None:
+            x = self.upsample(x)
+        x = self.conv(x)
+        x = self.mod(x, w)
+        x = self.act(x)
+        return x
+
+
+class MappingNetwork(nn.Module):
+    """Latent-to-style mapping network."""
+
+    def __init__(self, latent_dim, style_dim, n_layers=4):
+        super().__init__()
+        layers = [nn.Linear(latent_dim, style_dim), nn.LeakyReLU(0.2)]
+        for _ in range(n_layers - 1):
+            layers.extend([nn.Linear(style_dim, style_dim), nn.LeakyReLU(0.2)])
+        self.mapping = nn.Sequential(*layers)
+
+    def forward(self, z):
+        return self.mapping(z)
+
+
 class ConvBlock(nn.Module):
     def __init__(
         self,
@@ -47,8 +116,8 @@ class ConvBlock(nn.Module):
         kernel_size: Union[int, Tuple[int, int]] = 3,
         decoder_block: bool = False,
         use_checkpoint: bool = False,
-        re_cond_type: Optional[str] = None,
-        re_embedding_dim: Optional[int] = None,
+        cond_type: Optional[str] = None,
+        cond_embedding_dim: Optional[int] = None,
         **conv_kwargs: Any,
     ):
         """
@@ -67,37 +136,37 @@ class ConvBlock(nn.Module):
                 If True, the block is used in a decoder, and layer configurations are adjusted accordingly.
             use_checkpoint: bool
                 If True, enables gradient checkpointing for the block.
-            re_cond_type: str
+            cond_type: str
                 Choose between AdaLN, Late Fusion and None.
-            re_embedding_dim: int
+            cond_embedding_dim: int
                 Embedding dimension for Reynolds number in case of conditioning.
             conv_kwargs: dict
                 Additional arguments for nn.Conv2d.
         """
         super().__init__()
         self.use_checkpoint = use_checkpoint  # Store the checkpointing flag
-        self.re_cond_type = re_cond_type
+        self.cond_type = cond_type
         self.stack = nn.ModuleList()
 
         layers = []
         if not decoder_block:
             # First layer
             layers.append(nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs))
-            if self.re_cond_type == "adaln":
-                assert (re_embedding_dim is not None) and (
-                    isinstance(re_embedding_dim, int)
-                ), f"re_embedding_dim must be provided for adaln as int but got type {type(re_embedding_dim)}"
-                layers.append(AdaLNConv(C_out, re_embedding_dim))
+            if self.cond_type == "adaln":
+                assert (cond_embedding_dim is not None) and (
+                    isinstance(cond_embedding_dim, int)
+                ), f"cond_embedding_dim must be provided for adaln as int but got type {type(cond_embedding_dim)}"
+                layers.append(AdaLNConv(C_out, cond_embedding_dim))
             layers.append(nn.ReLU())
 
             # Subsequent layers
             for _ in range(block_size - 1):
                 layers.append(nn.Conv2d(C_out, C_out, kernel_size, **conv_kwargs))
-                if self.re_cond_type == "adaln":
-                    assert (re_embedding_dim is not None) and (
-                        isinstance(re_embedding_dim, int)
-                    ), f"re_embedding_dim must be provided for adaln as int but got type {type(re_embedding_dim)}"
-                    layers.append(AdaLNConv(C_out, re_embedding_dim))
+                if self.cond_type == "adaln":
+                    assert (cond_embedding_dim is not None) and (
+                        isinstance(cond_embedding_dim, int)
+                    ), f"cond_embedding_dim must be provided for adaln as int but got type {type(cond_embedding_dim)}"
+                    layers.append(AdaLNConv(C_out, cond_embedding_dim))
                 layers.append(nn.ReLU())
         else:
             # Initial layers
@@ -106,11 +175,11 @@ class ConvBlock(nn.Module):
                 layers.append(
                     nn.Conv2d(C_intermediate, C_in, kernel_size, **conv_kwargs)
                 )
-                if self.re_cond_type == "adaln":
+                if self.cond_type == "adaln":
                     assert (
-                        re_embedding_dim is not None
-                    ), "re_embedding_dim must be provided for adaln"
-                    layers.append(AdaLNConv(C_in, re_embedding_dim))
+                        cond_embedding_dim is not None
+                    ), "cond_embedding_dim must be provided for adaln"
+                    layers.append(AdaLNConv(C_in, cond_embedding_dim))
                 layers.append(nn.ReLU())
 
             # Output layer (no activation after this one)
@@ -118,22 +187,24 @@ class ConvBlock(nn.Module):
 
         self.stack = nn.ModuleList(layers)
 
-    def forward(self, x: Tensor, re_emb: Optional[Tensor] = None) -> Tensor:
+    def forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
         if self.use_checkpoint:
             # Checkpoint doesn't easily support extra args, so we wrap the call
-            return checkpoint(lambda t: self._forward(t, re_emb), x, use_reentrant=True)
+            return checkpoint(
+                lambda t: self._forward(t, cond_emb), x, use_reentrant=True
+            )
         else:
-            return self._forward(x, re_emb)
+            return self._forward(x, cond_emb)
 
-    def _forward(self, x: Tensor, re_emb: Optional[Tensor] = None) -> Tensor:
+    def _forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
         for module in self.stack:
             if isinstance(module, AdaLNConv):
                 # AdaLNConv requires the conditioning embedding
-                if re_emb is None:
+                if cond_emb is None:
                     raise ValueError(
-                        "AdaLNConv layer requires re_emb, but it was not provided."
+                        "AdaLNConv layer requires cond_emb, but it was not provided."
                     )
-                x = module(x, re_emb)
+                x = module(x, cond_emb)
             else:
                 x = module(x)
         return x
@@ -151,8 +222,9 @@ class BaseEncoderDecoder(nn.Module):
         kernel_size: Union[int, Tuple[int, int]] = 3,
         is_encoder: bool = True,
         use_checkpoint: bool = False,
-        re_embedding_dim: Optional[int] = None,
-        re_cond_type: Optional[str] = None,  # Options: None, "late_fusion", "adaln"
+        cond_embedding_dim: Optional[int] = None,
+        cond_type: Optional[str] = None,  # Options: None, "late_fusion", "adaln"
+        cond_expansion_type: Optional[str] = None,
         **conv_kwargs,
     ):
         """
@@ -177,10 +249,12 @@ class BaseEncoderDecoder(nn.Module):
                 Specifies whether the block is an encoder (True) or decoder (False).
             use_checkpoint: bool
                 If True, enables gradient checkpointing for convolutional blocks.
-            re_embedding_dim: int
+            cond_embedding_dim: int
                 Optional Reynolds number conditioning dimension.
-            re_cond_type: str
+            cond_type: str
                 Optional Reynolds number conditioning mode.
+            cond_expansion_type: str
+                Specifies the type of fourier expansion ('re', 'ma', 'forcing').
             conv_kwargs: dict
                 Additional arguments for nn.Conv2d.
         """
@@ -192,14 +266,15 @@ class BaseEncoderDecoder(nn.Module):
         self.hiddens = hiddens
         self.is_encoder = is_encoder
         self.use_checkpoint = use_checkpoint
-        self.re_embedding_dim = re_embedding_dim
-        self.re_cond_type = re_cond_type
+        self.cond_embedding_dim = cond_embedding_dim
+        self.cond_type = cond_type
+        self.cond_expansion_type = cond_expansion_type  # <-- NEW
 
         # Compute the output dimensions after pooling
-        if re_cond_type not in [None, "late_fusion", "adaln"]:
-            raise ValueError(f"Unknown re_cond_type: {re_cond_type}")
-        if re_cond_type is not None and re_embedding_dim is None:
-            raise ValueError(f"{re_cond_type} requires re_embedding_dim to be set.")
+        if cond_type not in [None, "late_fusion", "adaln"]:
+            raise ValueError(f"Unknown cond_type: {cond_type}")
+        if cond_type is not None and cond_embedding_dim is None:
+            raise ValueError(f"{cond_type} requires cond_embedding_dim to be set.")
 
         self.n_pools = len(hiddens)
         if H % (2**self.n_pools) != 0 or W % (2**self.n_pools) != 0:
@@ -209,25 +284,79 @@ class BaseEncoderDecoder(nn.Module):
         self.H_out = H // (2 ** (self.n_pools))
         self.W_out = W // (2 ** (self.n_pools))
 
-        # Define the reynolds number embedding layer
-        if self.re_cond_type is not None:
-            self.re_embedding = nn.Sequential(
-                nn.Linear(1, re_embedding_dim),
-                nn.SiLU(),
-                nn.Linear(re_embedding_dim, re_embedding_dim),
-            )
+        # --- REMOVED old re_embedding ---
+        # self.re_embedding = nn.Sequential(...)
+
+        # --- NEW: Add expansion map (same as in modules.py) ---
+        self.expansion_map: Dict[str, nn.Module] = {
+            "Re": re_expansion,
+            "Ma": ma_expansion,
+            "forcing": forcing_expansion,
+        }
+        # --- END NEW ---
 
         # Define the linear layer
         if is_encoder:
             encoder_in_features = hiddens[-1] * self.H_out * self.W_out
-            if self.re_cond_type == "late_fusion":
-                encoder_in_features += re_embedding_dim
+            if self.cond_type == "late_fusion":
+                assert cond_embedding_dim is not None
+                encoder_in_features += cond_embedding_dim
             self.linear = nn.Linear(encoder_in_features, latent_dim)
         else:
             self.linear = nn.Linear(latent_dim, hiddens[-1] * self.H_out * self.W_out)
 
         # Build convolutional layers
         self.layers = self._build_layers(block_size, kernel_size, conv_kwargs)
+
+    def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
+        """
+        Fourier-expand the condition tensor using the configured expansion type.
+        """
+        if cond is None:
+            return None
+
+        # This module (ConvEncoder) can be called by HistoryEncoder, which
+        # flattens the time dimension, resulting in cond.ndim == 1.
+        if cond.ndim == 1:
+            cond = cond.unsqueeze(-1)  # (B*T,) -> (B*T, 1)
+
+        if self.cond_expansion_type is None or self.cond_expansion_type == "none":
+            if self.cond_type is not None:
+                print(f"cond: {cond}")
+                # Fallback to simple linear projection if no expansion is specified
+                # This supports the old behavior of embedding a scalar
+                if cond.shape[1] == 1:
+                    assert self.cond_embedding_dim is not None
+                    # Simple linear projection as a fallback
+                    # --- FIX: Swapped arguments to create (C_out, C_in) -> (128, 1) ---
+                    return F.linear(
+                        cond, torch.eye(self.cond_embedding_dim, 1, device=cond.device)
+                    )
+                else:
+                    # We have a tensor, but don't know how to expand it.
+                    raise ValueError(
+                        "cond_expansion_type must be set (e.g., 're', 'ma', 'forcing') "
+                        f"for cond_type '{self.cond_type}' when cond is not a scalar."
+                    )
+            return None  # No conditioning
+
+        if self.cond_expansion_type not in self.expansion_map:
+            raise KeyError(
+                f"Unknown cond_expansion_type: '{self.cond_expansion_type}'. "
+                f"Available types are: {list(self.expansion_map.keys())}"
+            )
+
+        # Look up the correct expansion function
+        expansion_func = self.expansion_map[self.cond_expansion_type]
+
+        if cond.ndim > 2:
+            cond = cond.view(cond.shape[0], -1)  # Flatten
+
+        # Use the dynamically selected function
+        assert self.cond_embedding_dim is not None
+        cond_encoded = expansion_func(cond, d=self.cond_embedding_dim)
+
+        return cond_encoded.squeeze(-2)  # (B, D) or (B*T, D)
 
     def _build_layers(
         self,
@@ -257,8 +386,8 @@ class BaseEncoderDecoder(nn.Module):
             "block_size": block_size,
             "kernel_size": kernel_size,
             "use_checkpoint": self.use_checkpoint,
-            "re_cond_type": self.re_cond_type,
-            "re_embedding_dim": self.re_embedding_dim,
+            "cond_type": self.cond_type,
+            "cond_embedding_dim": self.cond_embedding_dim,
             **conv_kwargs,
         }
 
@@ -288,26 +417,23 @@ class BaseEncoderDecoder(nn.Module):
             )
         return layers
 
-    def forward(self, x: Tensor, re: Optional[Tensor] = None):
-        # 1. Compute Reynolds number embedding if needed
-        re_emb = None
-        if self.re_cond_type is not None:
-            if re is None:
+    def forward(self, x: Tensor, cond: Optional[Tensor] = None):
+        # 1. Compute condition embedding if needed
+        cond_emb = None
+        if self.cond_type is not None:
+            if cond is None:
                 raise ValueError(
-                    f"Reynolds number `re` must be provided for conditioning type '{self.re_cond_type}'"
+                    f"Condition tensor `cond` must be provided for conditioning type '{self.cond_type}'"
                 )
-            # Re has shape [B], needs to be [B, 1] for linear layer
-            assert (
-                re.ndim == 1
-            ), f"Expected Re number to be scalar but got tensor of shape {re.shape} instead"
-            re_emb = self.re_embedding(re.view(-1, 1))
+            # Use the new generic method
+            cond_emb = self._encode_cond(cond)
 
         # 2. Apply layers based on role (encoder/decoder)
         if self.is_encoder:
             # Pass through convolutional layers
             for layer in self.layers:
-                if isinstance(layer, ConvBlock) and self.re_cond_type == "adaln":
-                    x = layer(x, re_emb)
+                if isinstance(layer, ConvBlock) and self.cond_type == "adaln":
+                    x = layer(x, cond_emb)
                 else:
                     x = layer(x)
 
@@ -315,8 +441,9 @@ class BaseEncoderDecoder(nn.Module):
             out = rearrange(x, "b c h w -> b (c h w)")
 
             # Apply late fusion if configured
-            if self.re_cond_type == "late_fusion":
-                out = torch.cat([out, re_emb], dim=1)
+            if self.cond_type == "late_fusion":
+                assert cond_emb is not None
+                out = torch.cat([out, cond_emb], dim=1)
 
             return self.linear(out)
         else:  # Decoder
@@ -331,8 +458,8 @@ class BaseEncoderDecoder(nn.Module):
             )
             # Pass through convolutional layers
             for layer in self.layers:
-                if isinstance(layer, ConvBlock) and self.re_cond_type == "adaln":
-                    out = layer(out, re_emb)
+                if isinstance(layer, ConvBlock) and self.cond_type == "adaln":
+                    out = layer(out, cond_emb)
                 else:
                     out = layer(out)
             return out
@@ -349,8 +476,9 @@ class ConvEncoder(BaseEncoderDecoder):
         block_size: int = 1,
         kernel_size: Union[int, Tuple[int, int]] = 3,
         use_checkpoint: bool = False,
-        re_embedding_dim: Optional[int] = None,
-        re_cond_type: Optional[str] = None,
+        cond_embedding_dim: Optional[int] = None,
+        cond_type: Optional[str] = None,
+        cond_expansion_type: Optional[str] = None,
         **conv_kwargs,
     ):
         super().__init__(
@@ -363,13 +491,52 @@ class ConvEncoder(BaseEncoderDecoder):
             kernel_size=kernel_size,
             is_encoder=True,
             use_checkpoint=use_checkpoint,
-            re_embedding_dim=re_embedding_dim,
-            re_cond_type=re_cond_type,
+            cond_embedding_dim=cond_embedding_dim,
+            cond_type=cond_type,
+            cond_expansion_type=cond_expansion_type,
             **conv_kwargs,
         )
 
 
-class ConvDecoder(BaseEncoderDecoder):
+# class ConvDecoder(BaseEncoderDecoder):
+#     def __init__(
+#         self,
+#         C: int,
+#         H: int,
+#         W: int,
+#         latent_dim: int,
+#         hiddens: List[int],
+#         block_size: int = 1,
+#         kernel_size: Union[int, Tuple[int, int]] = 3,
+#         use_checkpoint: bool = False,
+#         cond_embedding_dim: Optional[int] = None,
+#         cond_type: Optional[str] = None,
+#         **conv_kwargs,
+#     ):
+#         super().__init__(
+#             C,
+#             H,
+#             W,
+#             latent_dim,
+#             hiddens,
+#             block_size=block_size,
+#             kernel_size=kernel_size,
+#             is_encoder=False,
+#             use_checkpoint=use_checkpoint,
+#             cond_embedding_dim=cond_embedding_dim,
+#             cond_type=cond_type,
+#             **conv_kwargs,
+#         )
+
+
+# --- Final decoder ---
+class ConvDecoder(nn.Module):
+    """
+    Drop-in replacement for the original ConvDecoder.
+    Uses a StyleGAN-inspired upsampling decoder with AdaIN modulation.
+    Arguments and output are identical to the original.
+    """
+
     def __init__(
         self,
         C: int,
@@ -378,81 +545,168 @@ class ConvDecoder(BaseEncoderDecoder):
         latent_dim: int,
         hiddens: List[int],
         block_size: int = 1,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
+        kernel_size: int = 3,
         use_checkpoint: bool = False,
-        re_embedding_dim: Optional[int] = None,
-        re_cond_type: Optional[str] = None,
+        cond_embedding_dim: Optional[int] = None,
+        cond_type: Optional[str] = None,
+        style_dim: Optional[int] = None,
         **conv_kwargs,
     ):
-        super().__init__(
-            C,
-            H,
-            W,
-            latent_dim,
-            hiddens,
-            block_size=block_size,
-            kernel_size=kernel_size,
-            is_encoder=False,
-            use_checkpoint=use_checkpoint,
-            re_embedding_dim=re_embedding_dim,
-            re_cond_type=re_cond_type,
-            **conv_kwargs,
+        super().__init__()
+
+        n_downsamples = len(hiddens)
+        H_start = H // (2**n_downsamples)
+        W_start = W // (2**n_downsamples)
+        style_dim = style_dim or latent_dim
+
+        self.mapping = MappingNetwork(latent_dim, style_dim)
+        self.initial_constant = nn.Parameter(
+            torch.randn(1, hiddens[-1], H_start, W_start)
         )
+
+        # Build styled upsampling blocks
+        layers = []
+        C_in = hiddens[-1]
+        layers.append(StyledConv(C_in, C_in, style_dim, upsample=False))
+        for i, C_out in enumerate(reversed(hiddens)):
+            use_deconv = (
+                i < len(hiddens) - 2
+            )  # early deconv for sharpness, last bilinear
+            layers.append(
+                StyledConv(C_in, C_out, style_dim, upsample=True, use_deconv=use_deconv)
+            )
+            C_in = C_out
+
+        self.conv_layers = nn.ModuleList(layers)
+        self.to_rgb = nn.Conv2d(hiddens[0], C, kernel_size=1, padding=0)
+
+        # Optional conditioning
+        self.re_conditioner = None
+        self.cond_type: Optional[str]  # <-- allow None
+        if cond_type is not None:
+            if cond_embedding_dim is None:
+                raise ValueError(
+                    "'cond_embedding_dim' must be provided for conditioning."
+                )
+            self.re_conditioner = AdaLNMLP(latent_dim, cond_embedding_dim)
+            self.cond_type = cond_type
+        else:
+            self.cond_type = None
+
+    def forward(self, z, cond: Optional[torch.Tensor] = None):
+        # Conditioning (if enabled)
+        if self.re_conditioner is not None and cond is not None:
+            z = self.re_conditioner(z, cond)
+
+        w = self.mapping(z)
+        x = self.initial_constant.expand(z.shape[0], -1, -1, -1)
+
+        for layer in self.conv_layers:
+            x = layer(x, w)
+
+        return self.to_rgb(x)
+
+
+# class AdaLNMLP(nn.Module):
+#     """
+#     Adaptive Layer Norm for conditioning a latent vector based on a physical parameter.
+#
+#     This module takes a latent vector 'z' and a corresponding Reynolds number 're'.
+#     It first creates a high-dimensional embedding of 're', then uses a linear
+#     projection to predict a feature-wise scale (gamma) and shift (beta). These are
+#     applied to modulate the latent vector 'z'.
+#     """
+#
+#     def __init__(self, latent_dim: int, cond_embedding_dim: int):
+#         """
+#         Initializes the AdaLNMLP module.
+#
+#         Args:
+#             latent_dim (int): The dimension of the latent vector to be modulated.
+#             cond_embedding_dim (int): The dimension of the intermediate Reynolds number embedding.
+#         """
+#         super().__init__()
+#         self.latent_dim = latent_dim
+#         self.cond_embedding_dim = cond_embedding_dim
+#
+#         self.re_embedding = nn.Sequential(
+#             nn.Linear(1, cond_embedding_dim),
+#             nn.SiLU(),
+#             nn.Linear(cond_embedding_dim, cond_embedding_dim),
+#             nn.Softplus(),
+#         )
+#
+#     def forward(self, z: Tensor, re: Tensor) -> Tensor:
+#         """
+#         Applies the adaptive modulation.
+#
+#         Args:
+#             z (Tensor): The input latent vector. Shape: (B, latent_dim).
+#             re (Tensor): The corresponding Reynolds numbers. Shape: (B, 1).
+#
+#         Returns:
+#             Tensor: The modulated latent vector. Shape: (B, latent_dim).
+#         """
+#         # Ensure re has the correct shape (B, 1)
+#         if re.ndim == 1:
+#             re = re.unsqueeze(1)
+#         return self.re_embedding(re) * z
 
 
 class AdaLNMLP(nn.Module):
     """
-    Adaptive Layer Norm for conditioning a latent vector based on a physical parameter.
+    Adaptive multiplicative modulation conditioned on Reynolds number embedding.
 
-    This module takes a latent vector 'z' and a corresponding Reynolds number 're'.
-    It first creates a high-dimensional embedding of 're', then uses a linear
-    projection to predict a feature-wise scale (gamma) and shift (beta). These are
-    applied to modulate the latent vector 'z'.
+    Produces only a scale (gamma) — no shift — to preserve interpretability.
+    Supports both scalar and pre-encoded (e.g., Fourier-expanded) `re` inputs.
     """
 
-    def __init__(self, latent_dim: int, re_embedding_dim: int):
-        """
-        Initializes the AdaLNMLP module.
-
-        Args:
-            latent_dim (int): The dimension of the latent vector to be modulated.
-            re_embedding_dim (int): The dimension of the intermediate Reynolds number embedding.
-        """
+    def __init__(self, latent_dim: int, cond_embedding_dim: int):
         super().__init__()
         self.latent_dim = latent_dim
+        self.cond_embedding_dim = cond_embedding_dim
 
-        # 1. A small MLP to embed the scalar Reynolds number into a vector space.
+        # Process the Reynolds embedding (scalar or Fourier-expanded)
         self.re_embedding = nn.Sequential(
-            nn.Linear(1, re_embedding_dim),
-            nn.ReLU(),
-            nn.Linear(re_embedding_dim, re_embedding_dim),
+            nn.Linear(cond_embedding_dim, cond_embedding_dim),
+            nn.SiLU(),
+            nn.Linear(cond_embedding_dim, cond_embedding_dim),
+            nn.SiLU(),
         )
 
-        # 2. A linear layer to project the embedding to the scale and shift parameters.
-        #    We need 2 * latent_dim outputs: one for gamma (scale) and one for beta (shift).
-        self.projection = nn.Linear(re_embedding_dim, latent_dim * 2)
+        # Map embedding → scaling coefficients
+        self.to_gamma = nn.Linear(cond_embedding_dim, latent_dim)
 
-    def forward(self, z: Tensor, re: Tensor) -> Tensor:
+        # Optional normalization on latent
+        # self.layer_norm = nn.LayerNorm(latent_dim)
+
+    def forward(self, z: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """
-        Applies the adaptive modulation.
-
         Args:
-            z (Tensor): The input latent vector. Shape: (B, latent_dim).
-            re (Tensor): The corresponding Reynolds numbers. Shape: (B, 1).
-
+            z: Latent vector (B, latent_dim)
+            cond: Condition scalar (B, 1) or pre-expanded embedding (B, D_cond)
         Returns:
-            Tensor: The modulated latent vector. Shape: (B, latent_dim).
+            Scaled latent (B, latent_dim)
         """
-        # Ensure re has the correct shape (B, 1)
-        if re.ndim == 1:
-            re = re.unsqueeze(1)
+        # Handle shape: allow both scalar and expanded cond
+        if cond.ndim == 1:
+            cond = cond.unsqueeze(-1)  # (B, 1)
+        elif cond.ndim > 2:
+            cond = cond.view(cond.shape[0], -1)  # flatten
 
-        # Create the embedding from the Reynolds number
-        re_emb = self.re_embedding(re)
+        # If scalar, lift to cond_embedding_dim first
+        if cond.shape[1] != self.cond_embedding_dim:
+            # Expand scalar cond into embedding_dim linearly
+            cond = F.linear(
+                cond,
+                torch.eye(cond.shape[1], self.cond_embedding_dim, device=cond.device),
+            )
 
-        # Predict scale (gamma) and shift (beta) from the embedding
-        gamma, beta = self.projection(re_emb).chunk(2, dim=1)
+        re_embed = self.re_embedding(cond)
+        gamma = self.to_gamma(re_embed)  # (B, latent_dim)
 
-        # Apply the modulation: z_new = gamma * z + beta
-        # This is a feature-wise affine transformation.
-        return gamma * z + beta
+        # Optionally normalize latent for stability
+        # z_norm = self.layer_norm(z)
+
+        # Pure multiplicative modulation
+        return z * (1 + gamma)

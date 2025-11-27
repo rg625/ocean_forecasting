@@ -252,3 +252,4 @@ dependencies:
       - pyasn1_modules==0.4.1
       - pre-commit==4.2.0
       - torchtyping==0.1.5
+      - omegaconf==2.3.0

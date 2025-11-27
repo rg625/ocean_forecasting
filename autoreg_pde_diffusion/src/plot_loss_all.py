@@ -3,8 +3,9 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+from typing import Dict
 
-from lsim.distance_model import DistanceModel as LSIM_Model
+from turbpred.lsim.distance_model import DistanceModel as LSIM_Model
 from turbpred.loss import loss_lsim
 
 from plot_color_and_name_mapping import (
@@ -14,6 +15,8 @@ from plot_color_and_name_mapping import (
     getLossRelevantFields,
 )
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 plt.rcParams["pdf.fonttype"] = 42  # prevent type3 fonts in matplotlib output files
 plt.rcParams["ps.fonttype"] = 42
 
@@ -22,7 +25,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 outputFolder = "results"
 
-datasets = ["lowRey", "highRey", "extrap", "interp", "zInterp"]
+datasets = ["lowRey", "highRey"]  # , "extrap", "interp", "zInterp"]
 metric = "MSE"
 
 legend = True
@@ -76,15 +79,17 @@ else:
     }
 
 
-modelNames = {}
-distanceMean = {}
-distanceStd = {}
+modelNames: Dict = {}
+distanceMean: Dict = {}
+distanceStd: Dict = {}
 
 if not load:
     if metric == "LSIM":
         lsimModel = LSIM_Model(baseType="lsim", isTrain=False, useGPU=True)
-        lsimModel.load("src/lsim/models/LSiM.pth")
-
+        lsimModel.load(
+            "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/turbpred/lsim/models/LSiM.pth"
+        )
+        lsimModel.to(DEVICE)
     for datasetName in datasets:
 
         modelMinMax = (0, 3)
@@ -95,20 +100,27 @@ if not load:
         predictionFolder = "results/sampling/%s" % datasetName
 
         models = {
-            "ResNet": "resnet-m2.npz",
-            "Dil-ResNet": "dil-resnet-m2.npz",
-            "FNO16": "fno-16modes-m2.npz",
-            "FNO32": "fno-32modes-m2.npz",
-            "TF-MGN": "tf-mgn.npz",
-            "TF-Enc": "tf-enc.npz",
-            "TF-VAE": "tf-vae.npz",
-            "U-Net": "unet-m2.npz",
-            "U-Net-ut": "unet-m8.npz",
-            "U-Net-tn": "unet-m2-noise0.01.npz",
+            # "ResNet": "resnet-m2.npz",
+            # "Dil-ResNet": "dil-resnet-m2.npz",
+            # # "FNO16": "fno-16modes-m2.npz",
+            # # "FNO32": "fno-32modes-m2.npz",
+            # "TF-MGN": "tf-mgn.npz",
+            # "TF-Enc": "tf-enc.npz",
+            # "TF-VAE": "tf-vae.npz",
+            # "U-Net": "unet-m2.npz",
+            # "U-Net-ut": "unet-m8.npz",
+            # "U-Net-tn": "unet-m2-noise0.01.npz",
             "Refiner": "refiner-r4_std%s.npz"
             % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
-            "ACDM-ncn": "acdm%d_ncn.npz" % (100 if datasetName in ["zInterp"] else 20),
-            "ACDM": "acdm%d.npz" % (100 if datasetName in ["zInterp"] else 20),
+            "ACDM-ncn": "acdm-r%d_ncn.npz"
+            % (100 if datasetName in ["zInterp"] else 20),
+            "ACDM": "acdm-r%d.npz" % (100 if datasetName in ["zInterp"] else 20),
+            "Continous Linear 128": "continous_linear_128.npz",
+            "Continous Linear 1024": "continous_linear_1024.npz",
+            "Continous Linear 1024 Full": "continous_linear_1024_transit.npz",
+            "Discrete Linear 1024": "discrete_linear_1024.npz",
+            "Continous MLP 1024": "continous_mlp_1024.npz",
+            "Discrete MLP 1024": "discrete_mlp_1024.npz",
         }
 
         groundTruthDict = torch.load(os.path.join(predictionFolder, "groundTruth.dict"))
@@ -202,7 +214,9 @@ if not load:
                     with torch.no_grad():
                         lsim += [
                             loss_lsim(
-                                lsimModel, gt[i : i + 1].cuda(), pred[i : i + 1].cuda()
+                                lsimModel.to(DEVICE),
+                                gt[i : i + 1].to(DEVICE),
+                                pred[i : i + 1].to(DEVICE),
                             ).cpu()
                         ]
                 lsim = torch.concat(lsim, dim=0)
@@ -250,7 +264,17 @@ for i in range(len(datasets)):
     axs[i].set_ylim(yLimitMap[datasetName])
     colors = [getColor(k) for k in modelNames[datasetName]]
 
-    posX = [0.0, 1.0, 2.5, 3.5, 5.0, 6.0, 7.0, 8.5, 9.5, 10.5, 12.0, 13.5, 14.5]
+    posX = [
+        0.0,
+        1.0,
+        2.5,
+        3.5,
+        5.0,
+        6.0,
+        7.0,
+        8.5,
+        9.5,
+    ]  # , 5.0, 6.0, 7.0, 8.5, 9.5, 10.5, 12.0, 13.5]#, 13.5, 14.5]
     axs[i].set_xlim([-0.8, 15.3])
     legHandle = axs[i].bar(
         posX,
