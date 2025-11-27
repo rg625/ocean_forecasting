@@ -1,0 +1,13 @@
+defaults:
+  - _self_
+  - /data: qg
+  - /model: continous_qg
+  - /metric: base
+  - /training: base
+  - /loss: base
+  - /lr_scheduler: linear_decay
+
+# Top-level run configuration
+output_dir: "model_outputs/qg"
+ckpt: null # "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs/model_outputs/continous_mlp_128/run/epoch_190_surged.pth"
+log_epoch: 500

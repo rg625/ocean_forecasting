@@ -1,0 +1,26 @@
+# base config for data loading
+
+# data:
+dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
+data_dir: "./data"
+train_file: "qg/train_sim.nc"
+val_file: "qg/test_sim.nc"
+test_file: "qg/test_sim.nc"
+input_sequence_length: 2
+max_sequence_length: 8
+subsample: 2
+variables:
+  q1: 1
+  q2: 1
+# static_variables:
+#   obstacle_mask: 0
+normalization:
+  type: "MeanStdNormalizer"
+  sim: 0
+quantile_range: [2.5, 97.5]
+
+control_parameters: ["forcing"]
+selection_param: "forcing"
+train_select_cond: null
+val_select_cond: null
+test_select_cond: null
