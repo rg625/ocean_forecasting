@@ -205,6 +205,7 @@ class QGDatasetBase(Dataset):
         max_sequence_length: int,
         variables: Dict[str, int],
         subsample: int = 1,
+        exhaustive: Optional[bool] = True,
         **kwargs,
     ):
         self.data_path = Path(data_path)
@@ -216,6 +217,7 @@ class QGDatasetBase(Dataset):
         self.normalizer = normalizer
         self.data_vars = list(variables.keys())
         self.subsample = subsample
+        self.exhaustive = exhaustive
 
         self._load_data()
         self._prepare_data()
@@ -536,40 +538,40 @@ class QGDatasetMultiSim(QGDatasetBase):
         # This now calls the QGDatasetBase._prepare_data
         super()._prepare_data()
 
-    # def _compute_master_index(self):
-    #     """Creates a master list of all possible (sim, start_index) pairs."""
-    #     self.master_index = []
-    #     if "t" in self._data.sizes:
-    #         num_timesteps = self._data.sizes["t"]
-    #     elif "time" in self._data.sizes:
-    #         num_timesteps = self._data.sizes["time"]
-    #     else:
-    #         raise ValueError("Missing time dimension")
+    def _compute_master_index_exhaustive(self):
+        """Creates an exhaustive master list of all possible (sim, start_index) pairs."""
+        self.master_index = []
+        if "t" in self._data.sizes:
+            num_timesteps = self._data.sizes["t"]
+        elif "time" in self._data.sizes:
+            num_timesteps = self._data.sizes["time"]
+        else:
+            raise ValueError("Missing time dimension")
 
-    #     required_length_in_steps = self.input_sequence_length + self.max_sequence_length
-    #     if required_length_in_steps == 0:
-    #         logger.warning("Total sequence length (input+max) is 0.")
-    #         return
+        required_length_in_steps = self.input_sequence_length + self.max_sequence_length
+        if required_length_in_steps == 0:
+            logger.warning("Total sequence length (input+max) is 0.")
+            return
 
-    #     # The total number of *original data points* needed for one full sequence
-    #     required_index_span = (
-    #         (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
-    #     ) + 1
+        # The total number of *original data points* needed for one full sequence
+        required_index_span = (
+            (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
+        ) + 1
 
-    #     # The number of valid starting positions
-    #     valid_starts = num_timesteps - required_index_span + 1
+        # The number of valid starting positions
+        valid_starts = num_timesteps - required_index_span + 1
 
-    #     if valid_starts > 0:
-    #         for sim_idx in range(self.num_sims):
-    #             self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
-    #     if not self.master_index:
-    #         logger.warning(
-    #             f"No valid sequences generated from dataset. "
-    #             f"Sims: {self.num_sims}, Timesteps: {num_timesteps}, "
-    #             f"Required span: {required_index_span}, Valid starts: {valid_starts}"
-    #         )
+        if valid_starts > 0:
+            for sim_idx in range(self.num_sims):
+                self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
+        if not self.master_index:
+            logger.warning(
+                f"No valid sequences generated from dataset. "
+                f"Sims: {self.num_sims}, Timesteps: {num_timesteps}, "
+                f"Required span: {required_index_span}, Valid starts: {valid_starts}"
+            )
 
-    def _compute_master_index(self):
+    def _compute_master_index_non_overlapping(self):
         """
         Creates a master list of all possible (sim, start_index) pairs,
         generating non-overlapping sequences based on the full sequence length.
@@ -606,6 +608,15 @@ class QGDatasetMultiSim(QGDatasetBase):
                 "No valid non-overlapping sequences generated from the dataset. "
                 "Check sequence lengths, subsampling rate, and total timesteps."
             )
+
+    def _compute_master_index(self):
+        """Creates a master list of all possible (sim, start_index) pairs."""
+
+        assert self.exhaustive is not None, "Need to specify master index type"
+        if self.exhaustive:
+            return self._compute_master_index_exhaustive()
+        else:
+            return self._compute_master_index_non_overlapping()
 
     def __len__(self) -> int:
         return len(self.master_index)

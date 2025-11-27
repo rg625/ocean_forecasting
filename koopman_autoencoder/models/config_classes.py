@@ -22,6 +22,7 @@ class DataConfig:
     input_sequence_length: int = MISSING
     max_sequence_length: int = MISSING
     subsample: int = MISSING
+    exhaustive: Optional[bool] = True
 
     variables: Dict[str, int] = field(default_factory=dict)
     static_variables: Dict[str, int] = field(default_factory=dict)

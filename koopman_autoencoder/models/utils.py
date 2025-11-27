@@ -150,6 +150,7 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            exhaustive=cfg.data.exhaustive,
             select_cond=None if ignore_cond else cfg.data.train_select_cond,
             **common_args,  # This will now pass all the new args
         )
@@ -160,6 +161,7 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            exhaustive=cfg.data.exhaustive,
             select_cond=None if ignore_cond else cfg.data.val_select_cond,
             **common_args,  # This will now pass all the new args
         )
@@ -170,6 +172,7 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            exhaustive=cfg.data.exhaustive,
             select_cond=None if ignore_cond else cfg.data.test_select_cond,
             **common_args,  # This will now pass all the new args
         )

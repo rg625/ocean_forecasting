@@ -11,7 +11,7 @@ from typing import Optional, Literal, Dict
 from dataclasses import dataclass
 from torch.nn.utils import spectral_norm
 
-from .networks import ConvEncoder, AdaLNMLP
+from .networks import AdaLNMLP
 from .fourier import re_expansion, ma_expansion, forcing_expansion
 
 # Helper and Encoder Modules
@@ -44,87 +44,85 @@ class TransformerConfig:
     dropout: float = 0.1  # Dropout rate
 
 
-class HistoryEncoder(ConvEncoder):
+class HistoryEncoder(nn.Module):
     """
-    Encodes a sequence of images into a single latent vector.
-
-    This module processes a time-series of images (e.g., video frames) by first
-    encoding each image into a feature vector using a convolutional encoder, and then
-    aggregating these features over time using a Transformer to produce a single
-    vector representing the initial state of the system.
+    Encodes a sequence of images into a single latent vector using a shared backbone.
     """
 
     def __init__(
         self,
-        latent_dim: int,
+        backbone: nn.Module,
         use_positional_encoding: bool = True,
         transformer_config: TransformerConfig = TransformerConfig(),
-        **kwargs,
     ):
-        # Initialize the parent ConvEncoder with all provided arguments.
-        super().__init__(latent_dim=latent_dim, **kwargs)
-        self.norm = nn.LayerNorm(latent_dim)
-        # Initialize positional encoding if requested.
+        super().__init__()
+        # Use the provided backbone (ConvEncoder) via composition instead of inheritance
+        # This ensures weights are shared with the present_encoder.
+        self.backbone = backbone
+
+        # Infer latent dim from the backbone (BaseEncoderDecoder stores it as D)
+        if hasattr(backbone, "D"):
+            self.latent_dim = backbone.D
+        elif hasattr(backbone, "latent_dim"):
+            self.latent_dim = backbone.latent_dim
+        else:
+            # Fallback check on linear layer
+            self.latent_dim = backbone.linear.out_features
+
+        self.norm = nn.LayerNorm(self.latent_dim)
+
         self.pos_enc = (
-            PositionalEncoding(latent_dim, max_len=transformer_config.max_len)
+            PositionalEncoding(self.latent_dim, max_len=transformer_config.max_len)
             if use_positional_encoding
             else nn.Identity()
         )
-        # Initialize the TransformerEncoder, which will process the sequence of features.
+
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(
-                d_model=latent_dim,
+                d_model=self.latent_dim,
                 nhead=transformer_config.nhead,
-                dim_feedforward=latent_dim * transformer_config.ff_mult,
+                dim_feedforward=self.latent_dim * transformer_config.ff_mult,
                 dropout=transformer_config.dropout,
-                batch_first=True,  # Important: expects input shape (B, T, D)
+                batch_first=True,
             ),
             num_layers=transformer_config.num_layers,
         )
 
     def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
         """
-        Forward pass for the HistoryEncoder.
-
         Args:
             x (Tensor): Input tensor of image frames. Shape: (B, T, C, H, W).
-            cond (Optional[Tensor]): Optional Reynolds/Mach number conditioning or Forcing. Shape: (B, T).
-
-        Returns:
-            Tensor: A single latent vector representing the sequence. Shape: (B, D).
+            cond (Optional[Tensor]): Optional conditioning. Shape: (B, T).
         """
         B, T, C, H, W = x.shape
-        # Flatten the batch and time dimensions to process all images at once.
-        # Shape: (B, T, C, H, W) -> (B*T, C, H, W)
         x_flat = rearrange(x, "b t c h w -> (b t) c h w")
 
-        # Prepare the Reynolds number tensor for batch processing if provided.
+        # Handle conditioning logic based on the backbone's configuration
         cond_expanded = None
-        if self.cond_type is not None:
+        # Access cond_type from backbone (BaseEncoderDecoder)
+        backbone_cond_type = getattr(self.backbone, "cond_type", None)
+
+        if backbone_cond_type is not None:
             if cond is None:
                 raise ValueError(
-                    f"Re/Ma/Forcing tensor must be provided for conditioning type '{self.cond_type}'"
+                    f"Condition tensor must be provided for conditioning type '{backbone_cond_type}'"
                 )
             if cond.ndim != 2 or cond.shape != (B, T):
                 raise ValueError(
-                    f"Expected Re/Ma/Forcing tensor of shape (B, T) = ({B}, {T}), but got {cond.shape}"
+                    f"Expected Condition tensor of shape (B, T) = ({B}, {T}), but got {cond.shape}"
                 )
-            # Flatten Re from (B, T) to (B*T,)
+            # Flatten cond from (B, T) to (B*T,)
             cond_expanded = cond.reshape(-1)
 
-        # Pass the flattened images through the parent ConvEncoder to get features.
-        # Output shape: (B*T, D)
-        features = super().forward(x_flat, cond=cond_expanded)
+        # Pass through the shared backbone
+        features = self.backbone(x_flat, cond=cond_expanded)
 
-        # Un-flatten the features back into a sequence for the Transformer.
-        # Shape: (B*T, D) -> (B, T, D)
+        # Un-flatten features
         features = rearrange(features, "(b t) d -> b t d", t=T)
         features = self.norm(features)
-        # Add positional information and process with the Transformer.
         features = self.pos_enc(features)
         out = self.transformer(features)
 
-        # Pool the features over the time dimension to get a single vector per sequence.
         return out.mean(dim=1)
 
 

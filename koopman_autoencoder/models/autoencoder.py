@@ -101,20 +101,22 @@ class KoopmanAutoencoder(nn.Module):
             **conv_kwargs,
         }
 
+        self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
+
         self.history_encoder = None
         if self.input_frames > 1:
             assert (
                 transformer_config is not None
             ), f"Expected valid transformer config but got {type(transformer_config)} instead"
+
+            # Pass the SHARED self.encoder as the backbone.
+            # HistoryEncoder now uses composition (stores backbone) instead of inheritance.
             self.history_encoder = HistoryEncoder(
-                C=self.total_input_channels,
+                backbone=self.encoder,
                 transformer_config=transformer_config,
-                cond_embedding_dim=cond_embedding_dim,
-                cond_type=cond_type,
-                **common_args,
+                use_positional_encoding=True,  # defaulting to True as per previous logic
             )
 
-        self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
         self.decoder = ConvDecoder(C=self.total_input_channels, **common_args)
 
         assert isinstance(

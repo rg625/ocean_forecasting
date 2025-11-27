@@ -1,0 +1,13 @@
+defaults:
+  - _self_
+  - /data: stable
+  - /model: discrete_mlp_512
+  - /metric: base
+  - /training: base
+  - /loss: base
+  - /lr_scheduler: linear_decay
+
+# Top-level run configuration
+output_dir: "model_outputs_stable/discrete_mlp_512"
+ckpt: null
+log_epoch: 100

@@ -47,7 +47,7 @@ class EvalConfig:
 
     # Data Parameters
     initial_sample_index: int = 0
-    rollout_steps: int = 58
+    rollout_steps: int = 60
     subsample: int = 1
     max_sequence_length: int = 58
 
