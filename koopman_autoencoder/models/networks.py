@@ -669,7 +669,7 @@ class AdaLNMLP(nn.Module):
         self.cond_embedding_dim = cond_embedding_dim
 
         # Process the Reynolds embedding (scalar or Fourier-expanded)
-        self.re_embedding = nn.Sequential(
+        self.cond_embedding = nn.Sequential(
             nn.Linear(cond_embedding_dim, cond_embedding_dim),
             nn.SiLU(),
             nn.Linear(cond_embedding_dim, cond_embedding_dim),
@@ -678,8 +678,8 @@ class AdaLNMLP(nn.Module):
             nn.Tanh(),
         )
 
-        nn.init.zeros_(self.re_embedding[-1].weight)
-        nn.init.zeros_(self.re_embedding[-1].bias)
+        nn.init.zeros_(self.cond_embedding[-2].weight)
+        nn.init.zeros_(self.cond_embedding[-2].bias)
 
     def forward(self, z: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """
@@ -703,7 +703,7 @@ class AdaLNMLP(nn.Module):
                 torch.eye(cond.shape[1], self.cond_embedding_dim, device=cond.device),
             )
 
-        gamma = self.to_gamma(cond) * 0.1  # (B, latent_dim)
+        gamma = self.cond_embedding(cond) * 0.1  # (B, latent_dim)
 
         # Pure multiplicative modulation
         return z * (1 + gamma)
