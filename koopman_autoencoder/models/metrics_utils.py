@@ -144,6 +144,23 @@ def ke_timeseries(tensordict, dx=1.0, dy=1.0, rho=1.0):
     return ke_total
 
 
+def ke_timeseries_spatial(tensordict, rho=1.0):
+    """
+    Compute per-pixel kinetic energy for each time step.
+    Assumes input shape is [T, H, W].
+
+    Returns:
+        ke_pixel : [T, H, W] kinetic energy per pixel
+    """
+    vx = tensordict["v_x"]
+    vy = tensordict["v_y"]
+
+    # kinetic energy per pixel
+    ke_pixel = 0.5 * rho * (vx**2 + vy**2)
+
+    return ke_pixel
+
+
 def run_kae_rollout(
     model,
     input_seq: TensorDict,

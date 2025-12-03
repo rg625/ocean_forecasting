@@ -8,10 +8,9 @@ from torch.optim import Optimizer
 from pathlib import Path
 from typing import Dict, Any, Type, Tuple, Union, List, Optional
 import logging
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig
 from hydra import initialize, compose
 
-# Re-importing locally to make this file self-contained and reflect fix
 from .metrics import Metric
 from .config_classes import Config
 from .dataloader import (
@@ -59,6 +58,71 @@ def average_losses(total_losses: Dict[str, Tensor], n_batches: int) -> Dict[str,
     return {key: (value / n_batches).item() for key, value in total_losses.items()}
 
 
+# def load_config(
+#     config_path: Union[str, None], cli_args: Optional[List[str]] = None
+# ) -> Config:
+#     """
+#     Load a Hydra config into the structured Config dataclass.
+#     Works in notebooks and scripts.
+
+#     Args:
+#         config_path: Path to the experiment YAML relative to the configs root, e.g., "experiment/128_inc"
+#         cli_args: Optional list of CLI-style overrides.
+
+#     Returns:
+#         Config: Structured and fully resolved configuration.
+#     """
+#     # Repo root (assumes this file is in models/)
+#     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+#     configs_root_abs = os.path.join(repo_root, "../configs")
+
+#     # Make configs_root relative to current working dir (Hydra requires relative paths)
+#     configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
+
+#     # Strip .yaml if present
+#     if config_path is not None:
+#         config_name = os.path.splitext(config_path)[0]
+#     else:
+#         config_name = ""
+
+#     # Initialize Hydra from the relative configs root
+#     with initialize(config_path=configs_root, version_base=None):
+#         cfg_dict = compose(config_name=config_name, overrides=cli_args or [])
+
+#     # Extract 'experiment' if present
+#     cfg_dict = cfg_dict.get("experiment", cfg_dict)
+
+#     # Merge into structured dataclass
+#     cfg: Config = OmegaConf.merge(OmegaConf.structured(Config()), cfg_dict)
+#     OmegaConf.resolve(cfg)
+
+#     return cfg
+
+
+def _find_config_root(cfg: Any) -> Optional[DictConfig]:
+    """
+    Recursively searches for the actual configuration root within a nested DictConfig.
+    It identifies the root by looking for keys that MUST exist in your Config schema,
+    specifically 'output_dir' or 'data'.
+    """
+    if not isinstance(cfg, (dict, DictConfig)):
+        raise NotImplementedError("Config needs to be read by OmegaConf")
+
+    # Check if this node looks like the config root
+    # (We check for 'data' because 'output_dir' might sometimes be missing/defaulted)
+    if "data" in cfg or "output_dir" in cfg:
+        return cfg
+
+    # Recursively search children
+    for key in cfg:
+        val = cfg[key]
+        if isinstance(val, (dict, DictConfig)):
+            found = _find_config_root(val)
+            if found is not None:
+                return found
+    return None
+
+
 def load_config(
     config_path: Union[str, None], cli_args: Optional[List[str]] = None
 ) -> Config:
@@ -67,34 +131,39 @@ def load_config(
     Works in notebooks and scripts.
 
     Args:
-        config_path: Path to the experiment YAML relative to the configs root, e.g., "experiment/128_inc"
+        config_path: Path to the experiment YAML relative to the configs root, e.g., "experiment/stable/128_inc"
         cli_args: Optional list of CLI-style overrides.
 
     Returns:
         Config: Structured and fully resolved configuration.
     """
-    # Repo root (assumes this file is in models/)
+
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     configs_root_abs = os.path.join(repo_root, "../configs")
 
-    # Make configs_root relative to current working dir (Hydra requires relative paths)
-    configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
+    try:
+        configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
+    except ValueError:
+        configs_root = configs_root_abs
 
-    # Strip .yaml if present
     if config_path is not None:
         config_name = os.path.splitext(config_path)[0]
     else:
         config_name = ""
 
-    # Initialize Hydra from the relative configs root
     with initialize(config_path=configs_root, version_base=None):
         cfg_dict = compose(config_name=config_name, overrides=cli_args or [])
 
-    # Extract 'experiment' if present
-    cfg_dict = cfg_dict.get("experiment", cfg_dict)
+    real_config = _find_config_root(cfg_dict)
 
-    # Merge into structured dataclass
-    cfg: Config = OmegaConf.merge(OmegaConf.structured(Config()), cfg_dict)
+    if real_config is None:
+        real_config = cfg_dict
+
+    cfg: Config = OmegaConf.merge(OmegaConf.structured(Config()), real_config)
+
+    if OmegaConf.is_missing(cfg, "output_dir"):
+        cfg.output_dir = "outputs"
+
     OmegaConf.resolve(cfg)
 
     return cfg

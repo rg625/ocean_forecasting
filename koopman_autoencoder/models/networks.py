@@ -498,43 +498,52 @@ class ConvEncoder(BaseEncoderDecoder):
         )
 
 
-# class ConvDecoder(BaseEncoderDecoder):
-#     def __init__(
-#         self,
-#         C: int,
-#         H: int,
-#         W: int,
-#         latent_dim: int,
-#         hiddens: List[int],
-#         block_size: int = 1,
-#         kernel_size: Union[int, Tuple[int, int]] = 3,
-#         use_checkpoint: bool = False,
-#         cond_embedding_dim: Optional[int] = None,
-#         cond_type: Optional[str] = None,
-#         **conv_kwargs,
-#     ):
-#         super().__init__(
-#             C,
-#             H,
-#             W,
-#             latent_dim,
-#             hiddens,
-#             block_size=block_size,
-#             kernel_size=kernel_size,
-#             is_encoder=False,
-#             use_checkpoint=use_checkpoint,
-#             cond_embedding_dim=cond_embedding_dim,
-#             cond_type=cond_type,
-#             **conv_kwargs,
-#         )
+class PixelShuffleStyledBlock(nn.Module):
+    """
+    Upsamples using PixelShuffle for maximum sharpness.
+    Flow: Conv (expand channels) -> AdaIN -> Act -> PixelShuffle
+    """
+
+    def __init__(self, C_in, C_out, style_dim, kernel_size=3, upsample=False):
+        super().__init__()
+        self.upsample = upsample
+
+        if upsample:
+            # PixelShuffle with upscale_factor=2 reduces channels by factor of 4.
+            # So we need to output 4 * C_out channels from the conv.
+            self.out_channels_conv = C_out * 4
+            self.pixel_shuffle = nn.PixelShuffle(2)
+        else:
+            self.out_channels_conv = C_out
+            self.pixel_shuffle = nn.Identity()
+
+        # padding_mode="circular" is crucial for periodic boundaries in CFD,
+        # use "zeros" or "replicate" if you have hard walls.
+        self.conv = nn.Conv2d(
+            C_in,
+            self.out_channels_conv,
+            kernel_size,
+            padding=kernel_size // 2,
+            padding_mode="circular",
+        )
+
+        # We modulate the HIGH dimensional representation before shuffling
+        self.mod = AdaIN(style_dim, self.out_channels_conv)
+        self.act = nn.LeakyReLU(0.2)
+
+    def forward(self, x, w):
+        x = self.conv(x)
+        x = self.mod(x, w)
+        x = self.act(x)
+        if self.upsample:
+            x = self.pixel_shuffle(x)
+        return x
 
 
-# --- Final decoder ---
 class ConvDecoder(nn.Module):
     """
-    Drop-in replacement for the original ConvDecoder.
-    Uses a StyleGAN-inspired upsampling decoder with AdaIN modulation.
-    Arguments and output are identical to the original.
+    Improved Decoder with Spatial Awareness (Coordinate Injection)
+    and PixelShuffle for sharp detail reconstruction.
     """
 
     def __init__(
@@ -544,7 +553,7 @@ class ConvDecoder(nn.Module):
         W: int,
         latent_dim: int,
         hiddens: List[int],
-        block_size: int = 1,
+        block_size: int = 1,  # Kept for API compatibility, usually 1 for StyleGAN types
         kernel_size: int = 3,
         use_checkpoint: bool = False,
         cond_embedding_dim: Optional[int] = None,
@@ -555,102 +564,95 @@ class ConvDecoder(nn.Module):
         super().__init__()
 
         n_downsamples = len(hiddens)
-        H_start = H // (2**n_downsamples)
-        W_start = W // (2**n_downsamples)
-        style_dim = style_dim or latent_dim
+        # Calculate starting spatial resolution
+        self.H_start = H // (2**n_downsamples)
+        self.W_start = W // (2**n_downsamples)
 
+        style_dim = style_dim or latent_dim
         self.mapping = MappingNetwork(latent_dim, style_dim)
-        self.initial_constant = nn.Parameter(
-            torch.randn(1, hiddens[-1], H_start, W_start)
+
+        # --- IMPROVEMENT 1: Spatial Injection Setup ---
+        # Instead of learning a constant, we project z to a feature map.
+        self.z_to_spatial = nn.Linear(
+            latent_dim, hiddens[-1] * self.H_start * self.W_start
         )
 
-        # Build styled upsampling blocks
+        # We also create a fixed coordinate grid buffer (not a learnable parameter)
+        # Shape: [2, H_start, W_start]
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, self.H_start),
+            torch.linspace(-1, 1, self.W_start),
+            indexing="ij",
+        )
+        grid = torch.stack([xx, yy], dim=0)
+        self.register_buffer("grid", grid)
+
+        # --- IMPROVEMENT 2: PixelShuffle Blocks ---
         layers = []
-        C_in = hiddens[-1]
-        layers.append(StyledConv(C_in, C_in, style_dim, upsample=False))
+
+        # The first block receives:
+        #   (Projected Z features) + (2 Coordinate Channels)
+        C_in = hiddens[-1] + 2
+
+        # First block: No upsample, just processing the injected features
+        layers.append(
+            PixelShuffleStyledBlock(C_in, hiddens[-1], style_dim, upsample=False)
+        )
+
+        current_C = hiddens[-1]
+
+        # Upsampling blocks
         for i, C_out in enumerate(reversed(hiddens)):
-            use_deconv = (
-                i < len(hiddens) - 2
-            )  # early deconv for sharpness, last bilinear
+            # We use upsampling for all blocks except the very last refinement (optional)
+            # or strictly follow hiddens structure.
+            # Assuming hiddens are [64, 128, 256] -> we go 256->128->64
+
+            # Note: PixelShuffleBlock handles the channel expansion internally
             layers.append(
-                StyledConv(C_in, C_out, style_dim, upsample=True, use_deconv=use_deconv)
+                PixelShuffleStyledBlock(current_C, C_out, style_dim, upsample=True)
             )
-            C_in = C_out
+            current_C = C_out
 
         self.conv_layers = nn.ModuleList(layers)
+
+        # Final projection to RGB/Physics variables
         self.to_rgb = nn.Conv2d(hiddens[0], C, kernel_size=1, padding=0)
 
-        # Optional conditioning
-        self.re_conditioner = None
-        self.cond_type: Optional[str]  # <-- allow None
+        # Optional conditioning (Same as before)
+        self.conditioner = None
+        self.cond_type = cond_type
         if cond_type is not None:
             if cond_embedding_dim is None:
-                raise ValueError(
-                    "'cond_embedding_dim' must be provided for conditioning."
-                )
-            self.re_conditioner = AdaLNMLP(latent_dim, cond_embedding_dim)
-            self.cond_type = cond_type
-        else:
-            self.cond_type = None
+                raise ValueError("'cond_embedding_dim' must be provided.")
+            self.conditioner = AdaLNMLP(latent_dim, cond_embedding_dim)
 
     def forward(self, z, cond: Optional[torch.Tensor] = None):
-        # Conditioning (if enabled)
-        if self.re_conditioner is not None and cond is not None:
-            z = self.re_conditioner(z, cond)
+        # 1. Conditioning
+        if self.conditioner is not None and cond is not None:
+            z = self.conditioner(z, cond)
 
+        # 2. Get Style Vector
         w = self.mapping(z)
-        x = self.initial_constant.expand(z.shape[0], -1, -1, -1)
 
+        # 3. SPATIAL INJECTION (The "Placement" Fix)
+        # Project z to spatial dimensions: [B, C*H*W] -> [B, C, H, W]
+        x = self.z_to_spatial(z)
+        x = x.view(
+            -1, self.conv_layers[0].conv.in_channels - 2, self.H_start, self.W_start
+        )
+
+        # Create coordinate batch: [B, 2, H, W]
+        grid_batch = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+
+        # Concatenate: [B, C+2, H, W]
+        # This tells the conv layer EXACTLY where each pixel is.
+        x = torch.cat([x, grid_batch], dim=1)
+
+        # 4. Upsample with PixelShuffle (The "Crispness" Fix)
         for layer in self.conv_layers:
             x = layer(x, w)
 
         return self.to_rgb(x)
-
-
-# class AdaLNMLP(nn.Module):
-#     """
-#     Adaptive Layer Norm for conditioning a latent vector based on a physical parameter.
-#
-#     This module takes a latent vector 'z' and a corresponding Reynolds number 're'.
-#     It first creates a high-dimensional embedding of 're', then uses a linear
-#     projection to predict a feature-wise scale (gamma) and shift (beta). These are
-#     applied to modulate the latent vector 'z'.
-#     """
-#
-#     def __init__(self, latent_dim: int, cond_embedding_dim: int):
-#         """
-#         Initializes the AdaLNMLP module.
-#
-#         Args:
-#             latent_dim (int): The dimension of the latent vector to be modulated.
-#             cond_embedding_dim (int): The dimension of the intermediate Reynolds number embedding.
-#         """
-#         super().__init__()
-#         self.latent_dim = latent_dim
-#         self.cond_embedding_dim = cond_embedding_dim
-#
-#         self.re_embedding = nn.Sequential(
-#             nn.Linear(1, cond_embedding_dim),
-#             nn.SiLU(),
-#             nn.Linear(cond_embedding_dim, cond_embedding_dim),
-#             nn.Softplus(),
-#         )
-#
-#     def forward(self, z: Tensor, re: Tensor) -> Tensor:
-#         """
-#         Applies the adaptive modulation.
-#
-#         Args:
-#             z (Tensor): The input latent vector. Shape: (B, latent_dim).
-#             re (Tensor): The corresponding Reynolds numbers. Shape: (B, 1).
-#
-#         Returns:
-#             Tensor: The modulated latent vector. Shape: (B, latent_dim).
-#         """
-#         # Ensure re has the correct shape (B, 1)
-#         if re.ndim == 1:
-#             re = re.unsqueeze(1)
-#         return self.re_embedding(re) * z
 
 
 class AdaLNMLP(nn.Module):
@@ -672,13 +674,12 @@ class AdaLNMLP(nn.Module):
             nn.SiLU(),
             nn.Linear(cond_embedding_dim, cond_embedding_dim),
             nn.SiLU(),
+            nn.Linear(cond_embedding_dim, latent_dim),
+            nn.Tanh(),
         )
 
-        # Map embedding → scaling coefficients
-        self.to_gamma = nn.Linear(cond_embedding_dim, latent_dim)
-
-        # Optional normalization on latent
-        # self.layer_norm = nn.LayerNorm(latent_dim)
+        nn.init.zeros_(self.re_embedding[-1].weight)
+        nn.init.zeros_(self.re_embedding[-1].bias)
 
     def forward(self, z: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """
@@ -695,18 +696,14 @@ class AdaLNMLP(nn.Module):
             cond = cond.view(cond.shape[0], -1)  # flatten
 
         # If scalar, lift to cond_embedding_dim first
-        if cond.shape[1] != self.cond_embedding_dim:
+        if cond.shape[-1] != self.cond_embedding_dim:
             # Expand scalar cond into embedding_dim linearly
             cond = F.linear(
                 cond,
                 torch.eye(cond.shape[1], self.cond_embedding_dim, device=cond.device),
             )
 
-        re_embed = self.re_embedding(cond)
-        gamma = self.to_gamma(re_embed)  # (B, latent_dim)
-
-        # Optionally normalize latent for stability
-        # z_norm = self.layer_norm(z)
+        gamma = self.to_gamma(cond) * 0.1  # (B, latent_dim)
 
         # Pure multiplicative modulation
         return z * (1 + gamma)
