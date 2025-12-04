@@ -707,3 +707,19 @@ class AdaLNMLP(nn.Module):
 
         # Pure multiplicative modulation
         return z * (1 + gamma)
+
+    def get_gamma(self, cond):
+        if cond.ndim == 1:
+            cond = cond.unsqueeze(-1)  # (B, 1)
+        elif cond.ndim > 2:
+            cond = cond.view(cond.shape[0], -1)  # flatten
+
+        # If scalar, lift to cond_embedding_dim first
+        if cond.shape[-1] != self.cond_embedding_dim:
+            # Expand scalar cond into embedding_dim linearly
+            cond = F.linear(
+                cond,
+                torch.eye(cond.shape[1], self.cond_embedding_dim, device=cond.device),
+            )
+
+        return self.cond_embedding(cond) * 0.1  # (B, latent_dim)
