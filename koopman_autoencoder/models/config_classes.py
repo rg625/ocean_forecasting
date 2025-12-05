@@ -1,7 +1,7 @@
 from omegaconf import MISSING
 from typing import Dict, Any, Tuple, Optional, List
 from dataclasses import dataclass, field
-from .modules import (
+from .networks import (
     TransformerConfig as ModelTransformerConfig,
 )  # Alias to avoid naming conflict
 

@@ -2,15 +2,15 @@
 
 # Configuration Arrays
 # arch in python script corresponds to "discrete" or "continous" (TYPES in your bash vars)
-TYPES=("discrete" "continous")
+TYPES=("continous" "discrete")
 # type in python script corresponds to "linear" or "mlp" (ARCHS in your bash vars)
 ARCHS=("linear" "mlp")
 # dimension
-SIZES=(128 1024)
-REGIME=("stable" "full")
+SIZES=(128) # 1024
+REGIME=("stable") # "full"
 
 # Output Directory
-OUT_DIR="/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling/lowRey2/"
+OUT_DIR="/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling/lowRey/"
 
 for size in "${SIZES[@]}"; do
   for type in "${TYPES[@]}"; do
@@ -28,8 +28,13 @@ for size in "${SIZES[@]}"; do
 
         python evaluate.py \
           --config_name "$CONFIG_NAME" \
-          --out_dir "$OUT_DIR"
+          --out_dir "$OUT_DIR" \
+          --ckpt "320"
+
+
       done
     done
   done
 done
+
+python ../autoreg_pde_diffusion/src/plot_loss_all.py

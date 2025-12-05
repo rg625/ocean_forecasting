@@ -5,130 +5,14 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from torch import Tensor
-from einops import rearrange
 import abc
-from typing import Optional, Literal, Dict
-from dataclasses import dataclass
-from torch.nn.utils import spectral_norm
+from typing import Optional, Literal
 
-from .networks import AdaLNMLP
-from .fourier import re_expansion, ma_expansion, forcing_expansion
-
-# Helper and Encoder Modules
-
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, max_len: int = 1000):
-        super().__init__()
-        pe = torch.zeros(max_len, d_model)
-        pos = torch.arange(0, max_len).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2) * (-torch.log(torch.tensor(10000.0)) / d_model)
-        )
-        pe[:, 0::2] = torch.sin(pos * div_term)
-        pe[:, 1::2] = torch.cos(pos * div_term)
-        self.pe = pe.unsqueeze(0)  # Shape: (1, max_len, d_model)
-
-    def forward(self, x: Tensor) -> Tensor:
-        return x + self.pe[:, : x.size(1)].to(x.device)
-
-
-@dataclass
-class TransformerConfig:
-    """Configuration dataclass for the TransformerEncoder in HistoryEncoder."""
-
-    num_layers: int = 4  # Number of transformer encoder layers
-    nhead: int = 8  # Number of attention heads
-    ff_mult: int = 4  # Multiplier for the feed-forward layer dimension
-    max_len: int = 1000  # Maximum sequence length for positional encoding
-    dropout: float = 0.1  # Dropout rate
-
-
-class HistoryEncoder(nn.Module):
-    """
-    Encodes a sequence of images into a single latent vector using a shared backbone.
-    """
-
-    def __init__(
-        self,
-        backbone: nn.Module,
-        use_positional_encoding: bool = True,
-        transformer_config: TransformerConfig = TransformerConfig(),
-    ):
-        super().__init__()
-        # Use the provided backbone (ConvEncoder) via composition instead of inheritance
-        # This ensures weights are shared with the present_encoder.
-        self.backbone = backbone
-
-        # Infer latent dim from the backbone (BaseEncoderDecoder stores it as D)
-        if hasattr(backbone, "D"):
-            self.latent_dim = backbone.D
-        elif hasattr(backbone, "latent_dim"):
-            self.latent_dim = backbone.latent_dim
-        else:
-            # Fallback check on linear layer
-            self.latent_dim = backbone.linear.out_features
-
-        self.norm = nn.LayerNorm(self.latent_dim)
-
-        self.pos_enc = (
-            PositionalEncoding(self.latent_dim, max_len=transformer_config.max_len)
-            if use_positional_encoding
-            else nn.Identity()
-        )
-
-        self.transformer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=self.latent_dim,
-                nhead=transformer_config.nhead,
-                dim_feedforward=self.latent_dim * transformer_config.ff_mult,
-                dropout=transformer_config.dropout,
-                batch_first=True,
-            ),
-            num_layers=transformer_config.num_layers,
-        )
-
-    def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
-        """
-        Args:
-            x (Tensor): Input tensor of image frames. Shape: (B, T, C, H, W).
-            cond (Optional[Tensor]): Optional conditioning. Shape: (B, T).
-        """
-        B, T, C, H, W = x.shape
-        x_flat = rearrange(x, "b t c h w -> (b t) c h w")
-
-        # Handle conditioning logic based on the backbone's configuration
-        cond_expanded = None
-        # Access cond_type from backbone (BaseEncoderDecoder)
-        backbone_cond_type = getattr(self.backbone, "cond_type", None)
-
-        if backbone_cond_type is not None:
-            if cond is None:
-                raise ValueError(
-                    f"Condition tensor must be provided for conditioning type '{backbone_cond_type}'"
-                )
-            if cond.ndim != 2 or cond.shape != (B, T):
-                raise ValueError(
-                    f"Expected Condition tensor of shape (B, T) = ({B}, {T}), but got {cond.shape}"
-                )
-            # Flatten cond from (B, T) to (B*T,)
-            cond_expanded = cond.reshape(-1)
-
-        # Pass through the shared backbone
-        features = self.backbone(x_flat, cond=cond_expanded)
-
-        # Un-flatten features
-        features = rearrange(features, "(b t) d -> b t d", t=T)
-        features = self.norm(features)
-        features = self.pos_enc(features)
-        out = self.transformer(features)
-
-        return out.mean(dim=1)
+from .adaptive_layers import AdaLNMLP
+from .rbf import re_expansion, ma_expansion, forcing_expansion
 
 
 # ROBUST KOOPMAN OPERATOR IMPLEMENTATION
-
-
 class BaseKoopmanOperator(nn.Module, abc.ABC):
     """
     Abstract base class for Koopman operators.
@@ -160,11 +44,14 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
         )
 
         self.cond_expansion_type = cond_expansion_type
-        self.expansion_map: Dict[str, nn.Module] = {
-            "Re": re_expansion,
-            "Ma": ma_expansion,
-            "forcing": forcing_expansion,
-        }
+        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
+        self.expansion_map = nn.ModuleDict(
+            {
+                "Re": re_expansion(dim_to_use),
+                "Ma": ma_expansion(dim_to_use),
+                "forcing": forcing_expansion(dim_to_use),
+            }
+        )
 
     def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
         """
@@ -194,9 +81,9 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
             cond = cond.mean(dim=1, keepdim=True)  # average over T if (B, T)
 
         # Use the dynamically selected function
-        cond_encoded = expansion_func(cond, d=self.conditioner.cond_embedding_dim)
+        cond_encoded = expansion_func(cond)  # , d=self.conditioner.cond_embedding_dim)
 
-        return cond_encoded.squeeze(-2)  # (B, D)
+        return cond_encoded  # .squeeze(-2)  # (B, D)
 
     def _apply_conditioning(self, z: Tensor, cond: Optional[Tensor]) -> Tensor:
         """
@@ -225,9 +112,7 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if self.mode == "linear":
-            self.K = spectral_norm(
-                nn.Linear(self.latent_dim, self.latent_dim, bias=False)
-            )
+            self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
         elif self.mode == "eigen":
             # --- Parameters for Eigendecomposition ---
             # Unconstrained log-magnitude, mapped to <= 0 by softplus for stability.
@@ -241,9 +126,9 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             self.eigenvectors = nn.Parameter(torch.linalg.qr(eigenvectors_init).Q)
         elif self.mode == "mlp":
             self.K = nn.Sequential(
-                spectral_norm(nn.Linear(self.latent_dim, self.latent_dim // 8)),
+                nn.Linear(self.latent_dim, self.latent_dim // 8),
                 nn.SiLU(),
-                spectral_norm(nn.Linear(self.latent_dim // 8, self.latent_dim)),
+                nn.Linear(self.latent_dim // 8, self.latent_dim),
             )
 
     @property

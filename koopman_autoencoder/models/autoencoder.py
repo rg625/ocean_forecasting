@@ -12,10 +12,10 @@ from .utils import cuda_timer, elapsed_time
 from .networks import (
     ConvEncoder,
     ConvDecoder,
-)
-from .modules import (
     HistoryEncoder,
     TransformerConfig,
+)
+from .modules import (
     KoopmanOperator,
     Re,
 )

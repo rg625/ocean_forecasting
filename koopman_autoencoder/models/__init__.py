@@ -18,11 +18,28 @@ from .dataloader import (
     create_ddp_dataloaders as create_ddp_dataloaders,
     DataLoaderWrapper as DataLoaderWrapper,
 )
+from .adaptive_layers import (
+    AdaIN as AdaIN,
+    AdaLNConv as AdaLNConv,
+    AdaLNMLP as AdaLNMLP,
+)
+from .rbf import (
+    re_expansion as re_expansion,
+    ma_expansion as ma_expansion,
+    forcing_expansion as forcing_expansion,
+)
+from .fourier import (
+    GaussianFourierFeatureTransform as GaussianFourierFeatureTransform,
+    PositionalEncoding as PositionalEncoding,
+)
 from .loss import KoopmanLoss as KoopmanLoss
 from .lr_schedule import CosineWarmup as CosineWarmup
 from .metrics import Metric as Metric
-from .networks import ConvEncoder as ConvEncoder, AdaLNMLP as AdaLNMLP
-from .modules import TransformerConfig as TransformerConfig
+from .networks import (
+    ConvEncoder as ConvEncoder,
+    TransformerConfig as TransformerConfig,
+    HistoryEncoder as HistoryEncoder,
+)
 from .config_classes import Config as Config
 from . import utils as utils
 from . import metrics_utils as metrics_utils
