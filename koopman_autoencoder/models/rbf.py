@@ -17,12 +17,14 @@ class PhysicalNormalizer(nn.Module):
     for narrow-range variables (Mach, Beta).
     """
 
+    mode: Literal["log", "linear"]
+    mean: torch.Tensor
+    std: torch.Tensor
+
     def __init__(self, mode: Literal["log", "linear"], mean: float, std: float):
         super().__init__()
         self.mode = mode
         # Register as buffers so they save with the model but don't update via gradient
-        self.mean = torch.tensor(mean)
-        self.std = torch.tensor(std)
         self.register_buffer("mean", torch.tensor(mean))
         self.register_buffer("std", torch.tensor(std))
 
