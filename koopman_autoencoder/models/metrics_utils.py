@@ -16,7 +16,13 @@ from .dataloader import QGDatasetBase, AbstractNormalizer
 from .utils import cuda_timer, elapsed_time
 from .metrics import Metric
 import os  # Added os for path operations
+import random
 
+seed = 12345
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )

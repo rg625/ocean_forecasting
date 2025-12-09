@@ -12,6 +12,11 @@ from tensordict import TensorDict, stack as stack_tensordict
 from torch.utils.data import Dataset, DataLoader, Sampler, Subset
 from torch.utils.data.distributed import DistributedSampler
 
+seed = 12345
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )

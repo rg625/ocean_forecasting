@@ -24,7 +24,13 @@ from .dataloader import DataLoaderWrapper
 from .metrics import Metric
 from .utils import accumulate_losses, average_losses
 from .visualization import denormalize_and_visualize
+import random
 
+seed = 12345
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -172,9 +178,11 @@ class Trainer:
             input_td, target_td = input_td.to(self.device), target_td.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
 
-            # noise_level = 0.05 # This is a new hyperparameter
-            # noisy_input_td = input_td.apply(lambda t: t + torch.randn_like(t) * noise_level)
-
+            noise_level = 0.02  # This is a new hyperparameter
+            noisy_input_td = input_td.apply(
+                lambda t: t + torch.randn_like(t) * noise_level,
+                filter_fn=lambda key, val: val.dtype.is_floating_point,  # only to the variables, not metadata
+            )
             with autocast(
                 device_type=str(self.device),
                 dtype=self.autocast_dtype,
@@ -185,7 +193,8 @@ class Trainer:
                     if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
                     else self.model
                 )
-                out = self.model(input_td, target_td["seq_length"])
+                # out = self.model(input_td, target_td["seq_length"])
+                out = self.model(noisy_input_td, target_td["seq_length"])
 
                 x_true_recon = TensorDict(
                     {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},

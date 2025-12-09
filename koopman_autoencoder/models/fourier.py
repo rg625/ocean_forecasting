@@ -2,6 +2,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch import Tensor
+import random
+
+seed = 12345
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 
 
 class GaussianFourierFeatureTransform(nn.Module):

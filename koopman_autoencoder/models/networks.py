@@ -54,7 +54,7 @@ class ConvBlock(nn.Module):
                     cond_embedding_dim is not None
                 ), f"Expected conditional embedding to be int but got {type(cond_embedding_dim)} instead"
                 layers.append(AdaLNConv(C_out=C_out, cond_dim=cond_embedding_dim))
-            layers.append(nn.ReLU())
+            layers.append(nn.SiLU())
 
             for _ in range(block_size - 1):
                 layers.append(nn.Conv2d(C_out, C_out, kernel_size, **conv_kwargs))
@@ -63,7 +63,7 @@ class ConvBlock(nn.Module):
                         cond_embedding_dim is not None
                     ), f"Expected conditional embedding to be int but got {type(cond_embedding_dim)} instead"
                     layers.append(AdaLNConv(C_out=C_out, cond_dim=cond_embedding_dim))
-                layers.append(nn.ReLU())
+                layers.append(nn.SiLU())
         else:
             for i in range(block_size - 1):
                 C_intermediate = C_in if i == 0 else C_in
@@ -75,7 +75,7 @@ class ConvBlock(nn.Module):
                         cond_embedding_dim is not None
                     ), f"Expected conditional embedding to be int but got {type(cond_embedding_dim)} instead"
                     layers.append(AdaLNConv(C_out=C_in, cond_dim=cond_embedding_dim))
-                layers.append(nn.ReLU())
+                layers.append(nn.SiLU())
             layers.append(nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs))
 
         self.stack = nn.ModuleList(layers)
@@ -104,9 +104,9 @@ class MappingNetwork(nn.Module):
 
     def __init__(self, latent_dim, style_dim, n_layers=4):
         super().__init__()
-        layers = [nn.Linear(latent_dim, style_dim), nn.LeakyReLU(0.2)]
+        layers = [nn.Linear(latent_dim, style_dim), nn.SiLU()]
         for _ in range(n_layers - 1):
-            layers.extend([nn.Linear(style_dim, style_dim), nn.LeakyReLU(0.2)])
+            layers.extend([nn.Linear(style_dim, style_dim), nn.SiLU()])
         self.mapping = nn.Sequential(*layers)
 
     def forward(self, z):
@@ -142,7 +142,7 @@ class PixelShuffleStyledBlock(nn.Module):
 
         # Modulate the HIGH dimensional representation before shuffling
         self.mod = AdaIN(style_dim, self.out_channels_conv)
-        self.act = nn.LeakyReLU(0.2)
+        self.act = nn.SiLU()
 
     def forward(self, x, w):
         x = self.conv(x)
@@ -442,7 +442,7 @@ class ConvDecoder(nn.Module):
         cond_embedding_dim: Optional[int] = None,
         cond_type: Optional[str] = None,
         style_dim: Optional[int] = None,
-        fourier_scale: float = 10.0,
+        fourier_scale: float = 2.0,
         fourier_mapping_size: int = 64,
         **conv_kwargs,
     ):
