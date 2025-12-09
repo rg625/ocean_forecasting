@@ -48,6 +48,7 @@ class KoopmanLoss(nn.Module):
         stability_weight: Optional[float] = None,
         weighting_type: str = "cosine",
         sigma_blur: Optional[float] = None,
+        grad_weight: Optional[float] = 1.0,
     ):
         super().__init__()
 
@@ -71,6 +72,7 @@ class KoopmanLoss(nn.Module):
         self.stability_weight = stability_weight
         self.weighting_type = weighting_type
         self.gaussian_blur = self._init_blur_transform(sigma_blur)
+        self.grad_weight = grad_weight
 
     @staticmethod
     def _init_blur_transform(sigma: Optional[float]) -> Optional[GaussianBlur]:
@@ -182,6 +184,53 @@ class KoopmanLoss(nn.Module):
             weighted_loss = per_step_loss * weights.view(1, -1)
             loss_dict[key] = reduce(weighted_loss, "b n ->", "mean")
         return loss_dict
+
+    def _compute_gradient_loss(self, pred: TensorDict, true: TensorDict) -> Tensor:
+        """
+        Computes 1st order derivative loss (Sobel-like) to fix phase errors/drift.
+        """
+        # FIX: Init as float 0.0. Python auto-promotes 0.0 + Tensor(cuda) -> Tensor(cuda).
+        # Initializing with torch.tensor(0.0) risks picking the wrong device (CPU vs CUDA).
+        total_grad_loss = 0.0
+
+        common_keys = set(pred.keys()) & set(true.keys())
+
+        # Track if we processed anything so we can return a valid Tensor at the end
+        processed_any = False
+        fallback_device = torch.device("cpu")  # Fallback
+
+        for key in common_keys:
+            pred_img = pred[key]
+            true_img = true[key]
+
+            # Capture device for fallback return if needed
+            fallback_device = pred_img.device
+
+            # Handle Temporal dim if present
+            if pred_img.ndim == 5:
+                pred_img = rearrange(pred_img, "b t c h w -> (b t) c h w")
+                true_img = rearrange(true_img, "b t c h w -> (b t) c h w")
+
+            # Compute Spatial Gradients (dy, dx)
+            # Diff in height (dim -2)
+            pred_dy = torch.abs(pred_img[..., 1:, :] - pred_img[..., :-1, :])
+            true_dy = torch.abs(true_img[..., 1:, :] - true_img[..., :-1, :])
+
+            # Diff in width (dim -1)
+            pred_dx = torch.abs(pred_img[..., :, 1:] - pred_img[..., :, :-1])
+            true_dx = torch.abs(true_img[..., :, 1:] - true_img[..., :, :-1])
+
+            loss_dy = torch.mean(torch.abs(pred_dy - true_dy))
+            loss_dx = torch.mean(torch.abs(pred_dx - true_dx))
+
+            total_grad_loss = total_grad_loss + (loss_dy + loss_dx)
+            processed_any = True
+
+        # Ensure we return a Tensor (for .detach() calls downstream)
+        if not processed_any:
+            return torch.tensor(0.0, device=fallback_device)
+
+        return total_grad_loss
 
     def _get_rollout_weights(self, timesteps: int, device: torch.device) -> Tensor:
         """Computes weights for each step in the rollout loss."""
@@ -295,8 +344,18 @@ class KoopmanLoss(nn.Module):
                 true_latents=true_latents, latent_pred=latent_pred
             )
 
+        grad_loss = torch.tensor(0.0, device=latent_pred.device)
+        if self.grad_weight is not None and self.grad_weight > 0:
+            grad_loss += self._compute_gradient_loss(
+                x_recon, x_true.select(*x_recon.keys())
+            )
+            grad_loss += self._compute_gradient_loss(x_preds, x_future)
+
         total_loss = (
-            total_recon_loss + self.alpha * total_pred_loss + self.beta * latent_loss
+            total_recon_loss
+            + self.alpha * total_pred_loss
+            + self.beta * latent_loss
+            + self.grad_weight * grad_loss
         )
         # --- Conditionally Add Optional Losses ---
         re_loss = torch.tensor(0.0, device=latent_pred.device)

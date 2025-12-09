@@ -1,5 +1,4 @@
 defaults:
-  - /experiment/base
   - _self_
   - /data: base
   - /model: continous_linear_128
@@ -11,4 +10,4 @@ defaults:
 # Top-level run configuration
 output_dir: "model_outputs_full/continous_linear_128"
 ckpt: null
-log_epoch: 100
+log_epoch: 10

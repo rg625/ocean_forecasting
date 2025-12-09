@@ -4,8 +4,8 @@
 # model:
 height: 64
 width: 128
-hidden_dims: [64, 128, 256, 128, 64]
-block_size: 3
+hidden_dims: [32, 64, 128, 256]
+block_size: 2
 kernel_size: 3
 conv_kwargs:
   padding: 1
@@ -17,13 +17,13 @@ cond_type: adaln
 operator_mode: linear
 
 transformer:
-  num_layers: 4
-  nhead: 8
+  num_layers: 2
+  nhead: 4
   ff_mult: 4
   max_len: 1000
-  dropout: 0.0
+  dropout: 0.1
 
 predict_cond: true
 cond_grad_enabled: false
 disturb_std: 0.01
-is_continuous: true
+is_continuous: false

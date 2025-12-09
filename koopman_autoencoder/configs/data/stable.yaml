@@ -1,12 +1,10 @@
-# configs/data/eval.yaml
+# configs/data/stable.yaml
 # config for data loading in model evaluations
 
-dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
+dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim"
 data_dir: "./data"
-# train_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/train_1000.nc"
 train_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/train_1000.nc"
 val_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/val_1000.nc"
-# val_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_lowRey_qg_auto.nc"
 test_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/test_1000.nc"
 input_sequence_length: 2
 max_sequence_length: 8

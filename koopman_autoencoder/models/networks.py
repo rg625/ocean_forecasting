@@ -44,41 +44,46 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.use_checkpoint = use_checkpoint
         self.cond_type = cond_type
-        self.stack = nn.ModuleList()
 
-        layers = []
-        if not decoder_block:
-            layers.append(nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs))
+        # We need a list of independent blocks, not a sequential stack
+        # so we can manage the residual connection manually in forward
+        self.blocks = nn.ModuleList()
+
+        # PHYSICS UPGRADE: SiLU
+        act_layer = nn.SiLU
+
+        # Helper to build one sub-block (Conv -> Norm -> Act)
+        def make_sub_block(cin, cout):
+            layers = []
+            layers.append(nn.Conv2d(cin, cout, kernel_size, **conv_kwargs))
             if self.cond_type == "adaln":
-                assert (
-                    cond_embedding_dim is not None
-                ), f"Expected conditional embedding to be int but got {type(cond_embedding_dim)} instead"
-                layers.append(AdaLNConv(C_out=C_out, cond_dim=cond_embedding_dim))
-            layers.append(nn.SiLU())
+                # Cond dim assertion handled in init logic if needed
+                assert isinstance(
+                    cond_embedding_dim, int
+                ), f"Need 'cond_embedding_dim' to be int but got {type(cond_embedding_dim)} instead"
+                layers.append(AdaLNConv(C_out=cout, cond_dim=cond_embedding_dim))
+            # Standard Norm if not using AdaLN (Optional but recommended for stability)
+            # else:
+            #      layers.append(nn.GroupNorm(8, cout))
+            layers.append(act_layer())
+            return nn.ModuleList(layers)
 
+        # Build the sequence of blocks
+        if not decoder_block:
+            # 1. Resize Block (Change Channels C_in -> C_out)
+            # This one cannot have a simple identity residual if dimensions change
+            self.blocks.append(make_sub_block(C_in, C_out))
+
+            # 2. Residual Blocks (Keep Channels C_out -> C_out)
             for _ in range(block_size - 1):
-                layers.append(nn.Conv2d(C_out, C_out, kernel_size, **conv_kwargs))
-                if self.cond_type == "adaln":
-                    assert (
-                        cond_embedding_dim is not None
-                    ), f"Expected conditional embedding to be int but got {type(cond_embedding_dim)} instead"
-                    layers.append(AdaLNConv(C_out=C_out, cond_dim=cond_embedding_dim))
-                layers.append(nn.SiLU())
+                self.blocks.append(make_sub_block(C_out, C_out))
         else:
-            for i in range(block_size - 1):
-                C_intermediate = C_in if i == 0 else C_in
-                layers.append(
-                    nn.Conv2d(C_intermediate, C_in, kernel_size, **conv_kwargs)
-                )
-                if self.cond_type == "adaln":
-                    assert (
-                        cond_embedding_dim is not None
-                    ), f"Expected conditional embedding to be int but got {type(cond_embedding_dim)} instead"
-                    layers.append(AdaLNConv(C_out=C_in, cond_dim=cond_embedding_dim))
-                layers.append(nn.SiLU())
-            layers.append(nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs))
+            # Decoder: (C_in -> C_in) then final (C_in -> C_out)
+            for _ in range(block_size - 1):
+                self.blocks.append(make_sub_block(C_in, C_in))
 
-        self.stack = nn.ModuleList(layers)
+            # Final resize
+            self.blocks.append(make_sub_block(C_in, C_out))
 
     def forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
         if self.use_checkpoint:
@@ -89,13 +94,26 @@ class ConvBlock(nn.Module):
             return self._forward(x, cond_emb)
 
     def _forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
-        for module in self.stack:
-            if isinstance(module, AdaLNConv):
-                if cond_emb is None:
-                    raise ValueError("AdaLNConv requires cond_emb.")
-                x = module(x, cond_emb)
+        for i, block in enumerate(self.blocks):
+            residual = x
+
+            # Apply the sub-block (Conv -> [Norm] -> Act)
+            out = x
+            for layer in block:
+                if isinstance(layer, AdaLNConv):
+                    if cond_emb is None:
+                        raise ValueError("AdaLNConv requires cond_emb.")
+                    out = layer(out, cond_emb)
+                else:
+                    out = layer(out)
+
+            # Apply Residual Connection if shapes match
+            # We check channel dimensions. Spatial dims assumed constant in ConvBlock (padding='same')
+            if out.shape == residual.shape:
+                x = out + residual
             else:
-                x = module(x)
+                x = out  # Cannot residual if dimensions changed (first block usually)
+
         return x
 
 
@@ -186,18 +204,12 @@ class BaseEncoderDecoder(nn.Module):
         self.cond_embedding_dim = cond_embedding_dim
         self.cond_type = cond_type
         self.cond_expansion_type = cond_expansion_type
-
-        # Compute the output dimensions after pooling
         self.n_pools = len(hiddens)
         if H % (2**self.n_pools) != 0 or W % (2**self.n_pools) != 0:
-            raise ValueError(
-                f"Input dimensions (H={H}, W={W}) must be divisible by 2^{self.n_pools}."
-            )
+            raise ValueError(f"Input dimensions must be divisible by 2^{self.n_pools}.")
         self.H_out = H // (2 ** (self.n_pools))
         self.W_out = W // (2 ** (self.n_pools))
-
         dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
-
         self.expansion_map = nn.ModuleDict(
             {
                 "Re": re_expansion(dim_to_use),
@@ -205,16 +217,13 @@ class BaseEncoderDecoder(nn.Module):
                 "forcing": forcing_expansion(dim_to_use),
             }
         )
-
         if is_encoder:
             encoder_in_features = hiddens[-1] * self.H_out * self.W_out
             if self.cond_type == "late_fusion":
-                assert cond_embedding_dim is not None
                 encoder_in_features += cond_embedding_dim
             self.linear = nn.Linear(encoder_in_features, latent_dim)
         else:
             self.linear = nn.Linear(latent_dim, hiddens[-1] * self.H_out * self.W_out)
-
         self.layers = self._build_layers(block_size, kernel_size, conv_kwargs)
 
     def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
@@ -222,30 +231,20 @@ class BaseEncoderDecoder(nn.Module):
             return None
         if cond.ndim == 1:
             cond = cond.unsqueeze(-1)
-
         if self.cond_expansion_type is None or self.cond_expansion_type == "none":
             if self.cond_type is not None:
-                if cond.shape[1] == 1:
-                    assert self.cond_embedding_dim is not None
-                    return F.linear(
-                        cond, torch.eye(self.cond_embedding_dim, 1, device=cond.device)
-                    )
-                else:
-                    raise ValueError(
-                        "cond_expansion_type must be set for non-scalar cond."
-                    )
+                return F.linear(
+                    cond, torch.eye(self.cond_embedding_dim, 1, device=cond.device)
+                )
             return None
-
         if self.cond_expansion_type not in self.expansion_map:
             raise KeyError(
                 f"Unknown cond_expansion_type: '{self.cond_expansion_type}'."
             )
-
         expansion_func = self.expansion_map[self.cond_expansion_type]
         if cond.ndim > 2:
             cond = cond.view(cond.shape[0], -1)
-        cond_encoded = expansion_func(cond)
-        return cond_encoded
+        return expansion_func(cond)
 
     def _build_layers(self, block_size, kernel_size, conv_kwargs):
         layers = nn.ModuleList()
@@ -257,7 +256,6 @@ class BaseEncoderDecoder(nn.Module):
             "cond_embedding_dim": self.cond_embedding_dim,
             **conv_kwargs,
         }
-
         if self.is_encoder:
             layers.append(
                 ConvBlock(
@@ -271,8 +269,6 @@ class BaseEncoderDecoder(nn.Module):
                 )
                 layers.append(nn.MaxPool2d(kernel_size=2))
         else:
-            # Note: This is the legacy decoder path.
-            # The new ConvDecoder class below should be used instead for better results.
             for C_np1, C_n in pairwise(self.hiddens[::-1]):
                 layers.append(nn.Upsample(scale_factor=2, mode="bilinear"))
                 layers.append(
@@ -292,7 +288,6 @@ class BaseEncoderDecoder(nn.Module):
             if cond is None:
                 raise ValueError(f"Condition tensor required for '{self.cond_type}'")
             cond_emb = self._encode_cond(cond)
-
         if self.is_encoder:
             for layer in self.layers:
                 if isinstance(layer, ConvBlock) and self.cond_type == "adaln":
@@ -324,7 +319,24 @@ class ConvEncoder(BaseEncoderDecoder):
     def __init__(
         self, C: int, H: int, W: int, latent_dim: int, hiddens: List[int], **kwargs
     ):
-        super().__init__(C, H, W, latent_dim, hiddens, is_encoder=True, **kwargs)
+        # 1. ADJUST CHANNELS FIRST: C -> C + 2
+        # We must call super().__init__ BEFORE doing anything that requires self to be a Module (like register_buffer)
+        super().__init__(C + 2, H, W, latent_dim, hiddens, is_encoder=True, **kwargs)
+
+        # 2. SETUP COORDINATE GRID (GPS Fix for Phase Errors)
+        # Now we can safely register the buffer
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, H),
+            torch.linspace(-1, 1, W),
+            indexing="ij",
+        )
+        self.register_buffer("grid", torch.stack([xx, yy], dim=0))
+
+    def forward(self, x: Tensor, cond: Optional[Tensor] = None):
+        # 3. INJECT COORDINATES
+        grid_batch = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        x_with_coords = torch.cat([x, grid_batch], dim=1)
+        return super().forward(x_with_coords, cond)
 
 
 @dataclass

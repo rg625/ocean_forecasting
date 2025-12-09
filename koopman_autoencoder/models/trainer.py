@@ -168,44 +168,66 @@ class Trainer:
         return rearrange(true_latents_flat, "(b t) d -> b t d", b=B)
 
     def _run_one_epoch(self) -> Dict[str, float]:
-        """Runs a single training epoch."""
+        """Runs a single training epoch with Crash Protection."""
         self.model.train()
         if hasattr(self.train_loader.sampler, "set_epoch"):
             self.train_loader.sampler.set_epoch(self.current_epoch)
 
         epoch_losses: Dict[str, Tensor] = {}
+
+        # Track batches to avoid division by zero if we skip too many
+        valid_batches = 0
+
         for input_td, target_td in self.train_loader:
             input_td, target_td = input_td.to(self.device), target_td.to(self.device)
             self.optimizer.zero_grad(set_to_none=True)
-
-            noise_level = 0.02  # This is a new hyperparameter
-            noisy_input_td = input_td.apply(
-                lambda t: t + torch.randn_like(t) * noise_level,
-                filter_fn=lambda key, val: val.dtype.is_floating_point,  # only to the variables, not metadata
+            model_module = (
+                self.model.module
+                if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+                else self.model
             )
+
+            # --- 1. SAFER NOISE INJECTION ---
+            # Reduced from 0.02 to 0.005 (0.5% of standard deviation)
+            # This is enough to stabilize, but safe for sensitive fluids.
+            noise_level = 0.005
+
+            # Create noise
+            noise = (
+                torch.randn_like(input_td.select(*model_module.data_variables.keys()))
+                * noise_level
+            )
+
+            # Apply noise ONLY to data variables
+            noisy_input_td = input_td.clone()
+            for k in model_module.data_variables.keys():
+                noisy_input_td[k] = noisy_input_td[k] + noise[k]
+
+            # --- 2. INPUT CLAMPING (CRITICAL) ---
+            # Even normalized data shouldn't exceed +/- 5 sigma.
+            # Noise can sometimes push outlier pixels to +/- 20, which kills RBFs/SiLU.
+            noisy_input_td = noisy_input_td.apply(lambda t: torch.clamp(t, -5.0, 5.0))
+
             with autocast(
                 device_type=str(self.device),
                 dtype=self.autocast_dtype,
                 enabled=self.autocast_dtype is not None,
             ):
-                model_module = (
-                    self.model.module
-                    if isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
-                    else self.model
-                )
-                # out = self.model(input_td, target_td["seq_length"])
+
+                # Forward Pass
                 out = self.model(noisy_input_td, target_td["seq_length"])
 
                 x_true_recon = TensorDict(
                     {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
                     batch_size=input_td.batch_size[0],
                 )
+
                 loss_dict = self.criterion(
                     out.x_recon,
                     out.x_preds,
                     out.z_preds,
-                    x_true_recon,
-                    target_td,
+                    x_true_recon,  # Compare against CLEAN input
+                    target_td,  # Compare against CLEAN target
                     self.true_latent_encoding(
                         target_td=target_td, model_module=model_module
                     ),
@@ -214,31 +236,38 @@ class Trainer:
                     out.dz_dt,
                     out.dz_dt_disturbed,
                 )
-            if not torch.isfinite(loss_dict["total_loss"]).all():
-                logger.critical(
-                    "NaN detected in the loss before backward pass. Halting."
+
+            # --- 3. LOSS SPIKE GUARD ---
+            total_loss = loss_dict["total_loss"]
+
+            # Check for NaN/Inf
+            if not torch.isfinite(total_loss):
+                logger.warning(
+                    f"Epoch {self.current_epoch}: Loss is {total_loss.item()}. SKIPPING BATCH."
                 )
-                raise RuntimeError("NaN loss detected")
+                continue
 
-            # self.scaler is only initialized for float16 precision
+            # Check for Massive Spikes (Model Collapse Prevention)
+            # If loss is > 5.0 (assuming normalized data), something is wrong.
+            # Normal loss is ~0.02. A spike to 1.0+ is a collapse risk.
+            if total_loss.item() > 5.0 and self.current_epoch > 5:
+                logger.warning(
+                    f"Epoch {self.current_epoch}: Loss spike detected ({total_loss.item():.4f}). SKIPPING BATCH to prevent collapse."
+                )
+                continue
+
+            # --- 4. BACKWARD & CLIP ---
             if self.scaler:
-                # 1. Compute scaled gradients
-                self.scaler.scale(loss_dict["total_loss"]).backward()
-
-                # 2. Unscale gradients before clipping
+                self.scaler.scale(total_loss).backward()
                 self.scaler.unscale_(self.optimizer)
 
-                # 3. Clip the unscaled gradients
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                # Gradient Clipping is essential for SiLU/Koopman
+                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
-                # 4. Optimizer step
                 self.scaler.step(self.optimizer)
-
-                # 5. Update the scale for next iteration
                 self.scaler.update()
-
-            else:  # For float32 or bfloat16 precision
-                loss_dict["total_loss"].backward()
+            else:
+                total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
@@ -246,8 +275,14 @@ class Trainer:
                 k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
             }
             epoch_losses = accumulate_losses(epoch_losses, detached_losses)
+            valid_batches += 1
 
-        return average_losses(epoch_losses, len(self.train_loader))
+        # Prevent division by zero if all batches failed
+        if valid_batches == 0:
+            logger.error("All batches failed or were skipped!")
+            return {}
+
+        return average_losses(epoch_losses, valid_batches)
 
     def evaluate(
         self, dataloader: DataLoaderWrapper, epoch: int, mode: str = "val"

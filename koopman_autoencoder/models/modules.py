@@ -113,6 +113,7 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
         super().__init__(**kwargs)
         if self.mode == "linear":
             self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            nn.init.orthogonal_(self.K.weight)
         elif self.mode == "eigen":
             # --- Parameters for Eigendecomposition ---
             # Unconstrained log-magnitude, mapped to <= 0 by softplus for stability.
@@ -191,6 +192,10 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         # The network now represents the derivative function, f(z).
         if self.mode == "linear":
             self.K = nn.Linear(self.latent_dim, self.latent_dim, bias=False)
+            with torch.no_grad():
+                W = torch.randn(self.latent_dim, self.latent_dim) * 0.1
+                skew_symmetric = W - W.T
+                self.K.weight.copy_(skew_symmetric)
         elif self.mode == "mlp":
             self.K = nn.Sequential(
                 nn.Linear(self.latent_dim, self.latent_dim // 8),

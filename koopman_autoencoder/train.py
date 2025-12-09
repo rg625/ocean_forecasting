@@ -191,7 +191,7 @@ def main(cfg: DictConfig):
 
     # --- Optimizer, Loss, Metrics, and Scheduler ---
     model_params = model.module.parameters() if is_ddp else model.parameters()
-    optimizer = optim.Adam(model_params, lr=cfg.lr_scheduler.lr)
+    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr)
     if cfg.loss.get("ssim_weight", None) is not None:
         criterion = KoopmanLoss(to_unit_range=train_dataset.to_unit_range, **cfg.loss)
     else:

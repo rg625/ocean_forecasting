@@ -85,6 +85,7 @@ class LossConfig:
     stability_weight: Optional[float] = None
     weighting_type: str = MISSING
     sigma_blur: Optional[float] = None
+    grad_weight: Optional[float] = None
 
 
 @dataclass

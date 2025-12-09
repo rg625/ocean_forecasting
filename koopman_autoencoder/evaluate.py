@@ -48,7 +48,8 @@ class EvalConfig:
 
     # Paths
     # Adjust this base path to where your training logs actually are
-    base_output_dir: Path = Path("./model_outputs_stable")
+    # base_output_dir: Path = Path(f"./model_outputs_{regime}_hpc")
+    base_output_dir: Path = Path(f"./model_outputs_{regime}")
     config_dir: str = "experiment"
     result_dir: Path = Path("./results/sampling/lowRey/")  # [FIX] Made relative/generic
 
@@ -377,7 +378,7 @@ def main():
     )
 
     # Execution Details
-    parser.add_argument("--ckpt", type=int, default=320, help="Checkpoint index")
+    parser.add_argument("--ckpt", type=int, default=199, help="Checkpoint index")
     parser.add_argument(
         "--run_name",
         type=str,
