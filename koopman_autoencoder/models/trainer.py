@@ -111,7 +111,7 @@ class Trainer:
             "loss_recon": {"train": [], "val": []},
             "loss_pred": {"train": [], "val": []},
             "loss_latent": {"train": [], "val": []},
-            "loss_re": {"train": [], "val": []},
+            "loss_grad": {"train": [], "val": []},
         }
         if self.eval_metrics:
             metric_key = (
@@ -422,7 +422,6 @@ class Trainer:
             self._log_metrics(avg_train_metrics, epoch, "train")
 
             if epoch % self.log_epoch == 0 or epoch == self.num_epochs - 1:
-                # TODO: Add train logging figures in WandB too
                 val_metrics = self.evaluate(self.val_loader, epoch, "val")
                 avg_val_metrics = self._gather_and_average_metrics(val_metrics)
                 self._log_metrics(avg_val_metrics, epoch, "val")

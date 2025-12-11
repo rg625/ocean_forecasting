@@ -1,214 +1,104 @@
-from itertools import pairwise
 import torch
 from torch import nn
-from torch.utils.checkpoint import checkpoint
-from einops import rearrange
-from torch import Tensor
-from typing import List, Union, Tuple, Any, Optional
+from torch.nn import utils as nn_utils
 import torch.nn.functional as F
+from einops import rearrange
+from typing import List, Optional
+from torch import Tensor
 from dataclasses import dataclass
 
-from .fourier import (
-    GaussianFourierFeatureTransform,
-    PositionalEncoding,
-)
-from .rbf import (
-    re_expansion,
-    ma_expansion,
-    forcing_expansion,
-)
-from .adaptive_layers import (
-    AdaIN,
-    AdaLNConv,
-    AdaLNMLP,
-)
+# Attempt to import from local modules
+try:
+    from .fourier import PositionalEncoding
+    from .adaptive_layers import AdaLNMLP
+    from .rbf import re_expansion, ma_expansion, forcing_expansion
+except ImportError:
+    pass
 
 # ==========================================
-#   BLOCKS & LAYERS
+#   ROBUST LAYERS (Spectral Normalized)
 # ==========================================
 
 
-class ConvBlock(nn.Module):
-    def __init__(
-        self,
-        C_in: int,
-        C_out: int,
-        block_size: int = 1,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        decoder_block: bool = False,
-        use_checkpoint: bool = False,
-        cond_type: Optional[str] = None,
-        cond_embedding_dim: Optional[int] = None,
-        **conv_kwargs: Any,
-    ):
+def sn_conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0):
+    """Spectral Normalized Conv2d. Stabilizes gradients and prevents explosion."""
+    return nn_utils.spectral_norm(
+        nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+    )
+
+
+def sn_linear(in_features, out_features):
+    """Spectral Normalized Linear."""
+    return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
+
+
+class PreActResBlock(nn.Module):
+    """
+    Pre-activation Residual Block (He et al., 2016).
+    Structure: GN -> SiLU -> Weight -> GN -> SiLU -> Weight
+    Best for training deep networks and preserving signal propagation.
+    """
+
+    def __init__(self, in_ch, out_ch, stride=1, use_spectral_norm=True):
         super().__init__()
-        self.use_checkpoint = use_checkpoint
-        self.cond_type = cond_type
 
-        # We need a list of independent blocks, not a sequential stack
-        # so we can manage the residual connection manually in forward
-        self.blocks = nn.ModuleList()
+        # Select conv constructor
+        conv_fn = sn_conv2d if use_spectral_norm else nn.Conv2d
 
-        # PHYSICS UPGRADE: SiLU
-        act_layer = nn.SiLU
+        # GroupNorm is preferred over BatchNorm for physics/small batches
+        self.bn1 = nn.GroupNorm(8, in_ch)
+        self.conv1 = conv_fn(in_ch, out_ch, kernel_size=3, stride=stride, padding=1)
 
-        # Helper to build one sub-block (Conv -> Norm -> Act)
-        def make_sub_block(cin, cout):
-            layers = []
-            layers.append(nn.Conv2d(cin, cout, kernel_size, **conv_kwargs))
-            if self.cond_type == "adaln":
-                # Cond dim assertion handled in init logic if needed
-                assert isinstance(
-                    cond_embedding_dim, int
-                ), f"Need 'cond_embedding_dim' to be int but got {type(cond_embedding_dim)} instead"
-                layers.append(AdaLNConv(C_out=cout, cond_dim=cond_embedding_dim))
-            # Standard Norm if not using AdaLN (Optional but recommended for stability)
-            # else:
-            #      layers.append(nn.GroupNorm(8, cout))
-            layers.append(act_layer())
-            return nn.ModuleList(layers)
+        self.bn2 = nn.GroupNorm(8, out_ch)
+        self.conv2 = conv_fn(out_ch, out_ch, kernel_size=3, stride=1, padding=1)
 
-        # Build the sequence of blocks
-        if not decoder_block:
-            # 1. Resize Block (Change Channels C_in -> C_out)
-            # This one cannot have a simple identity residual if dimensions change
-            self.blocks.append(make_sub_block(C_in, C_out))
-
-            # 2. Residual Blocks (Keep Channels C_out -> C_out)
-            for _ in range(block_size - 1):
-                self.blocks.append(make_sub_block(C_out, C_out))
-        else:
-            # Decoder: (C_in -> C_in) then final (C_in -> C_out)
-            for _ in range(block_size - 1):
-                self.blocks.append(make_sub_block(C_in, C_in))
-
-            # Final resize
-            self.blocks.append(make_sub_block(C_in, C_out))
-
-    def forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
-        if self.use_checkpoint:
-            return checkpoint(
-                lambda t: self._forward(t, cond_emb), x, use_reentrant=True
+        # Shortcut handling
+        self.shortcut = nn.Identity()
+        if stride != 1 or in_ch != out_ch:
+            # Projection shortcut
+            self.shortcut = conv_fn(
+                in_ch, out_ch, kernel_size=1, stride=stride, padding=0
             )
-        else:
-            return self._forward(x, cond_emb)
 
-    def _forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
-        for i, block in enumerate(self.blocks):
-            residual = x
+    def forward(self, x):
+        # Pre-activation path
+        x_norm = F.silu(self.bn1(x))
+        # Handle shortcut on pre-activated input or raw input?
+        # Standard PreAct applies shortcut to raw x, but branches off x_norm
+        residual = self.shortcut(x)
 
-            # Apply the sub-block (Conv -> [Norm] -> Act)
-            out = x
-            for layer in block:
-                if isinstance(layer, AdaLNConv):
-                    if cond_emb is None:
-                        raise ValueError("AdaLNConv requires cond_emb.")
-                    out = layer(out, cond_emb)
-                else:
-                    out = layer(out)
+        out = self.conv1(x_norm)
+        out = self.conv2(F.silu(self.bn2(out)))
 
-            # Apply Residual Connection if shapes match
-            # We check channel dimensions. Spatial dims assumed constant in ConvBlock (padding='same')
-            if out.shape == residual.shape:
-                x = out + residual
-            else:
-                x = out  # Cannot residual if dimensions changed (first block usually)
-
-        return x
-
-
-class MappingNetwork(nn.Module):
-    """Latent-to-style mapping network (similar to StyleGAN)."""
-
-    def __init__(self, latent_dim, style_dim, n_layers=4):
-        super().__init__()
-        layers = [nn.Linear(latent_dim, style_dim), nn.SiLU()]
-        for _ in range(n_layers - 1):
-            layers.extend([nn.Linear(style_dim, style_dim), nn.SiLU()])
-        self.mapping = nn.Sequential(*layers)
-
-    def forward(self, z):
-        return self.mapping(z)
-
-
-class PixelShuffleStyledBlock(nn.Module):
-    """
-    Upsamples using PixelShuffle for maximum sharpness.
-    Flow: Conv (expand channels) -> AdaIN -> Act -> PixelShuffle
-    """
-
-    def __init__(self, C_in, C_out, style_dim, kernel_size=3, upsample=False):
-        super().__init__()
-        self.upsample = upsample
-
-        if upsample:
-            # PixelShuffle with upscale_factor=2 reduces channels by factor of 4.
-            # So we need to output 4 * C_out channels from the conv.
-            self.out_channels_conv = C_out * 4
-            self.pixel_shuffle = nn.PixelShuffle(2)
-        else:
-            self.out_channels_conv = C_out
-            self.pixel_shuffle = nn.Identity()
-
-        self.conv = nn.Conv2d(
-            C_in,
-            self.out_channels_conv,
-            kernel_size,
-            padding=kernel_size // 2,
-            padding_mode="circular",
-        )
-
-        # Modulate the HIGH dimensional representation before shuffling
-        self.mod = AdaIN(style_dim, self.out_channels_conv)
-        self.act = nn.SiLU()
-
-    def forward(self, x, w):
-        x = self.conv(x)
-        x = self.mod(x, w)
-        x = self.act(x)
-        if self.upsample:
-            x = self.pixel_shuffle(x)
-        return x
+        return out + residual
 
 
 # ==========================================
-#   ENCODERS & DECODERS
+#   ENCODER (Spectral ResNet)
 # ==========================================
 
 
-class BaseEncoderDecoder(nn.Module):
+class ConvEncoder(nn.Module):
     def __init__(
         self,
         C: int,
         H: int,
         W: int,
         latent_dim: int,
-        hiddens: List[int],
-        block_size: int = 1,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        is_encoder: bool = True,
-        use_checkpoint: bool = False,
+        hiddens: List[int] = [64, 128, 256],
         cond_embedding_dim: Optional[int] = None,
         cond_type: Optional[str] = None,
         cond_expansion_type: Optional[str] = None,
-        **conv_kwargs,
+        **kwargs
     ):
         super().__init__()
-        self.C = C
         self.H = H
         self.W = W
-        self.D = latent_dim
-        self.hiddens = hiddens
-        self.is_encoder = is_encoder
-        self.use_checkpoint = use_checkpoint
-        self.cond_embedding_dim = cond_embedding_dim
         self.cond_type = cond_type
+        self.cond_embedding_dim = cond_embedding_dim
+
+        # Setup Conditioning Expansions
         self.cond_expansion_type = cond_expansion_type
-        self.n_pools = len(hiddens)
-        if H % (2**self.n_pools) != 0 or W % (2**self.n_pools) != 0:
-            raise ValueError(f"Input dimensions must be divisible by 2^{self.n_pools}.")
-        self.H_out = H // (2 ** (self.n_pools))
-        self.W_out = W // (2 ** (self.n_pools))
         dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
         self.expansion_map = nn.ModuleDict(
             {
@@ -217,142 +107,205 @@ class BaseEncoderDecoder(nn.Module):
                 "forcing": forcing_expansion(dim_to_use),
             }
         )
-        if is_encoder:
-            encoder_in_features = hiddens[-1] * self.H_out * self.W_out
-            if self.cond_type == "late_fusion":
-                encoder_in_features += cond_embedding_dim
-            self.linear = nn.Linear(encoder_in_features, latent_dim)
-        else:
-            self.linear = nn.Linear(latent_dim, hiddens[-1] * self.H_out * self.W_out)
-        self.layers = self._build_layers(block_size, kernel_size, conv_kwargs)
+
+        # Input channels: Data(C) + Coords(2)
+        input_channels = C + 2
+
+        # Coordinate Grid Buffer
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+        )
+        self.register_buffer("grid", torch.stack([xx, yy], dim=0))
+
+        # Initial Feature Extraction
+        self.init_conv = sn_conv2d(input_channels, hiddens[0], kernel_size=3, padding=1)
+
+        # Downsampling ResBlocks
+        layers = []
+        in_c = hiddens[0]
+
+        for out_c in hiddens:
+            layers.append(PreActResBlock(in_c, out_c, stride=2))  # Downsample
+            layers.append(PreActResBlock(out_c, out_c, stride=1))  # Depth
+            in_c = out_c
+
+        self.backbone = nn.Sequential(*layers)
+
+        # Calculate output spatial dimension
+        scale_factor = 2 ** len(hiddens)
+        self.H_out = H // scale_factor
+        self.W_out = W // scale_factor
+
+        flat_features = hiddens[-1] * self.H_out * self.W_out
+
+        # Conditioning handling for the linear projection
+        if self.cond_type == "late_fusion":
+            flat_features += dim_to_use
+
+        # Final projection to latent
+        self.to_latent = nn.Sequential(
+            nn.Flatten(),
+            nn.SiLU(),
+            sn_linear(flat_features, latent_dim),
+        )
+        self.latent_dim = latent_dim
 
     def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
         if cond is None:
             return None
         if cond.ndim == 1:
             cond = cond.unsqueeze(-1)
-        if self.cond_expansion_type is None or self.cond_expansion_type == "none":
-            if self.cond_type is not None:
-                return F.linear(
-                    cond, torch.eye(self.cond_embedding_dim, 1, device=cond.device)
-                )
-            return None
-        if self.cond_expansion_type not in self.expansion_map:
-            raise KeyError(
-                f"Unknown cond_expansion_type: '{self.cond_expansion_type}'."
-            )
-        expansion_func = self.expansion_map[self.cond_expansion_type]
-        if cond.ndim > 2:
-            cond = cond.view(cond.shape[0], -1)
-        return expansion_func(cond)
-
-    def _build_layers(self, block_size, kernel_size, conv_kwargs):
-        layers = nn.ModuleList()
-        conv_block_args = {
-            "block_size": block_size,
-            "kernel_size": kernel_size,
-            "use_checkpoint": self.use_checkpoint,
-            "cond_type": self.cond_type,
-            "cond_embedding_dim": self.cond_embedding_dim,
-            **conv_kwargs,
-        }
-        if self.is_encoder:
-            layers.append(
-                ConvBlock(
-                    self.C, self.hiddens[0], decoder_block=False, **conv_block_args
-                )
-            )
-            layers.append(nn.MaxPool2d(kernel_size=2))
-            for C_n, C_np1 in pairwise(self.hiddens):
-                layers.append(
-                    ConvBlock(C_n, C_np1, decoder_block=False, **conv_block_args)
-                )
-                layers.append(nn.MaxPool2d(kernel_size=2))
-        else:
-            for C_np1, C_n in pairwise(self.hiddens[::-1]):
-                layers.append(nn.Upsample(scale_factor=2, mode="bilinear"))
-                layers.append(
-                    ConvBlock(C_np1, C_n, decoder_block=True, **conv_block_args)
-                )
-            layers.append(nn.Upsample(scale_factor=2, mode="bilinear"))
-            layers.append(
-                ConvBlock(
-                    self.hiddens[0], self.C, decoder_block=True, **conv_block_args
-                )
-            )
-        return layers
+        if self.cond_expansion_type in self.expansion_map:
+            return self.expansion_map[self.cond_expansion_type](cond)
+        return cond
 
     def forward(self, x: Tensor, cond: Optional[Tensor] = None):
+        # 1. Coordinate Injection
+        grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        x = torch.cat([x, grid], dim=1)
+
+        # 2. Condition Embedding
         cond_emb = None
-        if self.cond_type is not None:
-            if cond is None:
-                raise ValueError(f"Condition tensor required for '{self.cond_type}'")
+        if self.cond_type is not None and cond is not None:
             cond_emb = self._encode_cond(cond)
-        if self.is_encoder:
-            for layer in self.layers:
-                if isinstance(layer, ConvBlock) and self.cond_type == "adaln":
-                    x = layer(x, cond_emb)
-                else:
-                    x = layer(x)
-            out = rearrange(x, "b c h w -> b (c h w)")
-            if self.cond_type == "late_fusion":
-                out = torch.cat([out, cond_emb], dim=1)
-            return self.linear(out)
-        else:
-            out = self.linear(x)
-            out = rearrange(
-                out,
-                "b (c h w) -> b c h w",
-                c=self.hiddens[-1],
-                h=self.H_out,
-                w=self.W_out,
-            )
-            for layer in self.layers:
-                if isinstance(layer, ConvBlock) and self.cond_type == "adaln":
-                    out = layer(out, cond_emb)
-                else:
-                    out = layer(out)
-            return out
+
+        # 3. Extract Features
+        x = self.init_conv(x)
+        x = self.backbone(x)
+
+        # 4. Flatten
+        flat = x.flatten(1)
+
+        # 5. Late Fusion (if configured)
+        if self.cond_type == "late_fusion" and cond_emb is not None:
+            flat = torch.cat([flat, cond_emb], dim=1)
+
+        # 6. Project
+        z = self.to_latent(flat)
+        return z
 
 
-class ConvEncoder(BaseEncoderDecoder):
+# ==========================================
+#   DECODER (PixelShuffle ResNet)
+# ==========================================
+
+
+class ConvDecoder(nn.Module):
+    """
+    Robust Decoder combining ResNet blocks with PixelShuffle upsampling.
+    Replaces AdaIN with AdaLN modulation on the latent Z for stability.
+    """
+
     def __init__(
-        self, C: int, H: int, W: int, latent_dim: int, hiddens: List[int], **kwargs
+        self,
+        C: int,
+        H: int,
+        W: int,
+        latent_dim: int,
+        hiddens: List[int] = [64, 128, 256],
+        cond_embedding_dim: Optional[int] = None,
+        cond_type: Optional[str] = None,
+        cond_expansion_type: Optional[str] = None,
+        **kwargs
     ):
-        # 1. ADJUST CHANNELS FIRST: C -> C + 2
-        # We must call super().__init__ BEFORE doing anything that requires self to be a Module (like register_buffer)
-        super().__init__(C + 2, H, W, latent_dim, hiddens, is_encoder=True, **kwargs)
+        super().__init__()
 
-        # 2. SETUP COORDINATE GRID (GPS Fix for Phase Errors)
-        # Now we can safely register the buffer
-        yy, xx = torch.meshgrid(
-            torch.linspace(-1, 1, H),
-            torch.linspace(-1, 1, W),
-            indexing="ij",
+        # Reverse hiddens for decoder: [256, 128, 64]
+        hiddens = hiddens[::-1]
+
+        scale_factor = 2 ** len(hiddens)
+        self.H_start = H // scale_factor
+        self.W_start = W // scale_factor
+        self.cond_type = cond_type
+
+        # Conditioning Modulator
+        self.conditioner = None
+        if cond_type is not None:
+            assert cond_embedding_dim is not None
+            self.conditioner = AdaLNMLP(latent_dim, cond_embedding_dim)
+
+        self.cond_expansion_type = cond_expansion_type
+        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
+        self.expansion_map = nn.ModuleDict(
+            {
+                "Re": re_expansion(dim_to_use),
+                "Ma": ma_expansion(dim_to_use),
+                "forcing": forcing_expansion(dim_to_use),
+            }
         )
-        self.register_buffer("grid", torch.stack([xx, yy], dim=0))
 
-    def forward(self, x: Tensor, cond: Optional[Tensor] = None):
-        # 3. INJECT COORDINATES
-        grid_batch = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
-        x_with_coords = torch.cat([x, grid_batch], dim=1)
-        return super().forward(x_with_coords, cond)
+        # 1. Project Latent -> Spatial Volume
+        self.flat_features = hiddens[0] * self.H_start * self.W_start
+        self.from_latent = sn_linear(latent_dim, self.flat_features)
+
+        # 2. Upsampling ResBlocks
+        layers = []
+        in_c = hiddens[0]
+
+        for i, out_c in enumerate(hiddens):
+            # Step A: Refine at current resolution
+            layers.append(PreActResBlock(in_c, in_c, stride=1))
+
+            # Step B: Upsample using PixelShuffle
+            layers.append(sn_conv2d(in_c, out_c * 4, kernel_size=3, padding=1))
+            layers.append(nn.PixelShuffle(2))
+            layers.append(nn.SiLU())
+
+            in_c = out_c
+
+        self.backbone = nn.Sequential(*layers)
+
+        # 3. Final Prediction
+        self.final_conv = sn_conv2d(hiddens[-1], C, kernel_size=3, padding=1)
+
+    def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
+        if cond is None:
+            return None
+        if cond.ndim == 1:
+            cond = cond.unsqueeze(-1)
+        if self.cond_expansion_type in self.expansion_map:
+            return self.expansion_map[self.cond_expansion_type](cond)
+        return cond
+
+    def forward(self, z: Tensor, cond: Optional[Tensor] = None):
+        # 1. Apply Conditioning to Latent Z
+        if self.conditioner is not None and cond is not None:
+            cond_emb = self._encode_cond(cond)
+            if cond_emb is not None:
+                z = self.conditioner(z, cond_emb)
+
+        # 2. Expand Latent
+        x = self.from_latent(z)
+        x = F.silu(x)
+        x = x.view(
+            -1, x.shape[1] // (self.H_start * self.W_start), self.H_start, self.W_start
+        )
+
+        # 3. Upsample
+        x = self.backbone(x)
+
+        # 4. To Image
+        return self.final_conv(x)
+
+
+# ==========================================
+#   HISTORY ENCODER (Transformer)
+# ==========================================
 
 
 @dataclass
 class TransformerConfig:
-    """Configuration dataclass for the TransformerEncoder in HistoryEncoder."""
-
-    num_layers: int = 4  # Number of transformer encoder layers
-    nhead: int = 8  # Number of attention heads
-    ff_mult: int = 4  # Multiplier for the feed-forward layer dimension
-    max_len: int = 1000  # Maximum sequence length for positional encoding
-    dropout: float = 0.1  # Dropout rate
+    num_layers: int = 4
+    nhead: int = 8
+    ff_mult: int = 4
+    max_len: int = 1000
+    dropout: float = 0.1
 
 
 class HistoryEncoder(nn.Module):
     """
-    Encodes a sequence of images into a single latent vector using a shared backbone.
+    Temporal encoder that aggregates a sequence of frame embeddings.
+    Wraps the ConvEncoder backbone.
     """
 
     def __init__(
@@ -362,21 +315,14 @@ class HistoryEncoder(nn.Module):
         transformer_config: TransformerConfig = TransformerConfig(),
     ):
         super().__init__()
-        # Use the provided backbone (ConvEncoder) via composition instead of inheritance
-        # This ensures weights are shared with the present_encoder.
         self.backbone = backbone
 
-        # Infer latent dim from the backbone (BaseEncoderDecoder stores it as D)
-        if hasattr(backbone, "D"):
-            self.latent_dim = backbone.D
-        elif hasattr(backbone, "latent_dim"):
+        if hasattr(backbone, "latent_dim"):
             self.latent_dim = backbone.latent_dim
         else:
-            # Fallback check on linear layer
-            self.latent_dim = backbone.linear.out_features
+            self.latent_dim = 128  # Fallback
 
         self.norm = nn.LayerNorm(self.latent_dim)
-
         self.pos_enc = (
             PositionalEncoding(self.latent_dim, max_len=transformer_config.max_len)
             if use_positional_encoding
@@ -395,167 +341,14 @@ class HistoryEncoder(nn.Module):
         )
 
     def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
-        """
-        Args:
-            x (Tensor): Input tensor of image frames. Shape: (B, T, C, H, W).
-            cond (Optional[Tensor]): Optional conditioning. Shape: (B, T).
-        """
         B, T, C, H, W = x.shape
         x_flat = rearrange(x, "b t c h w -> (b t) c h w")
 
-        # Handle conditioning logic based on the backbone's configuration
-        cond_expanded = None
-        # Access cond_type from backbone (BaseEncoderDecoder)
-        backbone_cond_type = getattr(self.backbone, "cond_type", None)
+        features = self.backbone(x_flat, cond=None)
 
-        if backbone_cond_type is not None:
-            if cond is None:
-                raise ValueError(
-                    f"Condition tensor must be provided for conditioning type '{backbone_cond_type}'"
-                )
-            if cond.ndim != 2 or cond.shape != (B, T):
-                raise ValueError(
-                    f"Expected Condition tensor of shape (B, T) = ({B}, {T}), but got {cond.shape}"
-                )
-            # Flatten cond from (B, T) to (B*T,)
-            cond_expanded = cond.reshape(-1)
-
-        # Pass through the shared backbone
-        features = self.backbone(x_flat, cond=cond_expanded)
-
-        # Un-flatten features
         features = rearrange(features, "(b t) d -> b t d", t=T)
         features = self.norm(features)
         features = self.pos_enc(features)
         out = self.transformer(features)
 
         return out.mean(dim=1)
-
-
-class ConvDecoder(nn.Module):
-    """
-    State-of-the-art Decoder combining:
-    1. Coordinate Injection (Spatial Awareness)
-    2. Fourier Features (High-frequency details / Spectral Bias mitigation)
-    3. PixelShuffle (Sharp upsampling)
-    4. AdaIN (Style modulation)
-    """
-
-    def __init__(
-        self,
-        C: int,
-        H: int,
-        W: int,
-        latent_dim: int,
-        hiddens: List[int],
-        block_size: int = 1,  # Kept for API compatibility
-        kernel_size: int = 3,
-        use_checkpoint: bool = False,
-        cond_embedding_dim: Optional[int] = None,
-        cond_type: Optional[str] = None,
-        style_dim: Optional[int] = None,
-        fourier_scale: float = 2.0,
-        fourier_mapping_size: int = 64,
-        **conv_kwargs,
-    ):
-        super().__init__()
-
-        # --- Dimensions ---
-        n_downsamples = len(hiddens)
-        self.H_start = H // (2**n_downsamples)
-        self.W_start = W // (2**n_downsamples)
-        style_dim = style_dim or latent_dim
-
-        # --- Modules ---
-        self.mapping = MappingNetwork(latent_dim, style_dim)
-
-        # 1. Fourier Feature Transform
-        # Output channels will be mapping_size * 2 (sin + cos)
-        self.fourier = GaussianFourierFeatureTransform(
-            in_channels=2, mapping_size=fourier_mapping_size, scale=fourier_scale
-        )
-        fourier_dim = fourier_mapping_size * 2
-
-        # 2. Latent Projection
-        # We project z to match the spatial resolution
-        # This replaces the initial "constant" learned in StyleGAN
-        self.z_to_spatial = nn.Linear(
-            latent_dim, hiddens[-1] * self.H_start * self.W_start
-        )
-
-        # 3. Base Coordinate Grid (Fixed)
-        # Create a grid from -1 to 1.
-        yy, xx = torch.meshgrid(
-            torch.linspace(-1, 1, self.H_start),
-            torch.linspace(-1, 1, self.W_start),
-            indexing="ij",
-        )
-        # Shape: [2, H, W]
-        self.register_buffer("grid", torch.stack([xx, yy], dim=0))
-
-        # 4. Convolutional Blocks
-        layers = []
-
-        # Input channels = (Z spatial features) + (Fourier Grid features)
-        C_in = hiddens[-1] + fourier_dim
-
-        # First block: No upsample, just processing the injected features
-        layers.append(
-            PixelShuffleStyledBlock(C_in, hiddens[-1], style_dim, upsample=False)
-        )
-
-        # Upsampling blocks
-        # Iterate in reverse: [256, 128, 64]
-        current_C = hiddens[-1]
-        for C_out in reversed(hiddens):
-            layers.append(
-                PixelShuffleStyledBlock(current_C, C_out, style_dim, upsample=True)
-            )
-            current_C = C_out
-
-        self.conv_layers = nn.ModuleList(layers)
-
-        # Final projection to RGB/Physics variables
-        self.to_rgb = nn.Conv2d(hiddens[0], C, kernel_size=1)
-
-        # Optional conditioning (e.g. Reynolds number modulation on the latent z)
-        self.conditioner = None
-        self.cond_type = cond_type
-        if cond_type is not None:
-            if cond_embedding_dim is None:
-                raise ValueError("'cond_embedding_dim' must be provided.")
-            self.conditioner = AdaLNMLP(latent_dim, cond_embedding_dim)
-
-    def forward(self, z, cond: Optional[torch.Tensor] = None):
-        # 1. Conditioning on Z
-        if self.conditioner is not None and cond is not None:
-            z = self.conditioner(z, cond)
-
-        # 2. Get Style Vector
-        w = self.mapping(z)
-
-        # 3. Project Latent Z to Spatial
-        # [B, Latent] -> [B, C*H*W] -> [B, C, H, W]
-        x_z = self.z_to_spatial(z)
-        x_z = x_z.view(
-            -1,
-            self.conv_layers[0].conv.in_channels - self.fourier.B.shape[1] * 2,
-            self.H_start,
-            self.W_start,
-        )
-
-        # 4. Create Fourier Grid
-        # Expand grid to batch size: [B, 2, H, W]
-        grid_batch = self.grid.unsqueeze(0).expand(z.shape[0], -1, -1, -1)
-        # Apply Fourier Transform: [B, 128, H, W]
-        x_coords = self.fourier(grid_batch)
-
-        # 5. Concatenate Latent + Fourier Coords
-        # The conv layer sees both the physics state and the precise location embedding
-        x = torch.cat([x_z, x_coords], dim=1)
-
-        # 6. Decode
-        for layer in self.conv_layers:
-            x = layer(x, w)
-
-        return self.to_rgb(x)

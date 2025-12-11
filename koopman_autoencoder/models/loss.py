@@ -390,7 +390,7 @@ class KoopmanLoss(nn.Module):
             "loss_recon": total_recon_loss.detach(),
             "loss_pred": total_pred_loss.detach(),
             "loss_latent": latent_loss.detach(),
-            "loss_re": re_loss.detach(),
+            "loss_grad": grad_loss.detach(),
             "loss_stability": stability_loss.detach(),
             "details_recon": {k: v.detach() for k, v in recon_loss_dict.items()},
             "details_pred": {k: v.detach() for k, v in pred_loss_dict.items()},

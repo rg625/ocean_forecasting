@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - /data: stable
+  - /data: eval
   - /model: discrete_linear_128
   - /metric: base
   - /training: base

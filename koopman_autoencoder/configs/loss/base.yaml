@@ -2,10 +2,10 @@
 # base config for loss
 
 # loss:
-alpha: 1.0
+alpha: 5.0
 beta: 1.0
 loss_type: "l2"
-grad_weight: 1.0
+grad_weight: 0.0
 ssim_weight: null # 0.1
 re_weight: null # 0.0
 stability_weight: 0.001 # null

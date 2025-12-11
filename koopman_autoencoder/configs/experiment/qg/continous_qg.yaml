@@ -10,4 +10,4 @@ defaults:
 # Top-level run configuration
 output_dir: "model_outputs/qg"
 ckpt: null
-log_epoch: 500
+log_epoch: 100
