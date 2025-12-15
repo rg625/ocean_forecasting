@@ -2,6 +2,7 @@
 
 import torch
 from torch import nn, Tensor
+import torch.nn.functional as F
 from tensordict import TensorDict
 from einops import reduce, rearrange, repeat
 from torchvision.transforms import GaussianBlur
@@ -48,7 +49,10 @@ class KoopmanLoss(nn.Module):
         stability_weight: Optional[float] = None,
         weighting_type: str = "cosine",
         sigma_blur: Optional[float] = None,
-        grad_weight: Optional[float] = 1.0,
+        physics_weight: Optional[float] = 1.0,
+        gamma_time: Optional[float] = 1.0,
+        gamma_space: Optional[float] = 1.0,
+        gamma_spectral: Optional[float] = 1.0,
     ):
         super().__init__()
 
@@ -72,7 +76,10 @@ class KoopmanLoss(nn.Module):
         self.stability_weight = stability_weight
         self.weighting_type = weighting_type
         self.gaussian_blur = self._init_blur_transform(sigma_blur)
-        self.grad_weight = grad_weight
+        self.physics_weight = physics_weight
+        self.gamma_time = gamma_time
+        self.gamma_space = gamma_space
+        self.gamma_spectral = gamma_spectral
 
     @staticmethod
     def _init_blur_transform(sigma: Optional[float]) -> Optional[GaussianBlur]:
@@ -185,52 +192,149 @@ class KoopmanLoss(nn.Module):
             loss_dict[key] = reduce(weighted_loss, "b n ->", "mean")
         return loss_dict
 
-    def _compute_gradient_loss(self, pred: TensorDict, true: TensorDict) -> Tensor:
+    def _dist(self, x: Tensor, y: Tensor) -> Tensor:
+        """Robust distance function."""
+        if self.loss_type == "l1":
+            return F.l1_loss(x, y, reduction="none")
+        return F.mse_loss(x, y, reduction="none")
+
+    def _sobolev_time_loss(self, pred: Tensor, target: Tensor) -> Tensor:
         """
-        Computes 1st order derivative loss (Sobel-like) to fix phase errors/drift.
+        Enforces physical consistency of velocity (d/dt).
+        Crucial for fixing 'pacing' (phase drift).
         """
-        # FIX: Init as float 0.0. Python auto-promotes 0.0 + Tensor(cuda) -> Tensor(cuda).
-        # Initializing with torch.tensor(0.0) risks picking the wrong device (CPU vs CUDA).
-        total_grad_loss = 0.0
+        if pred.shape[1] < 2:
+            return torch.tensor(0.0, device=pred.device)
 
-        common_keys = set(pred.keys()) & set(true.keys())
+        # First-order central difference approx for velocity
+        # (x_{t+1} - x_{t-1}) / 2*dt
+        # Here we simplify to forward difference for stability on short seqs
+        v_pred = pred[:, 1:] - pred[:, :-1]
+        v_target = target[:, 1:] - target[:, :-1]
 
-        # Track if we processed anything so we can return a valid Tensor at the end
-        processed_any = False
-        fallback_device = torch.device("cpu")  # Fallback
+        return self._dist(v_pred, v_target).mean()
 
-        for key in common_keys:
-            pred_img = pred[key]
-            true_img = true[key]
+    def _sobolev_space_loss(self, pred: Tensor, target: Tensor) -> Tensor:
+        """
+        Enforces consistency of spatial gradients (edges/structure).
+        """
+        if pred.ndim != 5:  # Expect B, T, C, H, W
+            return torch.tensor(0.0, device=pred.device)
 
-            # Capture device for fallback return if needed
-            fallback_device = pred_img.device
+        # Sobel-like gradients
+        dx_pred = pred[..., :, 1:] - pred[..., :, :-1]
+        dx_target = target[..., :, 1:] - target[..., :, :-1]
 
-            # Handle Temporal dim if present
-            if pred_img.ndim == 5:
-                pred_img = rearrange(pred_img, "b t c h w -> (b t) c h w")
-                true_img = rearrange(true_img, "b t c h w -> (b t) c h w")
+        dy_pred = pred[..., 1:, :] - pred[..., :-1, :]
+        dy_target = target[..., 1:, :] - target[..., :-1, :]
 
-            # Compute Spatial Gradients (dy, dx)
-            # Diff in height (dim -2)
-            pred_dy = torch.abs(pred_img[..., 1:, :] - pred_img[..., :-1, :])
-            true_dy = torch.abs(true_img[..., 1:, :] - true_img[..., :-1, :])
+        loss_dx = self._dist(dx_pred, dx_target).mean()
+        loss_dy = self._dist(dy_pred, dy_target).mean()
 
-            # Diff in width (dim -1)
-            pred_dx = torch.abs(pred_img[..., :, 1:] - pred_img[..., :, :-1])
-            true_dx = torch.abs(true_img[..., :, 1:] - true_img[..., :, :-1])
+        return loss_dx + loss_dy
 
-            loss_dy = torch.mean(torch.abs(pred_dy - true_dy))
-            loss_dx = torch.mean(torch.abs(pred_dx - true_dx))
+    def _spectral_loss(self, pred: Tensor, target: Tensor) -> Tensor:
+        """
+        Converts trajectory to Fourier domain to match Frequencies and Phase.
+        This explicitly penalizes 'pacing' errors.
+        """
+        # Collapse batch and time for 2D FFT, or do 3D FFT including time
+        # Here we do 2D Spatial FFT averaged over time
+        B, T, C, H, W = pred.shape
 
-            total_grad_loss = total_grad_loss + (loss_dy + loss_dx)
-            processed_any = True
+        # Reshape to (B*T, C, H, W) to use PyTorch's optimized FFT
+        p_flat = rearrange(pred, "b t c h w -> (b t) c h w")
+        t_flat = rearrange(target, "b t c h w -> (b t) c h w")
 
-        # Ensure we return a Tensor (for .detach() calls downstream)
-        if not processed_any:
-            return torch.tensor(0.0, device=fallback_device)
+        # 2D Real FFT
+        fft_pred = torch.fft.rfft2(p_flat, norm="ortho")
+        fft_target = torch.fft.rfft2(t_flat, norm="ortho")
 
-        return total_grad_loss
+        # 1. Amplitude Loss (Matches Energy Spectrum)
+        amp_loss = self._dist(fft_pred.abs(), fft_target.abs()).mean()
+
+        # 2. Phase Loss (Matches Timing/Location)
+        # We assume small phase errors, so distance in complex plane is sufficient
+        phase_loss = self._dist(
+            torch.view_as_real(fft_pred), torch.view_as_real(fft_target)
+        ).mean()
+
+        return amp_loss + phase_loss
+
+    def _physics_loss(
+        self,
+        x_recon: TensorDict,
+        x_preds: TensorDict,
+        x_true: TensorDict,
+        x_future: TensorDict,
+        latent_pred: Tensor = None,
+        true_latents: Tensor = None,
+    ):
+        losses = {}
+        total_loss = 0.0
+
+        # 1. Reconstruction Loss (Standard)
+        recon_loss = 0.0
+        for k in x_recon.keys() & x_true.keys():
+            loss_dist = self._dist(x_recon[k], x_true[k]).mean()
+            recon_loss += loss_dist
+        losses["recon"] = recon_loss
+        total_loss += recon_loss
+
+        # 2. Prediction Loss (The main driver)
+        pred_loss = 0.0
+        time_loss = 0.0
+        space_loss = 0.0
+        spec_loss = 0.0
+
+        for k in x_preds.keys() & x_future.keys():
+            p, t = x_preds[k], x_future[k]
+
+            # Base MSE
+            pred_loss += self._dist(p, t).mean()
+
+            # Temporal Derivative (Velocity) - FIXES LAG/LEAD
+            if self.gamma_time is not None and self.gamma_time > 0:
+                time_loss += self._sobolev_time_loss(p, t)
+
+            # Spatial Derivative (Structure)
+            if self.gamma_space is not None and self.gamma_space > 0:
+                space_loss += self._sobolev_space_loss(p, t)
+
+            # Spectral (Frequency) - FIXES PACING
+            if (
+                self.gamma_spectral is not None
+                and self.gamma_spectral > 0
+                and p.ndim == 5
+            ):
+                spec_loss += self._spectral_loss(p, t)
+
+        losses["pred"] = pred_loss
+        losses["time_grad"] = time_loss
+        losses["space_grad"] = space_loss
+        losses["spectral"] = spec_loss
+
+        # Weighted Sum
+        assert self.gamma_time is not None, "Cannot multiply temporal loss by NoneType"
+        assert self.gamma_space is not None, "Cannot multiply spatial loss by NoneType"
+        assert (
+            self.gamma_spectral is not None
+        ), "Cannot multiply spectral loss by NoneType"
+        weighted_pred = (
+            self.alpha * pred_loss
+            + self.gamma_time * time_loss
+            + self.gamma_space * space_loss
+            + self.gamma_spectral * spec_loss
+        )
+        total_loss += weighted_pred
+
+        # 3. Latent Regularization (Optional but recommended)
+        if self.beta > 0 and latent_pred is not None and true_latents is not None:
+            lat_loss = self._dist(latent_pred, true_latents).mean()
+            total_loss += self.beta * lat_loss
+            losses["latent"] = lat_loss
+
+        return total_loss  # , losses
 
     def _get_rollout_weights(self, timesteps: int, device: torch.device) -> Tensor:
         """Computes weights for each step in the rollout loss."""
@@ -344,18 +448,22 @@ class KoopmanLoss(nn.Module):
                 true_latents=true_latents, latent_pred=latent_pred
             )
 
-        grad_loss = torch.tensor(0.0, device=latent_pred.device)
-        if self.grad_weight is not None and self.grad_weight > 0:
-            grad_loss += self._compute_gradient_loss(
-                x_recon, x_true.select(*x_recon.keys())
+        physics_loss = torch.tensor(0.0, device=latent_pred.device)
+        if self.physics_weight is not None and self.physics_weight > 0:
+            physics_loss += self._physics_loss(
+                x_recon=x_recon,
+                x_preds=x_preds,
+                x_true=x_true,
+                x_future=x_future,
+                latent_pred=latent_pred,
+                true_latents=true_latents,
             )
-            grad_loss += self._compute_gradient_loss(x_preds, x_future)
 
         total_loss = (
             total_recon_loss
             + self.alpha * total_pred_loss
             + self.beta * latent_loss
-            + self.grad_weight * grad_loss
+            + self.physics_weight * physics_loss
         )
         # --- Conditionally Add Optional Losses ---
         re_loss = torch.tensor(0.0, device=latent_pred.device)
@@ -390,7 +498,7 @@ class KoopmanLoss(nn.Module):
             "loss_recon": total_recon_loss.detach(),
             "loss_pred": total_pred_loss.detach(),
             "loss_latent": latent_loss.detach(),
-            "loss_grad": grad_loss.detach(),
+            "loss_phys": physics_loss.detach(),
             "loss_stability": stability_loss.detach(),
             "details_recon": {k: v.detach() for k, v in recon_loss_dict.items()},
             "details_pred": {k: v.detach() for k, v in pred_loss_dict.items()},

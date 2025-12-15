@@ -37,7 +37,7 @@ class EvalConfig:
     # Experiment Identifiers
     model_arch: str = "discrete"  # "discrete" or "continuous"
     model_type: str = "mlp"  # "linear", "mlp", "eigen"
-    dimension: int = 1024
+    dimension: int = 128
     regime: str = "stable"  # [FIX] Added to handle folder structure (stable/full)
 
     ckpt_index: int = 250
@@ -457,7 +457,7 @@ def main():
         evaluator = KoopmanEvaluator(config)
         results = evaluator.run_validation_rollouts()
 
-        output_filename = f"{config.experiment_name}.npz"
+        output_filename = f"{config.experiment_name}_{config.regime}.npz"
         evaluator.save_results(results, filename=output_filename)
 
     except KeyboardInterrupt:

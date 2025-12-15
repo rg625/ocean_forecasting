@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from torch import Tensor
 import torch.nn.functional as F
+from torch.nn import utils as nn_utils
 
 
 class AdaLNConv(nn.Module):
@@ -118,3 +119,34 @@ class AdaLNMLP(nn.Module):
             )
 
         return self.cond_embedding(cond) * 0.1  # (B, latent_dim)
+
+
+def sn_linear(in_features, out_features):
+    """Spectral Normalized Linear."""
+    return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
+
+
+class AdaGN(nn.Module):
+    """
+    Adaptive Group Normalization.
+    Injects physics parameters (Reynolds #) into spatial feature maps.
+    """
+
+    def __init__(self, num_channels: int, cond_dim: int, num_groups: int = 8):
+        super().__init__()
+        self.num_groups = num_groups
+        self.norm = nn.GroupNorm(num_groups, num_channels, affine=False)
+        # Project condition to Scale (gamma) and Shift (beta)
+        self.projection = sn_linear(cond_dim, num_channels * 2)
+
+    def forward(self, x: Tensor, cond: Tensor) -> Tensor:
+        # x: [B, C, H, W]
+        # cond: [B, cond_dim]
+        style = self.projection(cond)  # [B, 2*C]
+        gamma, beta = style.chunk(2, dim=1)
+
+        # Unsqueeze for broadcasting over H, W
+        gamma = gamma.unsqueeze(2).unsqueeze(3)
+        beta = beta.unsqueeze(2).unsqueeze(3)
+
+        return self.norm(x) * (1 + gamma) + beta
