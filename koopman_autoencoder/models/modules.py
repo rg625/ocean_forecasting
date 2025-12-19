@@ -100,7 +100,7 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
                 "forcing": forcing_expansion(dim_to_use),
             }
         )
-        if config.mode.MLP:
+        if config.mode == KoopmanMode.MLP and config.cond_embedding_dim > 0:
             self.conditioner = AdaLNMLP(config.latent_dim, config.cond_embedding_dim)
 
     def _build_hypnet(self, output_dim: int) -> Optional[KoopmanHypnet]:
@@ -195,6 +195,7 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
             # Hypnet predicts LoRA update
             output_dim = config.latent_dim * 2 * config.rank
             self.hypnet = self._build_hypnet(output_dim)
+            # self.conditioner = AdaLNMLP(config.latent_dim, config.cond_embedding_dim)
 
         # --- MLP Mode ---
         elif config.mode == KoopmanMode.MLP:
