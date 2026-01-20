@@ -33,6 +33,15 @@ def sn_linear(in_features, out_features):
     return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
 
 
+# def sn_conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0):
+#     """Spectral Normalized Conv2d. Stabilizes Koopman operator gradients."""
+#     return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+
+# def sn_linear(in_features, out_features):
+#     """Spectral Normalized Linear."""
+#     return nn.Linear(in_features, out_features)
+
+
 # ==========================================
 #   ATTENTION MECHANISMS
 # ==========================================

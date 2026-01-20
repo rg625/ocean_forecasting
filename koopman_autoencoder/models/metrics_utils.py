@@ -13,7 +13,7 @@ from typing import (
 )  # Added Generator
 import logging
 from .dataloader import QGDatasetBase, AbstractNormalizer
-from .utils import cuda_timer, elapsed_time
+from .utils import cuda_timer, elapsed_time, save_timing_to_json
 from .metrics import Metric
 import os  # Added os for path operations
 import random
@@ -30,10 +30,34 @@ logger = logging.getLogger(__name__)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Diffusion model-specific normalization constants
-DIFFUSION_MEAN = {"v_x": 0.444969, "v_y": 0.000299, "p": 0.000586, "rey": 550.0}
-DIFFUSION_STD = {"v_x": 0.206128, "v_y": 0.206128, "p": 0.003942, "rey": 262.678467}
+INC_MEAN = {"v_x": 0.444969, "v_y": 0.000299, "p": 0.000586, "Re": 550.0}
+INC_STD = {"v_x": 0.206128, "v_y": 0.206128, "p": 0.003942, "Re": 262.678467}
 
+QG_MEAN = {
+    "q1": 6.130118365440265e-07,
+    "q2": -6.069969143104177e-07,
+    "forcing": 4.598683515047508e-12,
+}
+QG_STD = {
+    "q1": 4.220613803016554e-05,
+    "q2": 2.8499078149814454e-06,
+    "forcing": 1.5010150481725185e-12,
+}
 
+TRA_MEAN = {
+    "v_x": 0.560642,
+    "v_y": -0.000129,
+    "p": 0.637941,
+    "rho": 0.903352,
+    "Ma": 0.700000,
+}
+TRA_STD = {
+    "v_x": 0.216987,
+    "v_y": 0.216987,
+    "p": 0.119944,
+    "rho": 0.145391,
+    "Ma": 0.118322,
+}
 # =====================================================================================
 # SECTION 1: CORE METRIC & DERIVED VARIABLE COMPUTATION
 # =====================================================================================
@@ -91,7 +115,7 @@ def tensor_to_tensordict(tensor: torch.Tensor, var_names: List[str]) -> TensorDi
 
 
 def tensordict_to_tensor(
-    td: TensorDict, var_names: List[str], re_val: Optional[float] = None
+    td: TensorDict, var_names: List[str], cond_val: Optional[float] = None
 ) -> torch.Tensor:
     """
     Converts a TensorDict to a tensor, optionally adding Reynolds number as a channel.
@@ -119,9 +143,9 @@ def tensordict_to_tensor(
         [td_for_stack[var] for var in var_names], dim=2
     )  # [B, T, C, H, W]
 
-    if re_val is not None:
+    if cond_val is not None:
         re_tensor = torch.full(
-            (B, T, 1, H, W), re_val, device=stacked.device, dtype=stacked.dtype
+            (B, T, 1, H, W), cond_val, device=stacked.device, dtype=stacked.dtype
         )
         stacked = torch.cat([stacked, re_tensor], dim=2)
 
@@ -182,6 +206,40 @@ def run_kae_rollout(
 
     with torch.no_grad():
         predicted_td = model(input_seq, seq_length=rollout_steps)
+        save_timing_to_json(
+            timing_data=model.timings,
+            model_name="kae_model",
+            filename="kae_model_timings.json",
+        )
+    # logger.info(f"Saved Diffusion timings to: kae_model_timings.json")
+
+    return (
+        predicted_td.x_preds.squeeze(0) if return_xpreds else predicted_td
+    )  # Remove batch dim
+
+
+def run_exp_kae_rollout(
+    model,
+    input_seq: TensorDict,
+    rollout_steps: int,
+    return_xpreds: Optional[bool] = True,
+) -> TensorDict:
+    """Performs a long rollout for a Koopman Autoencoder (KAE) model."""
+    input_seq = input_seq.unsqueeze(0).to(
+        DEVICE
+    )  # if input_seq.ndim == 4 else input_seq
+    # input_seq = input_seq.to(DEVICE)
+    # print(f"input_seq: {input_seq['cond_input'][0]}")
+
+    with torch.no_grad():
+        predicted_td = model.forward_theoretical(input_seq, seq_length=rollout_steps)
+        save_timing_to_json(
+            timing_data=model.timings,
+            model_name="kae_model",
+            filename="kae_model_timings.json",
+        )
+    # logger.info(f"Saved Diffusion timings to: kae_model_timings.json")
+
     return (
         predicted_td.x_preds.squeeze(0) if return_xpreds else predicted_td
     )  # Remove batch dim
@@ -190,13 +248,13 @@ def run_kae_rollout(
 def kae_rollout_wrapper(
     model, input_seq, metadata: dict, rollout_steps: int, dataset=None
 ):
-    """Wraps run_kae_rollout to match the signature of run_diffusion_rollout."""
+    """Wraps run_kae_rollout to match the signature of run_diffusion_rollout_inc."""
     return run_kae_rollout(
         model=model, input_seq=input_seq, rollout_steps=rollout_steps
     )
 
 
-def run_diffusion_rollout(
+def run_diffusion_rollout_inc(
     model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
 ) -> TensorDict:
     """Performs a long rollout for the Diffusion model."""
@@ -207,25 +265,23 @@ def run_diffusion_rollout(
     total_start.record()
 
     with torch.no_grad():
-        re_val = metadata.get("cond_target", [DIFFUSION_MEAN["rey"]])[0]
-        if not torch.is_tensor(re_val):
-            re_val = torch.tensor([re_val], dtype=torch.float32, device=DEVICE)
-        normalized_re = (re_val - DIFFUSION_MEAN["rey"]) / DIFFUSION_STD["rey"]
+        cond_val = metadata.get("cond_target", [INC_MEAN["Re"]])[0]
+        if not torch.is_tensor(cond_val):
+            cond_val = torch.tensor([cond_val], dtype=torch.float32, device=DEVICE)
+        normalized_re = (cond_val - INC_MEAN["Re"]) / INC_STD["Re"]
 
         cond_input_val = (
             metadata["cond_input"][0][-1]
             if metadata.get("cond_input") and metadata["cond_input"][0].ndim > 0
-            else metadata.get("cond_input", [DIFFUSION_MEAN["rey"]])[0]
+            else metadata.get("cond_input", [INC_MEAN["Re"]])[0]
         )
         # print(f"normalized_re: {normalized_re}")
-        # print(f"re_val: {re_val}")
-        normalized_cond_input = (
-            cond_input_val - DIFFUSION_MEAN["rey"]
-        ) / DIFFUSION_STD["rey"]
+        # print(f"cond_val: {cond_val}")
+        normalized_cond_input = (cond_input_val - INC_MEAN["Re"]) / INC_STD["Re"]
         # print(f"normalized_cond_input: {normalized_cond_input}")
 
         d = tensordict_to_tensor(
-            input_seq, var_names_3c, re_val=normalized_cond_input.item()
+            input_seq, var_names_3c, cond_val=normalized_cond_input.item()
         ).to(DEVICE)
         d = d.permute(0, 1, 2, 4, 3)
 
@@ -252,10 +308,10 @@ def run_diffusion_rollout(
             prediction[:, i : i + 1] = result
 
     output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)
-    var_names_4c = var_names_3c + ["rey"]
+    var_names_4c = var_names_3c + ["Re"]
     pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
     # pred_td_denorm = dataset.denormalize(pred_td_normalized)
-    pred_td_normalized.pop("rey", None)
+    pred_td_normalized.pop("Re", None)
 
     total_end.record()
     torch.cuda.synchronize()
@@ -266,7 +322,88 @@ def run_diffusion_rollout(
         "average_step_time_ms": float(np.mean(step_times)) if step_times else 0.0,
         "all_step_times_ms": [float(t) for t in step_times],
     }
+    # np.save("diffusion_times", np.array(timings["all_step_times_ms"]))
     logger.info(f"Diffusion timings: {timings}")
+
+    return cast(TensorDict, pred_td_normalized.squeeze(0))
+
+
+def run_diffusion_rollout_tra(
+    model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
+) -> TensorDict:
+    """Performs a long rollout for the Diffusion model."""
+    model.eval()
+    timings: Dict[str, Any] = {}
+    var_names_3c = ["v_x", "v_y", "p", "rho"]
+    total_start, total_end = cuda_timer()
+    total_start.record()
+
+    with torch.no_grad():
+        cond_val = metadata.get("cond_target", [TRA_MEAN["Ma"]])[0]
+        if not torch.is_tensor(cond_val):
+            cond_val = torch.tensor([cond_val], dtype=torch.float32, device=DEVICE)
+        normalized_re = (cond_val - TRA_MEAN["Ma"]) / TRA_STD["Ma"]
+
+        cond_input_val = (
+            metadata["cond_input"][0][-1]
+            if metadata.get("cond_input") and metadata["cond_input"][0].ndim > 0
+            else metadata.get("cond_input", [TRA_MEAN["Ma"]])[0]
+        )
+        # print(f"normalized_re: {normalized_re}")
+        # print(f"cond_val: {cond_val}")
+        normalized_cond_input = (cond_input_val - TRA_MEAN["Ma"]) / TRA_STD["Ma"]
+        # print(f"normalized_cond_input: {normalized_cond_input}")
+
+        d = tensordict_to_tensor(
+            input_seq, var_names_3c, cond_val=normalized_cond_input.item()
+        ).to(DEVICE)
+        d = d.permute(0, 1, 2, 4, 3)
+
+        B, T_in, C, H, W = d.shape
+        T_out = T_in + rollout_steps
+        prediction = torch.zeros([B, T_out, C, H, W], device=DEVICE, dtype=d.dtype)
+        prediction[:, :T_in] = d
+
+        step_times = []
+        for i in range(T_in, T_out):
+            start, end = cuda_timer()
+            start.record()
+            cond = torch.cat(
+                [prediction[:, i - 2 : i - 1], prediction[:, i - 1 : i]], dim=2
+            )
+            current_slice = prediction[:, i - 1 : i]
+            result = model(conditioning=cond, data=current_slice)
+            end.record()
+            torch.cuda.synchronize()
+            step_times.append(elapsed_time(start, end))
+
+            # Overwrite predicted Reynolds number with constant target
+            result[..., -1, :, :] = normalized_re  # Assuming constant Re for rollout
+            prediction[:, i : i + 1] = result
+
+    output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)
+    var_names_4c = var_names_3c + ["Ma"]
+    pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
+    # pred_td_denorm = dataset.denormalize(pred_td_normalized)
+    pred_td_normalized.pop("Ma", None)
+
+    total_end.record()
+    torch.cuda.synchronize()
+    total_time = elapsed_time(total_start, total_end)
+
+    timings = {
+        "total_time_ms": float(total_time),
+        "average_step_time_ms": float(np.mean(step_times)) if step_times else 0.0,
+        "all_step_times_ms": [float(t) for t in step_times],
+    }
+    # np.save("diffusion_times", np.array(timings["all_step_times_ms"]))
+    logger.info(f"Diffusion timings: {timings}")
+    save_timing_to_json(
+        timing_data=timings,
+        model_name="diffusion_model_tra",
+        filename="diffusion_model_tra_timings.json",
+    )
+    # logger.info(f"Saved Diffusion timings to: diffusion_model_tra_timings.json")
 
     return cast(TensorDict, pred_td_normalized.squeeze(0))
 
@@ -302,12 +439,12 @@ def generate_predictions_for_dataset(
 
             # Manually add metadata to input_seq for conditioning
             if "cond_input" in metadata:
-                re_val = metadata["cond_input"][0]
-                if not torch.is_tensor(re_val):
-                    re_val = torch.tensor(re_val)
+                cond_val = metadata["cond_input"][0]
+                if not torch.is_tensor(cond_val):
+                    cond_val = torch.tensor(cond_val)
 
-                # Expand the scalar 're_val' to match the TensorDict's batch_size
-                input_seq["cond_input"] = re_val.expand(input_seq.batch_size)
+                # Expand the scalar 'cond_val' to match the TensorDict's batch_size
+                input_seq["cond_input"] = cond_val.expand(input_seq.batch_size)
 
             if "obstacle_mask" in metadata and "obstacle_mask" not in input_seq.keys():
                 mask = metadata["obstacle_mask"][0]
@@ -507,16 +644,16 @@ def run_evaluation(
         if save_individual_dir:
             try:
                 # Extract Reynolds number for filename
-                re_val_raw = metadata.get("cond_target", [0.0])[0]
-                if torch.is_tensor(re_val_raw) and re_val_raw.numel() > 0:
-                    re_val = re_val_raw.item()
-                elif isinstance(re_val_raw, (int, float)):
-                    re_val = re_val_raw
+                cond_val_raw = metadata.get("cond_target", [0.0])[0]
+                if torch.is_tensor(cond_val_raw) and cond_val_raw.numel() > 0:
+                    cond_val = cond_val_raw.item()
+                elif isinstance(cond_val_raw, (int, float)):
+                    cond_val = cond_val_raw
                 else:
-                    re_val = 0.0  # Default
+                    cond_val = 0.0  # Default
 
                 # Format for filename, e.g., "Re550p00_sample0001.pt"
-                re_str = f"Re{re_val:.2f}".replace(".", "p")
+                re_str = f"Re{cond_val:.2f}".replace(".", "p")
                 filename = f"{re_str}_sample{idx:04d}.pt"
 
                 save_path = os.path.join(save_individual_dir, filename)

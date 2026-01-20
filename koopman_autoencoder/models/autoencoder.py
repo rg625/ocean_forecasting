@@ -65,7 +65,7 @@ class KoopmanAutoencoder(nn.Module):
         predict_cond: bool = False,
         cond_grad_enabled: bool = False,
         disturb_std: float = 1e-2,
-        is_continuous: Optional[bool] = False,
+        is_continuous: bool = False,
         cond_expansion_type: Optional[str] = None,
         **conv_kwargs,
     ):
@@ -292,7 +292,7 @@ class KoopmanAutoencoder(nn.Module):
         self,
         x: TensorDict,
         seq_length: Union[int, Tensor],
-        re_future: Optional[Tensor] = None,  # This arg is specific, let's keep it
+        cond_future: Optional[Tensor] = None,  # This arg is specific, let's keep it
     ) -> KoopmanOutput:
         """Forward pass: Encode, roll out predictions, and decode."""
         total_start, total_end = cuda_timer()
@@ -378,6 +378,7 @@ class KoopmanAutoencoder(nn.Module):
         total_end.record()
         torch.cuda.synchronize()
         self.timings["total"] = elapsed_time(total_start, total_end)
+        # np.save("kae_times", np.array(self.timings["total"]))
 
         # 8. Return the final output structure
         return KoopmanOutput(
@@ -388,4 +389,110 @@ class KoopmanAutoencoder(nn.Module):
             disturbed_latents=disturbed_latents,
             dz_dt=dz_dt,
             dz_dt_disturbed=dz_dt_disturbed,
+        )
+
+    def compute_theoretical_evolution(
+        self,
+        z0: Tensor,
+        num_frames: Union[int, Tensor],
+        cond: Optional[Tensor] = None,
+        dt: float = 0.1,
+    ) -> Tensor:
+        """
+        Computes the theoretical state evolution using the matrix exponential.
+        """
+        # 1. Access the dynamics internal module
+        dyn = self.koopman_operator.dynamics
+
+        # 2. Encode conditioning
+        cond_encoded = dyn._encode_cond(cond) if cond is not None else None
+
+        # 3. Extract the Koopman Matrix A
+        # A: [D, D] or [Batch, D, D]
+        A = dyn._get_effective_linear_map(cond_encoded)
+
+        # 4. Handle num_frames (Convert Tensor to int if necessary)
+        if isinstance(num_frames, Tensor):
+            num_frames = int(num_frames.view(-1)[0].item())
+
+        # 5. Pre-compute the time grid
+        # arange(1, num_frames + 1) matches autoregressive indices [1, 2, ..., T]
+        t_steps = torch.arange(1, num_frames + 1, device=z0.device).float() * dt
+
+        z_theoretical = []
+        for t in t_steps:
+            # Analytical solution: z(t) = exp(A * t) @ z0
+            exp_At = torch.matrix_exp(A * t)
+
+            if A.ndim == 2:  # Shared matrix across batch
+                zt = torch.matmul(z0, exp_At.t())
+            else:  # Unique matrix per batch element (LoRA/Conditioned)
+                zt = torch.bmm(exp_At, z0.unsqueeze(-1)).squeeze(-1)
+
+            z_theoretical.append(zt)
+
+        # Stack to [Batch, num_frames, Latent_dim] and ensure it's real
+        return torch.stack(z_theoretical, dim=1).real
+
+    def forward_theoretical(
+        self,
+        x: TensorDict,
+        seq_length: Union[int, Tensor],
+        dt: float = 1.0,
+        cond_future: Optional[Tensor] = None,
+    ) -> KoopmanOutput:
+        """
+        Forward pass using the analytical matrix exponential solution
+        instead of autoregressive rollout.
+        """
+        # 1. Prepare inputs (standard procedure)
+        obstacle_mask, cond_input, x_data, seq_length_int = self._prepare_inputs(
+            x, seq_length
+        )
+
+        # 2. Encode initial state z0
+        # We don't usually disturb for theoretical analysis, but we keep logic consistent
+        z0, _ = self._encode_initial_states(x_data, cond_input)
+
+        # 3. Handle Conditioning
+        cond_for_prediction = x.get("cond_target")
+        if cond_for_prediction is None and cond_input is not None:
+            # Use the last known condition if target isn't provided
+            cond_for_prediction = (
+                cond_input[:, -1].view(-1, 1).repeat(1, seq_length_int)
+            )
+
+        if cond_for_prediction is not None:
+            cond_for_prediction = self.re_norm(cond_for_prediction)
+
+        # We pass the average condition if the operator is condition-dependent
+        # Alternatively, if A changes per step, the matrix exponential is more complex.
+        # Here we assume A is constant over the rollout period for the 'theoretical' base.
+        mean_cond = (
+            cond_for_prediction.mean(dim=1) if cond_for_prediction is not None else None
+        )
+
+        z_preds_theoretical = self.compute_theoretical_evolution(
+            z0=z0, num_frames=seq_length, cond=mean_cond
+        )
+
+        # 5. Decode outputs
+        x_recon, x_preds = self._decode_outputs(
+            z0, z_preds_theoretical, seq_length_int, obstacle_mask
+        )
+
+        # 6. Predict Reynolds (Optional)
+        reynolds = None
+        if self.predict_cond and self.re_predictor is not None:
+            z_all = torch.cat([z0.unsqueeze(1), z_preds_theoretical], dim=1)
+            reynolds = self.re_predictor(z_all.detach())
+
+        return KoopmanOutput(
+            x_recon=x_recon,
+            x_preds=x_preds,
+            z_preds=z_preds_theoretical,
+            reynolds=reynolds,
+            disturbed_latents=None,
+            dz_dt=None,
+            dz_dt_disturbed=None,
         )

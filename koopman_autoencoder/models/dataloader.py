@@ -36,6 +36,21 @@ QG_STD = {
     "forcing": 1.5010150481725185e-12,
 }
 
+TRA_MEAN = {
+    "v_x": 0.560642,
+    "v_y": -0.000129,
+    "p": 0.637941,
+    "rho": 0.903352,
+    "Ma": 0.700000,
+}
+TRA_STD = {
+    "v_x": 0.216987,
+    "v_y": 0.216987,
+    "p": 0.119944,
+    "rho": 0.145391,
+    "Ma": 0.118322,
+}
+
 
 class DatasetConfigurationError(Exception):
     """Custom exception for dataset configuration errors."""
@@ -83,8 +98,16 @@ class MeanStdNormalizer(AbstractNormalizer):
         #     {key: torch.std(tensor).float() for key, tensor in data.items()},
         #     batch_size=[],
         # )
-        means = QG_MEAN if "q1" in self.normalized_vars else INC_MEAN
-        stds = QG_STD if "q1" in self.normalized_vars else INC_STD
+        if "q1" in self.normalized_vars:
+            means = QG_MEAN
+            stds = QG_STD
+        elif "rho" in self.normalized_vars:
+            means = TRA_MEAN
+            stds = TRA_STD
+        else:
+            means = INC_MEAN
+            stds = INC_STD
+
         self.means = TensorDict(
             {key: val for key, val in means.items()},
             batch_size=[],

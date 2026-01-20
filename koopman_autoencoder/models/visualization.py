@@ -2,6 +2,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import wandb
 from pathlib import Path
 from tensordict import TensorDict
@@ -9,7 +10,7 @@ from torch import Tensor
 import torch
 import torch.distributed as dist
 import seaborn as sns
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
 
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
@@ -294,169 +295,145 @@ def plot_joint_rollout(
     pred_dict: TensorDict,
     diff_pred_dict: TensorDict,
     variable_name: str,
+    frames: Optional[List[int]] = None,
     frame_stride: int = 5,
-    re: int = 1000,
+    re: Union[int, float, torch.Tensor] = 1000,
     pad: Optional[List] = [0.012, 0.018, 0.015, 0.025],
-    highlight: Optional[bool] = False,
+    highlight: bool = False,  # Set to False by default; toggle box here
+    model_name: str = "Exp",
+    show_intermodel_diff: bool = False,
+    cmap=cmap,
 ):
     """
-    Plots the rollout comparison between ground truth and predicted sequence for a given variable.
-    The first two frames are always included and highlighted with a rectangle spanning
-    all 5 rows (including colorbars) for those two columns.
+    Versatile and robust rollout plotter.
+    - Handles temporal mismatches between ground truth and predictions.
+    - Uses axes_grid1 for consistent colorbar sizing.
+    - Prevents 'tight_layout' warnings with manual spacing control.
     """
-    # Remove batch dimension if present
-    if getattr(gt_dict, "batch_dims", 0) == 1 and gt_dict.batch_size[0] == 1:
-        gt_dict = gt_dict.squeeze(0)
-    if getattr(pred_dict, "batch_dims", 0) == 1 and pred_dict.batch_size[0] == 1:
-        pred_dict = pred_dict.squeeze(0)
-    if (
-        getattr(diff_pred_dict, "batch_dims", 0) == 1
-        and diff_pred_dict.batch_size[0] == 1
-    ):
-        diff_pred_dict = diff_pred_dict.squeeze(0)
 
-    gt = gt_dict[variable_name]  # shape: [T, H, W]
-    pred = pred_dict[variable_name]  # shape: [T, H, W]
-    diff_pred = diff_pred_dict[variable_name]  # shape: [T, H, W]
+    # 1. Standardize and remove batch dimension
+    def sanitize(td):
+        if getattr(td, "batch_dims", 0) == 1 and td.batch_size[0] == 1:
+            return td.squeeze(0)
+        return td
 
-    # Build indices: always include conditioning frames [0,1], then stride
-    num_frames = min(gt.shape[0], pred.shape[0])
-    indices = [0] + list(range(1, num_frames, frame_stride))
+    gt_dict = sanitize(gt_dict)
+    pred_dict = sanitize(pred_dict)
+    diff_pred_dict = sanitize(diff_pred_dict)
+
+    gt = gt_dict[variable_name]
+    pred = pred_dict[variable_name]
+    diff_pred = diff_pred_dict[variable_name]
+
+    # Extract Reynolds number value
+    re_val = re.item() if isinstance(re, torch.Tensor) else re
+
+    # 2. Build indices and align lengths
+    # We find the smallest sequence length to avoid indexing errors
+    min_frames = min(gt.shape[0], pred.shape[0], diff_pred.shape[0])
+
+    if frames is not None:
+        indices = [idx for idx in frames if idx < min_frames]
+    else:
+        indices = [0] + list(range(1, min_frames, frame_stride))
+
     num_plots = min(len(indices), 15)
+    indices = indices[:num_plots]
 
-    fig = plt.figure(figsize=(1.8 * num_plots, 7.5))
-    spec = gridspec.GridSpec(5, num_plots + 1, width_ratios=[1] * num_plots + [0.05])
+    # 3. Setup Grid
+    num_rows = 6 if show_intermodel_diff else 5
+    # Increased width (2.5) and height (2.2) per plot for better spacing
+    fig = plt.figure(figsize=(2.5 * num_plots, 2.2 * num_rows))
+    spec = gridspec.GridSpec(num_rows, num_plots)
 
-    # Store all axes (main + colorbar) for each column
+    # Store axes for the highlight rectangle
     columns_axes: List = [[] for _ in range(num_plots)]
 
-    for i, idx in enumerate(indices[:num_plots]):
-        # Frame label
-        if i == 0:
-            t_label = "t=0"
-        else:
-            t_label = f"t={idx}"
+    for i, idx in enumerate(indices):
+        t_label = "t=0" if idx == 0 else f"t={idx}"
 
-        # ----- Ground Truth -----
-        ax_gt = fig.add_subplot(spec[0, i])
-        im_gt = ax_gt.imshow(gt[idx].cpu(), cmap=cmap)
-        ax_gt.axis("off")
-        cbar = plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_gt, cbar.ax])
-        ax_gt.set_title(t_label, fontsize=10)
+        # Logic to safely extract frames
+        f_gt = gt[idx].cpu()
+        f_pred = pred[idx].cpu()
+        f_diff = diff_pred[idx].cpu()
 
-        # ----- KAE Prediction -----
-        ax_pred = fig.add_subplot(spec[1, i])
-        im_pred = ax_pred.imshow(pred[idx].cpu(), cmap=cmap)
-        ax_pred.axis("off")
-        cbar = plt.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_pred, cbar.ax])
+        # Define data rows: (data, label)
+        row_data = [
+            (f_gt, f"Ground Truth\nRe = {re_val:.1f}"),
+            (f_pred, "KAE Prediction"),
+            (f_diff, f"{model_name} Prediction"),
+            (f_gt - f_pred, "KAE Error"),
+            (f_gt - f_diff, f"{model_name} Error"),
+        ]
+        if show_intermodel_diff:
+            row_data.append((f_pred - f_diff, f"KAE vs {model_name}\n(Inter-Model)"))
 
-        # ----- Diff Prediction -----
-        ax_diff_pred = fig.add_subplot(spec[2, i])
-        im_diff_pred = ax_diff_pred.imshow(diff_pred[idx].cpu(), cmap=cmap)
-        ax_diff_pred.axis("off")
-        cbar = plt.colorbar(im_diff_pred, ax=ax_diff_pred, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_diff_pred, cbar.ax])
+        for row_idx, (frame_data, label_text) in enumerate(row_data):
+            ax = fig.add_subplot(spec[row_idx, i])
+            im = ax.imshow(frame_data, cmap=cmap)
+            ax.axis("off")
 
-        # ----- KAE Error -----
-        err = gt[idx] - pred[idx]
-        ax_err = fig.add_subplot(spec[3, i])
-        im_err = ax_err.imshow(err.cpu(), cmap=cmap)
-        ax_err.axis("off")
-        cbar = plt.colorbar(im_err, ax=ax_err, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_err, cbar.ax])
+            # Force colorbar to match image height exactly
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            cbar = plt.colorbar(im, cax=cax)
+            cbar.ax.tick_params(labelsize=8)
 
-        # ----- Diff Error -----
-        diff_err = gt[idx] - diff_pred[idx]
-        ax_diff_err = fig.add_subplot(spec[4, i])
-        im_diff_err = ax_diff_err.imshow(diff_err.cpu(), cmap=cmap)
-        ax_diff_err.axis("off")
-        cbar = plt.colorbar(im_diff_err, ax=ax_diff_err, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_diff_err, cbar.ax])
+            # Store for highlighting
+            columns_axes[i].extend([ax, cax])
 
-        # Row labels
-        if i == 0:
-            ax_gt.text(
-                -0.2,
-                1.5,
-                f"Ground Truth, Re = {re}",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_gt.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_pred.text(
-                -0.2,
-                1.1,
-                "KAE Prediction",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_pred.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_diff_pred.text(
-                -0.2,
-                1.1,
-                "Diff Prediction",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_diff_pred.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_err.text(
-                -0.2,
-                1.1,
-                "KAE Error",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_err.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_diff_err.text(
-                -0.2,
-                1.1,
-                "Diff Error",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_diff_err.transAxes,
-                ha="left",
-                va="bottom",
-            )
+            if row_idx == 0:
+                ax.set_title(t_label, fontsize=12, fontweight="bold")
 
-    # Layout and title
-    plt.tight_layout(rect=[0, 0.4, 0.98, 0.95])
-    fig.suptitle(f"Joint Rollout for Variable: {variable_name}", fontsize=16)
-    fig.canvas.draw()
+            # Row labels on the far left column
+            if i == 0:
+                ax.text(
+                    -0.35,
+                    0.5,
+                    label_text,
+                    fontsize=11,
+                    fontweight="bold",
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="center",
+                )
 
-    # ---- Highlight conditioning columns ----
+    # 4. Refined Layout Management
+    # Manual adjustment avoids the 'Axes too small' UserWarning from tight_layout
+    plt.subplots_adjust(
+        left=0.15, right=0.95, top=0.92, bottom=0.05, wspace=0.45, hspace=0.35
+    )
+    fig.suptitle(
+        f"Analytical vs Numerical Koopman Rollout: {variable_name}",
+        fontsize=18,
+        fontweight="bold",
+        y=0.98,
+    )
+
+    # 5. Conditional Highlight Logic
     if highlight and pad is not None:
+        fig.canvas.draw()
         pad_left, pad_right, pad_bottom, pad_top = pad
 
-        n_highlight = min(1, num_plots)
-        for col_idx in range(n_highlight):
-            bboxes = [ax.get_position() for ax in columns_axes[col_idx]]
-            x0 = min(b.x0 for b in bboxes) - pad_left
-            x1 = max(b.x1 for b in bboxes) + pad_right
-            y0 = min(b.y0 for b in bboxes) - pad_bottom
-            y1 = max(b.y1 for b in bboxes) + pad_top
+        # Calculate the bounding box for the first column
+        bboxes = [ax.get_position() for ax in columns_axes[0]]
+        x0 = min(b.x0 for b in bboxes) - pad_left
+        x1 = max(b.x1 for b in bboxes) + pad_right
+        y0 = min(b.y0 for b in bboxes) - pad_bottom
+        y1 = max(b.y1 for b in bboxes) + pad_top
 
-            rect = patches.Rectangle(
-                (x0, y0),
-                x1 - x0,
-                y1 - y0,
-                linewidth=3,
-                edgecolor="red",
-                facecolor="none",
-                transform=fig.transFigure,
-                clip_on=False,
-                zorder=10,
-            )
-            fig.add_artist(rect)
+        rect = patches.Rectangle(
+            (x0, y0),
+            x1 - x0,
+            y1 - y0,
+            linewidth=3,
+            edgecolor="red",
+            facecolor="none",
+            transform=fig.transFigure,
+            clip_on=False,
+            zorder=10,
+        )
+        fig.add_artist(rect)
 
     plt.show()
 

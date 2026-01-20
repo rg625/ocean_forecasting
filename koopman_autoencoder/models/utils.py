@@ -1,5 +1,6 @@
 # models/utils.py
 
+import json
 import os
 from tensordict import TensorDict
 import torch
@@ -274,7 +275,10 @@ def load_checkpoint(
         checkpoint = torch.load(cp_path, map_location="cpu")
         model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
         if "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except ValueError:
+                print("Optimizer state incompatible, reinitializing optimizer")
 
         start_epoch = checkpoint.get("epoch", -1) + 1
         history = checkpoint.get("history", {})
@@ -442,3 +446,22 @@ def surgically_transfer_checkpoint(
     new_optimizer.state = new_optimizer_state
 
     return new_model, new_optimizer
+
+
+def save_timing_to_json(timing_data, model_name, filename="benchmarks.json"):
+    # Load existing data if file exists
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            data = json.load(f)
+    else:
+        data = {}
+
+    # Initialize model key if not present
+    if model_name not in data:
+        data[model_name] = []
+
+    # Append new timing entry
+    data[model_name].append(timing_data)
+
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=4)

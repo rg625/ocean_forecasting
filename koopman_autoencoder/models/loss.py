@@ -19,23 +19,34 @@ logger = logging.getLogger(__name__)
 
 class KoopmanLoss(nn.Module):
     """
-    A robust, production-ready loss function for Koopman-based deep learning models.
+    A robust, production-ready loss function for Koopman-based deep learning models,
+    specifically optimized for capturing shocks and preventing long-term divergence.
 
     This module computes a weighted sum of several loss components:
-    1. Reconstruction Loss: Mean Squared Error on the autoencoded initial state.
-    2. Prediction/Rollout Loss: Time-weighted MSE on future state predictions.
-    3. Latent Regularization Loss: KL divergence to encourage a standard normal distribution
-       in the latent space.
-    4. Reynolds Number Prediction Loss: An optional auxiliary loss on a physical parameter.
+    1. Reconstruction Loss: L1/L2 error on the autoencoded initial state (optionally with SSIM).
+    2. Prediction/Rollout Loss: Time-weighted L1/L2 error on future state predictions.
+    3. Physics-Informed Loss:
+        - Temporal Gradient Loss: Enforces consistent velocity (d/dt).
+        - Spatial Gradient Loss (Sobolev): Enforces sharp edges and structural consistency.
+        - Spectral Loss: Enforces frequency domain consistency (amplitude and phase) via FFT.
+    4. Latent Regularization: Enforces consistency with "true" latent trajectories if available.
+    5. Reynolds Number Prediction: Auxiliary loss for parameter estimation.
+    6. Stability Loss: Regularizes the latent space to be robust against small perturbations.
 
     Args:
         alpha (float): Weight for the prediction (rollout) loss term.
-        beta (float): Weight for the latent divergence loss term.
-        re_weight (float): Weight for the optional Reynolds number prediction loss.
-        stability_weight (float): Weight for regularizing the latent space to be invariant to small perturbations.
+        beta (float): Weight for the latent trajectory consistency loss term.
+        loss_type (Literal["l1", "l2"]): Type of base distance metric ("l1" is better for shocks).
+        ssim_weight (Optional[float]): Weight for Structural Similarity Index Measure loss.
+        to_unit_range (Optional[Callable]): Function to normalize data for SSIM calculation.
+        re_weight (Optional[float]): Weight for the optional Reynolds number prediction loss.
+        stability_weight (Optional[float]): Weight for stability regularization (Lipschitz/Jacobian consistency).
         weighting_type (str): Rollout weighting schedule ('cosine' or 'uniform').
-        sigma_blur (Optional[float]): If provided, applies a Gaussian blur with this sigma
-                                      to the ground truth tensors before loss calculation.
+        sigma_blur (Optional[float]): Gaussian blur sigma for multi-scale loss (optional).
+        physics_weight (Optional[float]): Global scaler for the physics-informed components.
+        gamma_time (Optional[float]): Weight for temporal gradient (velocity) consistency.
+        gamma_space (Optional[float]): Weight for spatial gradient (Sobolev) consistency.
+        gamma_spectral (Optional[float]): Weight for spectral (FFT) consistency.
     """
 
     def __init__(
