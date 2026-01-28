@@ -242,7 +242,7 @@ class KoopmanAutoencoder(nn.Module):
         """Encodes initial states and creates a perturbed version if needed."""
         z0 = self.encode(x_data, cond_input=cond_input)
         z0_disturbed = None
-        if self.training and (self.disturb_std is not None):
+        if self.disturb_std is not None:
             noise = torch.randn_like(z0) * self.disturb_std
             z0_disturbed = z0 + noise
         return z0, z0_disturbed
@@ -351,11 +351,16 @@ class KoopmanAutoencoder(nn.Module):
             )
             # We detach to ensure this loss only affects the operator, not the encoder
             if self.koopman_operator.is_continuous and hasattr(
-                self.koopman_operator.dynamics, "K"
+                self.koopman_operator.dynamics, "_get_derivative"
             ):
-                dz_dt = self.koopman_operator.dynamics.K(z0.detach())
-                dz_dt_disturbed = self.koopman_operator.dynamics.K(
-                    z0_disturbed.detach()
+                cond_encoded = self.koopman_operator.dynamics._encode_cond(
+                    cond=cond_for_prediction[..., 0]
+                )
+                dz_dt = self.koopman_operator.dynamics._get_derivative(
+                    z0.detach(), cond_encoded=cond_encoded
+                )
+                dz_dt_disturbed = self.koopman_operator.dynamics._get_derivative(
+                    z0_disturbed.detach(), cond_encoded=cond_encoded
                 )
 
         # 6. Decode outputs for the main trajectory
@@ -438,7 +443,7 @@ class KoopmanAutoencoder(nn.Module):
         self,
         x: TensorDict,
         seq_length: Union[int, Tensor],
-        dt: float = 1.0,
+        dt: float = 0.1,
         cond_future: Optional[Tensor] = None,
     ) -> KoopmanOutput:
         """

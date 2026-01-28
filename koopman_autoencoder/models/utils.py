@@ -11,6 +11,7 @@ from typing import Dict, Any, Type, Tuple, Union, List, Optional
 import logging
 from omegaconf import OmegaConf, DictConfig
 from hydra import initialize, compose
+import numpy as np
 
 from .metrics import Metric
 from .config_classes import Config
@@ -465,3 +466,63 @@ def save_timing_to_json(timing_data, model_name, filename="benchmarks.json"):
 
     with open(filename, "w") as f:
         json.dump(data, f, indent=4)
+
+
+def tensordict_to_eval_array_with_re(
+    input_seq_td, predicted_seq_td, variables=["v_x", "v_y", "p"]
+):
+    """
+    Converts TensorDict sequences to NumPy array with Re channel.
+    Assumes input_seq_td has shape [B, T, H, W] per variable, or [T, H, W] if batch=1.
+    predicted_seq_td has shape [B, T_pred, H, W] or [T_pred, H, W].
+    Returns array: [B, T_total, C+1, H, W]
+    """
+
+    # Ensure batch dimension
+    def ensure_batch(td_var):
+        arr = td_var.cpu().numpy()
+        if arr.ndim == 3:  # [T, H, W] -> [1, T, H, W]
+            arr = arr[None, ...]
+        return arr
+
+    input_arrs = [
+        ensure_batch(input_seq_td[var].transpose(-2, -1)) for var in variables
+    ]  # list of [B, T, H, W]
+    predicted_arrs = [
+        ensure_batch(predicted_seq_td[var].transpose(-2, -1)) for var in variables
+    ]  # [B, T_pred, H, W]
+
+    # Stack channels: (B, T, C, H, W)
+    input_arr = np.stack(input_arrs, axis=2)
+    predicted_arr = np.stack(predicted_arrs, axis=2)
+
+    B = input_arr.shape[0]
+    H, W = input_arr.shape[-2:]
+
+    # Concatenate last input frame with predicted sequence along time
+    last_input_frame = input_arr[:, -2:, :, :, :]  # (B, 1, C, H, W)
+    predicted_arr = predicted_arr[:, :-2, :, :, :]
+    print(f"last_input_frame: {last_input_frame.shape}")
+    print(f"predicted_arr: {predicted_arr.shape}")
+    full_seq = np.concatenate(
+        [last_input_frame, predicted_arr], axis=1
+    )  # (B, T_total, C, H, W)
+
+    # Add Re channel
+    re_vals = input_seq_td["Re_input"].cpu().numpy()
+    if re_vals.ndim == 0:
+        re_vals = np.full(B, re_vals, dtype=np.float32)
+    elif re_vals.ndim == 1 and re_vals.shape[0] != B:
+        re_vals = np.tile(re_vals, B)[:B]
+
+    Re_channel = np.zeros((B, full_seq.shape[1], 1, H, W), dtype=np.float32)
+    for b in range(B):
+        Re_channel[b, :, 0, :, :] = re_vals[b]
+
+    # Concatenate Re channel
+    print(f"full_seq: {full_seq.shape}")
+    print(f"Re_channel: {Re_channel.shape}")
+    full_seq_with_re = np.concatenate(
+        [full_seq, Re_channel], axis=2
+    )  # (B, T_total, C+1, H, W)
+    return full_seq_with_re
