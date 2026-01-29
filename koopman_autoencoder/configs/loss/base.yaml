@@ -2,15 +2,15 @@
 # base config for loss
 
 # loss:
-alpha: 5.0
-beta: 1.0
-loss_type: "l2"
+alpha: 1.0
+beta: 0.5
+loss_type: "l1"
 physics_weight: 1.0
 gamma_time: 1.0
-gamma_space: 0.1
-gamma_spectral: 5.0
+gamma_space: 2.0
+gamma_spectral: 0.01
 ssim_weight: null # 0.1
 re_weight: null # 0.0
-stability_weight: 0.001 # null
+stability_weight: null # null
 weighting_type: "uniform"
 sigma_blur: null
