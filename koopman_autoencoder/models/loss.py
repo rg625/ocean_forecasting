@@ -375,6 +375,31 @@ class KoopmanLoss(nn.Module):
         loss = reduce(diff**2, "b n ... -> b n", "mean")
         return cast(Dict, reduce(loss, "b n ->", "mean"))
 
+    def _linearity_consistency_loss(
+        self,
+        z0: Tensor,
+        z1: Tensor,
+        koopman_operator: nn.Module,
+        dt: float,
+        cond: Optional[Tensor],
+    ) -> Tensor:
+        """
+        Enforces: Encoder(x_{t+1}) approx K * Encoder(x_t)
+        This is distinct from decoding and comparing pixels. It forces the
+        latent space ITSELF to respect the operator.
+        """
+        # 1. Forward Consistency: z_t -> K -> z_{t+1}
+        z1_pred = koopman_operator(z0, cond=cond, dt=dt)
+        fwd_loss = F.mse_loss(z1_pred, z1)
+
+        # 2. Backward Consistency: z_{t+1} -> K^{-1} -> z_t
+        # Crucial for Transonic: If K implies flow, -K implies reverse flow.
+        # This prevents K from just shrinking everything to zero (dissipative collapse).
+        z0_pred = koopman_operator(z1, cond=cond, dt=-dt)
+        bwd_loss = F.mse_loss(z0_pred, z0)
+
+        return fwd_loss + bwd_loss
+
     @staticmethod
     def stability_loss(latent_pred: Tensor, disturbed_latents: Tensor) -> Tensor:
         """Computes stability regularization for latent vectors."""
@@ -415,8 +440,39 @@ class KoopmanLoss(nn.Module):
         loss_per_sample = reduce((true_expanded - pred_re) ** 2, "b t 1 -> b", "mean")
         return reduce(loss_per_sample, "b ->", "mean")
 
+    def _cosine_dynamics_loss(self, pred: Tensor, target: Tensor) -> Tensor:
+        """
+        Maximizes Cosine Similarity between predicted and true latent vectors.
+        This forces the 'Direction' of dynamics to be correct, ignoring Amplitude decay.
+        """
+        # Flatten batch and time
+        p_flat = pred.reshape(-1, pred.shape[-1])
+        t_flat = target.reshape(-1, target.shape[-1])
+
+        # Target must be +/- 1.0. CosineEmbeddingLoss handles the dot product.
+        y = torch.ones(p_flat.shape[0], device=pred.device)
+
+        # Loss = 1 - cos(theta)
+        return F.cosine_embedding_loss(p_flat, t_flat, y)
+
+    def _energy_conservation_loss(self, latent_preds: Tensor) -> Tensor:
+        """
+        Penalizes changes in the norm of the latent vector over time.
+        Encourages: ||z_{t+1}|| approx ||z_t||
+        """
+        # Calculate norms [Batch, Time]
+        norms = torch.norm(latent_preds, p=2, dim=-1)
+
+        # Calculate diffs between consecutive steps
+        # We want the 'velocity of the energy' to be zero
+        norm_diffs = norms[:, 1:] - norms[:, :-1]
+
+        # L2 penalty on the CHANGES in norm
+        return torch.mean(norm_diffs**2)
+
     def forward(
         self,
+        koopman_operator: nn.Module,
         x_recon: TensorDict,
         x_preds: TensorDict,
         latent_pred: Tensor,
@@ -457,6 +513,54 @@ class KoopmanLoss(nn.Module):
         if self.beta is not None and true_latents is not None:
             latent_loss = self._true_latents_loss(
                 true_latents=true_latents, latent_pred=latent_pred
+            )
+            traj_cos = self._cosine_dynamics_loss(latent_pred, true_latents)
+            # 2. Linearity Consistency (Forward-Backward)
+            # Flatten batch and time dimensions for transition consistency
+            # [B, T, D] -> [B, T-1, D] -> [B*(T-1), D]
+            z0 = true_latents[:, :-1].reshape(-1, true_latents.shape[-1])
+            z1 = true_latents[:, 1:].reshape(-1, true_latents.shape[-1])
+
+            # Prepare Condition
+            cond_target = x_future.get("cond_target")
+            cond_flat = None
+
+            if cond_target is not None:
+                # We need cond to match the shape of z0: [B * (T-1), ...]
+                B = true_latents.shape[0]
+                T_minus_1 = true_latents.shape[1] - 1
+
+                # Case A: Time-Varying Condition [B, T, ...]
+                if cond_target.shape[1] == true_latents.shape[1]:
+                    cond_slice = cond_target[:, :-1]  # Slice to T-1
+                    cond_flat = cond_slice.reshape(-1, *cond_slice.shape[2:])  # Flatten
+
+                # Case B: Static Condition [B, ...] (or [B, 1, ...])
+                else:
+                    # Ensure dimensions allow broadcasting
+                    if cond_target.ndim == 1:
+                        cond_target = cond_target.unsqueeze(1)  # [B, 1]
+
+                    # Expand to time dimension [B, T-1, ...]
+                    shape_suffix = cond_target.shape[1:]
+                    cond_expanded = cond_target.unsqueeze(1).expand(
+                        B, T_minus_1, *shape_suffix
+                    )
+                    cond_flat = cond_expanded.reshape(-1, *shape_suffix)
+
+            lin_consistency_loss = self._linearity_consistency_loss(
+                z0=z0,
+                z1=z1,
+                koopman_operator=koopman_operator,
+                dt=koopman_operator.dt_train,
+                cond=cond_flat,
+            )
+
+            latent_loss = (
+                latent_loss
+                + lin_consistency_loss
+                + 2 * traj_cos
+                + self._energy_conservation_loss(latent_pred)
             )
 
         physics_loss = torch.tensor(0.0, device=latent_pred.device)

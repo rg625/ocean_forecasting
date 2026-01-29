@@ -935,6 +935,7 @@ def create_dataloaders(
     val_dataset: QGDatasetBase,
     test_dataset: QGDatasetBase,
     training_cfg: DictConfig,
+    num_workers: Optional[int] = 4,
 ):
     bs = training_cfg.batch_size
     if training_cfg.random_sequence_length:
@@ -961,13 +962,22 @@ def create_dataloaders(
     )
 
     train_loader = DataLoaderWrapper(
-        train_dataset, batch_sampler=train_sampler, collate_fn=custom_collate_fn
+        train_dataset,
+        batch_sampler=train_sampler,
+        collate_fn=custom_collate_fn,
+        num_workers=num_workers,
     )
     val_loader = DataLoaderWrapper(
-        val_dataset, batch_sampler=val_sampler, collate_fn=custom_collate_fn
+        val_dataset,
+        batch_sampler=val_sampler,
+        collate_fn=custom_collate_fn,
+        num_workers=num_workers,
     )
     test_loader = DataLoaderWrapper(
-        test_dataset, batch_sampler=test_sampler, collate_fn=custom_collate_fn
+        test_dataset,
+        batch_sampler=test_sampler,
+        collate_fn=custom_collate_fn,
+        num_workers=num_workers,
     )
     return train_loader, val_loader, test_loader
 

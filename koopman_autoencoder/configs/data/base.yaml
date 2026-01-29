@@ -28,3 +28,5 @@ selection_param: "Re"
 train_select_cond: null
 val_select_cond: 100
 test_select_cond: null
+
+num_workers: 8

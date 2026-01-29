@@ -156,7 +156,11 @@ def main(cfg: DictConfig):
         )
     else:
         train_loader, val_loader, test_loader = create_dataloaders(
-            train_dataset, val_dataset, test_dataset, cfg.training
+            train_dataset,
+            val_dataset,
+            test_dataset,
+            cfg.training,
+            num_workers=cfg.data.num_workers,
         )
     logger.info("Dataloaders created.")
 
@@ -179,6 +183,7 @@ def main(cfg: DictConfig):
             cond_grad_enabled=cfg.model.cond_grad_enabled,
             disturb_std=cfg.model.disturb_std,
             is_continuous=cfg.model.is_continuous,
+            rank=cfg.model.rank,
             cond_expansion_type=cfg.data.selection_param,
             **cfg.model.conv_kwargs,
         ).to(device)

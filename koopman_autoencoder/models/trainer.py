@@ -223,6 +223,7 @@ class Trainer:
                 )
 
                 loss_dict = self.criterion(
+                    model_module.koopman_operator,
                     out.x_recon,
                     out.x_preds,
                     out.z_preds,
@@ -250,7 +251,7 @@ class Trainer:
             # Check for Massive Spikes (Model Collapse Prevention)
             # If loss is > 5.0 (assuming normalized data), something is wrong.
             # Normal loss is ~0.02. A spike to 1.0+ is a collapse risk.
-            if total_loss.item() > 5.0 and self.current_epoch > 5:
+            if total_loss.item() > 100.0 and self.current_epoch > 5:
                 logger.warning(
                     f"Epoch {self.current_epoch}: Loss spike detected ({total_loss.item():.4f}). SKIPPING BATCH to prevent collapse."
                 )
@@ -310,6 +311,7 @@ class Trainer:
                     batch_size=input_td.batch_size[0],
                 )
                 loss_dict = self.criterion(
+                    koopman_operator=model_module.koopman_operator,
                     x_recon=out.x_recon,
                     x_preds=out.x_preds,
                     latent_pred=out.z_preds,

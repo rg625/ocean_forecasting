@@ -451,15 +451,10 @@ class KoopmanOperator(nn.Module):
         assume_orthogonal_eigenvectors: bool = True,
         use_checkpoint: bool = False,
         is_continuous: bool = False,
+        rank: int = 4,
         cond_expansion_type: Optional[str] = None,
-        # Allow aliasing for backward compatibility with your old code
-        re_embedding_dim: Optional[int] = None,
     ):
         super().__init__()
-
-        # Handle backward compatibility argument
-        if cond_embedding_dim == 0 and re_embedding_dim is not None:
-            cond_embedding_dim = re_embedding_dim
 
         # Convert string to Enum
         if isinstance(mode, str):
@@ -472,6 +467,7 @@ class KoopmanOperator(nn.Module):
             assume_orthogonal_eigenvectors=assume_orthogonal_eigenvectors,
             use_checkpoint=use_checkpoint,
             cond_expansion_type=cond_expansion_type,
+            rank=rank,
         )
 
         self.is_continuous = is_continuous

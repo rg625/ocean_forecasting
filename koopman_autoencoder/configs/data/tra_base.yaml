@@ -24,3 +24,5 @@ quantile_range: [2.5, 97.5]
 train_select_cond: null
 val_select_cond: null
 test_select_cond: null
+
+num_workers: 8

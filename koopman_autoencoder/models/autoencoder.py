@@ -66,6 +66,7 @@ class KoopmanAutoencoder(nn.Module):
         cond_grad_enabled: bool = False,
         disturb_std: float = 1e-2,
         is_continuous: bool = False,
+        rank: int = 4,
         cond_expansion_type: Optional[str] = None,
         **conv_kwargs,
     ):
@@ -128,7 +129,8 @@ class KoopmanAutoencoder(nn.Module):
             mode=operator_mode,
             use_checkpoint=use_checkpoint,
             is_continuous=is_continuous,
-            cond_expansion_type=cond_expansion_type,  # <-- Pass to operator
+            rank=rank,
+            cond_expansion_type=cond_expansion_type,
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
@@ -307,6 +309,7 @@ class KoopmanAutoencoder(nn.Module):
         start, end = cuda_timer()
         start.record()
         z0, z0_disturbed = self._encode_initial_states(x_data, cond_input)
+        z_to_recon = self.present_encoding(x=x_data, cond_input=cond_input)
         end.record()
         torch.cuda.synchronize()
         self.timings["encode"] = elapsed_time(start, end)
@@ -367,7 +370,7 @@ class KoopmanAutoencoder(nn.Module):
         start, end = cuda_timer()
         start.record()
         x_recon, x_preds = self._decode_outputs(
-            z0, z_preds_stacked, seq_length_int, obstacle_mask
+            z_to_recon, z_preds_stacked, seq_length_int, obstacle_mask
         )
         end.record()
         torch.cuda.synchronize()

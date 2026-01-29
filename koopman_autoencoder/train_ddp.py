@@ -92,7 +92,11 @@ def main(cfg: DictConfig):
         )
     else:
         train_loader, val_loader, test_loader = create_dataloaders(
-            train_dataset, val_dataset, test_dataset, cfg.training
+            train_dataset,
+            val_dataset,
+            test_dataset,
+            cfg.training,
+            num_workers=cfg.data.num_workers,
         )
     logger.info("Dataloaders created.")
 
@@ -110,6 +114,7 @@ def main(cfg: DictConfig):
             use_checkpoint=cfg.training.use_checkpoint,
             predict_cond=cfg.model.predict_cond,
             cond_grad_enabled=cfg.model.cond_grad_enabled,
+            rank=cfg.model.rank,
             **cfg.model.conv_kwargs,
         ).to(device)
         if is_ddp:

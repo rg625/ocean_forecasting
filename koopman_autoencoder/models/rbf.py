@@ -55,7 +55,7 @@ class LearnableRBFEmbedding(nn.Module):
     The Linear Trend is CRITICAL for extrapolation (e.g., Re=100 when trained on 200+).
     """
 
-    def __init__(self, num_rbf: int = 15, out_dim: int = 64):
+    def __init__(self, num_rbf: int = 15, out_dim: int = 64, dropout: float = 0.2):
         super().__init__()
         self.out_dim = out_dim
 
@@ -71,6 +71,7 @@ class LearnableRBFEmbedding(nn.Module):
         # 3. Projection to target dimension
         # Input dim = 1 (Linear Skip) + num_rbf (Gaussians)
         self.projection = nn.Linear(1 + num_rbf, out_dim)
+        self.rbf_dropout = nn.Dropout(p=dropout)
 
     def forward(self, x: torch.Tensor, d: Optional[int] = None) -> torch.Tensor:
         # --- DEVICE SAFETY CHECK ---
@@ -86,6 +87,10 @@ class LearnableRBFEmbedding(nn.Module):
         diff = x - self.centers
         gamma = torch.exp(self.log_gamma)
         rbf_out = torch.exp(-gamma * (diff**2))
+
+        # 3. Apply Dropout ONLY to the RBF features
+        # We DO NOT drop 'linear_out'. This guarantees the linear path is always valid.
+        rbf_out = self.rbf_dropout(rbf_out)
 
         # 2. Linear Feature (Global Extrapolation)
         # This allows the network to learn a slope (trend) that continues
@@ -170,7 +175,8 @@ def re_expansion(d: int):
 
 def ma_expansion(d: int):
     # Mach number usually stays within bounds, linear mode is fine.
-    return FourierExpansion(1e-13, 1.0, out_dim=d)
+    # return FourierExpansion(1e-13, 1.0, out_dim=d)
+    return FourierExpansion(0.4, 1.0, out_dim=d)
 
 
 def forcing_expansion(d: int):

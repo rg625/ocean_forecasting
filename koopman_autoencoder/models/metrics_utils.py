@@ -236,7 +236,7 @@ def run_exp_kae_rollout(
         save_timing_to_json(
             timing_data=model.timings,
             model_name="kae_model",
-            filename="kae_model_timings.json",
+            filename="kae_model_timings_exp.json",
         )
     # logger.info(f"Saved Diffusion timings to: kae_model_timings.json")
 
@@ -254,156 +254,127 @@ def kae_rollout_wrapper(
     )
 
 
-def run_diffusion_rollout_inc(
-    model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
+def run_diffusion_rollout(
+    model,
+    input_seq: TensorDict,
+    metadata: Dict,
+    rollout_steps: int,
+    dataset,
+    regime: str,  # "inc" or "tra"
 ) -> TensorDict:
     """Performs a long rollout for the Diffusion model."""
+
+    assert regime in {"inc", "tra"}, f"Invalid regime: {regime}"
+
     model.eval()
     timings: Dict[str, Any] = {}
-    var_names_3c = ["v_x", "v_y", "p"]
+
+    # ----- Regime-specific configuration -----
+    if regime == "inc":
+        var_names = ["v_x", "v_y", "p"]
+        MEAN = INC_MEAN
+        STD = INC_STD
+        cond_key = "Re"
+        model_name = "diffusion_model_inc"
+        timing_file = None
+    else:  # "tra"
+        var_names = ["v_x", "v_y", "p", "rho"]
+        MEAN = TRA_MEAN
+        STD = TRA_STD
+        cond_key = "Ma"
+        model_name = "diffusion_model_tra"
+        timing_file = "diffusion_model_tra_timings.json"
+
     total_start, total_end = cuda_timer()
     total_start.record()
 
     with torch.no_grad():
-        cond_val = metadata.get("cond_target", [INC_MEAN["Re"]])[0]
+        # ----- Conditioning target -----
+        cond_val = metadata.get("cond_target", [MEAN[cond_key]])[0]
         if not torch.is_tensor(cond_val):
             cond_val = torch.tensor([cond_val], dtype=torch.float32, device=DEVICE)
-        normalized_re = (cond_val - INC_MEAN["Re"]) / INC_STD["Re"]
 
+        normalized_cond_target = (cond_val - MEAN[cond_key]) / STD[cond_key]
+
+        # ----- Conditioning input -----
         cond_input_val = (
             metadata["cond_input"][0][-1]
             if metadata.get("cond_input") and metadata["cond_input"][0].ndim > 0
-            else metadata.get("cond_input", [INC_MEAN["Re"]])[0]
+            else metadata.get("cond_input", [MEAN[cond_key]])[0]
         )
-        # print(f"normalized_re: {normalized_re}")
-        # print(f"cond_val: {cond_val}")
-        normalized_cond_input = (cond_input_val - INC_MEAN["Re"]) / INC_STD["Re"]
-        # print(f"normalized_cond_input: {normalized_cond_input}")
 
+        normalized_cond_input = (cond_input_val - MEAN[cond_key]) / STD[cond_key]
+
+        # ----- Input tensor -----
         d = tensordict_to_tensor(
-            input_seq, var_names_3c, cond_val=normalized_cond_input.item()
+            input_seq,
+            var_names,
+            cond_val=normalized_cond_input.item(),
         ).to(DEVICE)
+
         d = d.permute(0, 1, 2, 4, 3)
 
         B, T_in, C, H, W = d.shape
         T_out = T_in + rollout_steps
-        prediction = torch.zeros([B, T_out, C, H, W], device=DEVICE, dtype=d.dtype)
-        prediction[:, :T_in] = d
 
-        step_times = []
-        for i in range(T_in, T_out):
-            start, end = cuda_timer()
-            start.record()
-            cond = torch.cat(
-                [prediction[:, i - 2 : i - 1], prediction[:, i - 1 : i]], dim=2
-            )
-            current_slice = prediction[:, i - 1 : i]
-            result = model(conditioning=cond, data=current_slice)
-            end.record()
-            torch.cuda.synchronize()
-            step_times.append(elapsed_time(start, end))
-
-            # Overwrite predicted Reynolds number with constant target
-            result[..., -1, :, :] = normalized_re  # Assuming constant Re for rollout
-            prediction[:, i : i + 1] = result
-
-    output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)
-    var_names_4c = var_names_3c + ["Re"]
-    pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
-    # pred_td_denorm = dataset.denormalize(pred_td_normalized)
-    pred_td_normalized.pop("Re", None)
-
-    total_end.record()
-    torch.cuda.synchronize()
-    total_time = elapsed_time(total_start, total_end)
-
-    timings = {
-        "total_time_ms": float(total_time),
-        "average_step_time_ms": float(np.mean(step_times)) if step_times else 0.0,
-        "all_step_times_ms": [float(t) for t in step_times],
-    }
-    # np.save("diffusion_times", np.array(timings["all_step_times_ms"]))
-    logger.info(f"Diffusion timings: {timings}")
-
-    return cast(TensorDict, pred_td_normalized.squeeze(0))
-
-
-def run_diffusion_rollout_tra(
-    model, input_seq: TensorDict, metadata: Dict, rollout_steps: int, dataset
-) -> TensorDict:
-    """Performs a long rollout for the Diffusion model."""
-    model.eval()
-    timings: Dict[str, Any] = {}
-    var_names_3c = ["v_x", "v_y", "p", "rho"]
-    total_start, total_end = cuda_timer()
-    total_start.record()
-
-    with torch.no_grad():
-        cond_val = metadata.get("cond_target", [TRA_MEAN["Ma"]])[0]
-        if not torch.is_tensor(cond_val):
-            cond_val = torch.tensor([cond_val], dtype=torch.float32, device=DEVICE)
-        normalized_re = (cond_val - TRA_MEAN["Ma"]) / TRA_STD["Ma"]
-
-        cond_input_val = (
-            metadata["cond_input"][0][-1]
-            if metadata.get("cond_input") and metadata["cond_input"][0].ndim > 0
-            else metadata.get("cond_input", [TRA_MEAN["Ma"]])[0]
+        prediction = torch.zeros(
+            [B, T_out, C, H, W],
+            device=DEVICE,
+            dtype=d.dtype,
         )
-        # print(f"normalized_re: {normalized_re}")
-        # print(f"cond_val: {cond_val}")
-        normalized_cond_input = (cond_input_val - TRA_MEAN["Ma"]) / TRA_STD["Ma"]
-        # print(f"normalized_cond_input: {normalized_cond_input}")
-
-        d = tensordict_to_tensor(
-            input_seq, var_names_3c, cond_val=normalized_cond_input.item()
-        ).to(DEVICE)
-        d = d.permute(0, 1, 2, 4, 3)
-
-        B, T_in, C, H, W = d.shape
-        T_out = T_in + rollout_steps
-        prediction = torch.zeros([B, T_out, C, H, W], device=DEVICE, dtype=d.dtype)
         prediction[:, :T_in] = d
 
         step_times = []
+
+        # ----- Rollout loop -----
         for i in range(T_in, T_out):
             start, end = cuda_timer()
             start.record()
+
             cond = torch.cat(
-                [prediction[:, i - 2 : i - 1], prediction[:, i - 1 : i]], dim=2
+                [prediction[:, i - 2 : i - 1], prediction[:, i - 1 : i]],
+                dim=2,
             )
             current_slice = prediction[:, i - 1 : i]
             result = model(conditioning=cond, data=current_slice)
+
             end.record()
             torch.cuda.synchronize()
             step_times.append(elapsed_time(start, end))
 
-            # Overwrite predicted Reynolds number with constant target
-            result[..., -1, :, :] = normalized_re  # Assuming constant Re for rollout
+            # Overwrite conditioning channel with constant target
+            result[..., -1, :, :] = normalized_cond_target
             prediction[:, i : i + 1] = result
 
+    # ----- Output formatting -----
     output_tensor = prediction[:, T_in:].permute(0, 1, 2, 4, 3)
-    var_names_4c = var_names_3c + ["Ma"]
-    pred_td_normalized = tensor_to_tensordict(output_tensor.cpu(), var_names_4c)
-    # pred_td_denorm = dataset.denormalize(pred_td_normalized)
-    pred_td_normalized.pop("Ma", None)
+    var_names_out = var_names + [cond_key]
 
-    total_end.record()
-    torch.cuda.synchronize()
-    total_time = elapsed_time(total_start, total_end)
-
-    timings = {
-        "total_time_ms": float(total_time),
-        "average_step_time_ms": float(np.mean(step_times)) if step_times else 0.0,
-        "all_step_times_ms": [float(t) for t in step_times],
-    }
-    # np.save("diffusion_times", np.array(timings["all_step_times_ms"]))
-    logger.info(f"Diffusion timings: {timings}")
-    save_timing_to_json(
-        timing_data=timings,
-        model_name="diffusion_model_tra",
-        filename="diffusion_model_tra_timings.json",
+    pred_td_normalized = tensor_to_tensordict(
+        output_tensor.cpu(),
+        var_names_out,
     )
-    # logger.info(f"Saved Diffusion timings to: diffusion_model_tra_timings.json")
+    pred_td_normalized.pop(cond_key, None)
+
+    total_end.record()
+    torch.cuda.synchronize()
+
+    total_time = elapsed_time(total_start, total_end)
+
+    timings = {
+        "total_time_ms": float(total_time),
+        "average_step_time_ms": float(np.mean(step_times)) if step_times else 0.0,
+        "all_step_times_ms": [float(t) for t in step_times],
+    }
+
+    logger.info(f"Diffusion timings ({regime}): {timings}")
+
+    if timing_file is not None:
+        save_timing_to_json(
+            timing_data=timings,
+            model_name=model_name,
+            filename=timing_file,
+        )
 
     return cast(TensorDict, pred_td_normalized.squeeze(0))
 

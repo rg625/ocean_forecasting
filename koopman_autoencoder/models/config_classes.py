@@ -40,6 +40,8 @@ class DataConfig:
     val_select_cond: Optional[Any] = None
     test_select_cond: Optional[Any] = None
 
+    num_workers: Optional[int] = 4
+
 
 @dataclass
 class ModelConfig:
@@ -61,6 +63,7 @@ class ModelConfig:
     cond_grad_enabled: bool = False
     disturb_std: Optional[float] = None
     is_continuous: Optional[bool] = False
+    rank: int = MISSING
 
 
 @dataclass
@@ -73,6 +76,7 @@ class TrainingConfig:
     save_latest_every: int = 1
     num_visual_batches: int = 1
     precision: str = "bfloat16"
+    # curriculum_epochs: int = 15
 
 
 @dataclass

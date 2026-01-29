@@ -24,6 +24,10 @@ from .dataloader import (
     QuantileNormalizer,
 )
 
+# Now import with the package root being `src`
+from turbpred.params import DataParams, ModelParamsDecoder
+from turbpred.model_diffusion import DiffusionModel
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -58,47 +62,6 @@ def average_losses(total_losses: Dict[str, Tensor], n_batches: int) -> Dict[str,
     if n_batches == 0:
         return {k: 0.0 for k in total_losses}
     return {key: (value / n_batches).item() for key, value in total_losses.items()}
-
-
-# def load_config(
-#     config_path: Union[str, None], cli_args: Optional[List[str]] = None
-# ) -> Config:
-#     """
-#     Load a Hydra config into the structured Config dataclass.
-#     Works in notebooks and scripts.
-
-#     Args:
-#         config_path: Path to the experiment YAML relative to the configs root, e.g., "experiment/128_inc"
-#         cli_args: Optional list of CLI-style overrides.
-
-#     Returns:
-#         Config: Structured and fully resolved configuration.
-#     """
-#     # Repo root (assumes this file is in models/)
-#     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-#     configs_root_abs = os.path.join(repo_root, "../configs")
-
-#     # Make configs_root relative to current working dir (Hydra requires relative paths)
-#     configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
-
-#     # Strip .yaml if present
-#     if config_path is not None:
-#         config_name = os.path.splitext(config_path)[0]
-#     else:
-#         config_name = ""
-
-#     # Initialize Hydra from the relative configs root
-#     with initialize(config_path=configs_root, version_base=None):
-#         cfg_dict = compose(config_name=config_name, overrides=cli_args or [])
-
-#     # Extract 'experiment' if present
-#     cfg_dict = cfg_dict.get("experiment", cfg_dict)
-
-#     # Merge into structured dataclass
-#     cfg: Config = OmegaConf.merge(OmegaConf.structured(Config()), cfg_dict)
-#     OmegaConf.resolve(cfg)
-
-#     return cfg
 
 
 def _find_config_root(cfg: Any) -> Optional[DictConfig]:
@@ -293,6 +256,82 @@ def load_checkpoint(
         raise RuntimeError("Critical error loading checkpoint.") from e
 
 
+def load_acdm(
+    ckpt: str,
+    device: torch.device,
+    rollout_steps: int = 60,
+    subsample: int = 2,
+    regime: Optional[str] = "tra",  # "tra", "stable", or "full"
+):
+    """
+    Load a pretrained ACDM diffusion model from checkpoint.
+
+    Args:
+        ckpt (str): Path to checkpoint (.pth)
+        DEVICE (torch.device): CPU or CUDA device
+        ROLL_OUT_STEPS (int): Rollout steps for sequence length
+        cfg: Config object with cfg.data.subsample
+        regime (str): One of {"tra", "stable", "full"}
+
+    Returns:
+        model_diff (DiffusionModel): Loaded diffusion model in eval mode
+    """
+
+    assert regime in {"tra", "stable", "full"}, f"Invalid regime: {regime}"
+
+    # ----- Regime-dependent fields -----
+    if regime == "tra":
+        simFields = ["dens", "pres"]
+        simParams = ["mach"]
+    else:  # "stable" or "full"
+        simFields = ["pres"]
+        simParams = ["rey"]
+
+    # ----- Model parameters -----
+    p_md = ModelParamsDecoder(
+        arch="direct-ddpm+Prev",
+        diffSteps=20,
+        diffSchedule="linear",
+        diffCondIntegration="clean" if "ncn" in ckpt else "noisy",
+        trainingNoise=0.0,
+    )
+
+    # ----- Data parameters -----
+    p_d = DataParams(
+        batch=64,
+        augmentations=["normalize"],
+        sequenceLength=[rollout_steps, subsample],
+        randSeqOffset=True,
+        dataSize=[128, 64],
+        dimension=2,
+        simFields=simFields,
+        simParams=simParams,
+        normalizeMode="incMixed",
+    )
+
+    # ----- Model construction -----
+    condChannels = 2 * (p_d.dimension + len(p_d.simFields) + len(p_d.simParams))
+
+    model_diff = DiffusionModel(
+        p_d,
+        p_md,
+        dimension=0,
+        condChannels=condChannels,
+    )
+
+    model_diff.training = False
+    model_diff.inferenceConditioningIntegration = "clean" if "ncn" in ckpt else "noisy"
+
+    # ----- Load checkpoint -----
+    loaded = torch.load(ckpt, map_location="cpu")
+    model_diff.load_state_dict(loaded["stateDictDecoder"], strict=True)
+
+    model_diff.to(device)
+    model_diff.eval()
+
+    return model_diff
+
+
 def compute_all_metrics(
     target: TensorDict,
     prediction: TensorDict,
@@ -468,7 +507,7 @@ def save_timing_to_json(timing_data, model_name, filename="benchmarks.json"):
         json.dump(data, f, indent=4)
 
 
-def tensordict_to_eval_array_with_re(
+def tensordict_to_eval_array_with_cond(
     input_seq_td, predicted_seq_td, variables=["v_x", "v_y", "p"]
 ):
     """
@@ -509,7 +548,7 @@ def tensordict_to_eval_array_with_re(
     )  # (B, T_total, C, H, W)
 
     # Add Re channel
-    re_vals = input_seq_td["Re_input"].cpu().numpy()
+    re_vals = input_seq_td["cond_input"].cpu().numpy()
     if re_vals.ndim == 0:
         re_vals = np.full(B, re_vals, dtype=np.float32)
     elif re_vals.ndim == 1 and re_vals.shape[0] != B:
