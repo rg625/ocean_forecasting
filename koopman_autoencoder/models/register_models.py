@@ -5,7 +5,7 @@ from functools import partial
 from turbpred.params import DataParams, ModelParamsDecoder
 from turbpred.model_diffusion import DiffusionModel
 from .autoencoder import KoopmanAutoencoder
-from models.metrics_utils import run_diffusion_rollout, kae_rollout_wrapper
+from models.metrics_utils import run_diffusion_rollout_inc, kae_rollout_wrapper
 from models.utils import (
     load_checkpoint,
 )
@@ -91,7 +91,7 @@ def build_diffusion(
 
     # ✅ Bind metadata, dataset, rollout_steps now
     rollout_fn = partial(
-        run_diffusion_rollout,
+        run_diffusion_rollout_inc,
         metadata=metadata,
         rollout_steps=rollout_steps,
         dataset=val_dataset,

@@ -12,6 +12,11 @@ from tensordict import TensorDict, stack as stack_tensordict
 from torch.utils.data import Dataset, DataLoader, Sampler, Subset
 from torch.utils.data.distributed import DistributedSampler
 
+seed = 12345
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
 )
@@ -29,6 +34,21 @@ QG_STD = {
     "q1": 4.220613803016554e-05,
     "q2": 2.8499078149814454e-06,
     "forcing": 1.5010150481725185e-12,
+}
+
+TRA_MEAN = {
+    "v_x": 0.560642,
+    "v_y": -0.000129,
+    "p": 0.637941,
+    "rho": 0.903352,
+    "Ma": 0.700000,
+}
+TRA_STD = {
+    "v_x": 0.216987,
+    "v_y": 0.216987,
+    "p": 0.119944,
+    "rho": 0.145391,
+    "Ma": 0.118322,
 }
 
 
@@ -78,8 +98,16 @@ class MeanStdNormalizer(AbstractNormalizer):
         #     {key: torch.std(tensor).float() for key, tensor in data.items()},
         #     batch_size=[],
         # )
-        means = QG_MEAN if "q1" in self.normalized_vars else INC_MEAN
-        stds = QG_STD if "q1" in self.normalized_vars else INC_STD
+        if "q1" in self.normalized_vars:
+            means = QG_MEAN
+            stds = QG_STD
+        elif "rho" in self.normalized_vars:
+            means = TRA_MEAN
+            stds = TRA_STD
+        else:
+            means = INC_MEAN
+            stds = INC_STD
+
         self.means = TensorDict(
             {key: val for key, val in means.items()},
             batch_size=[],
@@ -205,6 +233,7 @@ class QGDatasetBase(Dataset):
         max_sequence_length: int,
         variables: Dict[str, int],
         subsample: int = 1,
+        exhaustive: Optional[bool] = True,
         **kwargs,
     ):
         self.data_path = Path(data_path)
@@ -216,6 +245,7 @@ class QGDatasetBase(Dataset):
         self.normalizer = normalizer
         self.data_vars = list(variables.keys())
         self.subsample = subsample
+        self.exhaustive = exhaustive
 
         self._load_data()
         self._prepare_data()
@@ -536,40 +566,40 @@ class QGDatasetMultiSim(QGDatasetBase):
         # This now calls the QGDatasetBase._prepare_data
         super()._prepare_data()
 
-    # def _compute_master_index(self):
-    #     """Creates a master list of all possible (sim, start_index) pairs."""
-    #     self.master_index = []
-    #     if "t" in self._data.sizes:
-    #         num_timesteps = self._data.sizes["t"]
-    #     elif "time" in self._data.sizes:
-    #         num_timesteps = self._data.sizes["time"]
-    #     else:
-    #         raise ValueError("Missing time dimension")
+    def _compute_master_index_exhaustive(self):
+        """Creates an exhaustive master list of all possible (sim, start_index) pairs."""
+        self.master_index = []
+        if "t" in self._data.sizes:
+            num_timesteps = self._data.sizes["t"]
+        elif "time" in self._data.sizes:
+            num_timesteps = self._data.sizes["time"]
+        else:
+            raise ValueError("Missing time dimension")
 
-    #     required_length_in_steps = self.input_sequence_length + self.max_sequence_length
-    #     if required_length_in_steps == 0:
-    #         logger.warning("Total sequence length (input+max) is 0.")
-    #         return
+        required_length_in_steps = self.input_sequence_length + self.max_sequence_length
+        if required_length_in_steps == 0:
+            logger.warning("Total sequence length (input+max) is 0.")
+            return
 
-    #     # The total number of *original data points* needed for one full sequence
-    #     required_index_span = (
-    #         (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
-    #     ) + 1
+        # The total number of *original data points* needed for one full sequence
+        required_index_span = (
+            (self.input_sequence_length + self.max_sequence_length - 1) * self.subsample
+        ) + 1
 
-    #     # The number of valid starting positions
-    #     valid_starts = num_timesteps - required_index_span + 1
+        # The number of valid starting positions
+        valid_starts = num_timesteps - required_index_span + 1
 
-    #     if valid_starts > 0:
-    #         for sim_idx in range(self.num_sims):
-    #             self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
-    #     if not self.master_index:
-    #         logger.warning(
-    #             f"No valid sequences generated from dataset. "
-    #             f"Sims: {self.num_sims}, Timesteps: {num_timesteps}, "
-    #             f"Required span: {required_index_span}, Valid starts: {valid_starts}"
-    #         )
+        if valid_starts > 0:
+            for sim_idx in range(self.num_sims):
+                self.master_index.extend([(sim_idx, i) for i in range(valid_starts)])
+        if not self.master_index:
+            logger.warning(
+                f"No valid sequences generated from dataset. "
+                f"Sims: {self.num_sims}, Timesteps: {num_timesteps}, "
+                f"Required span: {required_index_span}, Valid starts: {valid_starts}"
+            )
 
-    def _compute_master_index(self):
+    def _compute_master_index_non_overlapping(self):
         """
         Creates a master list of all possible (sim, start_index) pairs,
         generating non-overlapping sequences based on the full sequence length.
@@ -606,6 +636,15 @@ class QGDatasetMultiSim(QGDatasetBase):
                 "No valid non-overlapping sequences generated from the dataset. "
                 "Check sequence lengths, subsampling rate, and total timesteps."
             )
+
+    def _compute_master_index(self):
+        """Creates a master list of all possible (sim, start_index) pairs."""
+
+        assert self.exhaustive is not None, "Need to specify master index type"
+        if self.exhaustive:
+            return self._compute_master_index_exhaustive()
+        else:
+            return self._compute_master_index_non_overlapping()
 
     def __len__(self) -> int:
         return len(self.master_index)
@@ -896,6 +935,7 @@ def create_dataloaders(
     val_dataset: QGDatasetBase,
     test_dataset: QGDatasetBase,
     training_cfg: DictConfig,
+    num_workers: Optional[int] = 4,
 ):
     bs = training_cfg.batch_size
     if training_cfg.random_sequence_length:
@@ -922,13 +962,22 @@ def create_dataloaders(
     )
 
     train_loader = DataLoaderWrapper(
-        train_dataset, batch_sampler=train_sampler, collate_fn=custom_collate_fn
+        train_dataset,
+        batch_sampler=train_sampler,
+        collate_fn=custom_collate_fn,
+        num_workers=num_workers,
     )
     val_loader = DataLoaderWrapper(
-        val_dataset, batch_sampler=val_sampler, collate_fn=custom_collate_fn
+        val_dataset,
+        batch_sampler=val_sampler,
+        collate_fn=custom_collate_fn,
+        num_workers=num_workers,
     )
     test_loader = DataLoaderWrapper(
-        test_dataset, batch_sampler=test_sampler, collate_fn=custom_collate_fn
+        test_dataset,
+        batch_sampler=test_sampler,
+        collate_fn=custom_collate_fn,
+        num_workers=num_workers,
     )
     return train_loader, val_loader, test_loader
 

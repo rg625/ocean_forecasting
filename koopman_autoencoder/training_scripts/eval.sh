@@ -1,33 +1,64 @@
 # # !/bin/bash
 
 # Configuration Arrays
-# arch in python script corresponds to "discrete" or "continous" (TYPES in your bash vars)
-TYPES=("discrete" "continous")
-# type in python script corresponds to "linear" or "mlp" (ARCHS in your bash vars)
+TYPES=("continous" "discrete")
 ARCHS=("linear" "mlp")
-# dimension
-SIZES=(128 1024)
+SIZES=(128 64)
+REGIME=("stable" "full" "tra")
 
-# Output Directory
-OUT_DIR="/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling/lowRey2/"
+BASE_OUT_DIR="/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling"
 
 for size in "${SIZES[@]}"; do
   for type in "${TYPES[@]}"; do
     for arch in "${ARCHS[@]}"; do
+      for regime in "${REGIME[@]}"; do
 
-      # Construct config name: arch_type_dim
-      # Note: 'type' var here maps to 'model_arch' (discrete/continuous)
-      #       'arch' var here maps to 'model_type' (linear/mlp)
-      CONFIG_NAME="${type}_${arch}_${size}"
+        # Choose sampling modes based on regime
+        if [[ "$regime" == "stable" || "$regime" == "full" ]]; then
+          MODES=("highRey" "lowRey")
+        elif [[ "$regime" == "tra" ]]; then
+          MODES=("extrap" "interp" "longer")
+        fi
 
-      echo "---------------------------------------------------"
-      echo "Running Evaluation for: $CONFIG_NAME"
-      echo "---------------------------------------------------"
+        for mode in "${MODES[@]}"; do
+          OUT_DIR="${BASE_OUT_DIR}/${mode}/"
 
-      python evaluate.py \
-        --config_name "$CONFIG_NAME" \
-        --out_dir "$OUT_DIR"
+          CONFIG_NAME="${regime}/${type}_${arch}_${size}"
 
+          echo "---------------------------------------------------"
+          echo "Running Evaluation for:"
+          echo "  Regime : $regime"
+          echo "  Mode   : $mode"
+          echo "  Config : $CONFIG_NAME"
+          echo "---------------------------------------------------"
+
+          python evaluate.py \
+            --config_name "$CONFIG_NAME" \
+            --out_dir "$OUT_DIR" \
+            --ckpt "199"
+
+        done
+      done
     done
   done
 done
+
+# CONFIG_NAME="tra/continous_linear_128"
+
+# echo "---------------------------------------------------"
+# echo "Running Evaluation for: $CONFIG_NAME"
+# echo "---------------------------------------------------"
+
+# python evaluate.py \
+#   --dim 128 \
+#   --type "continous" \
+#   --arch "linear" \
+#   --regime "tra" \
+#   --out_dir "$OUT_DIR" \
+#   --ckpt "120" \
+#   --rollout_steps 240
+
+
+python ../autoreg_pde_diffusion/src/plot_loss_all.py
+# python ../autoreg_pde_diffusion/src/plot_data_custom.py
+python ../autoreg_pde_diffusion/src/plot_data.py

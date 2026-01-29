@@ -2,6 +2,7 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import wandb
 from pathlib import Path
 from tensordict import TensorDict
@@ -9,7 +10,8 @@ from torch import Tensor
 import torch
 import torch.distributed as dist
 import seaborn as sns
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
+import pandas as pd
 
 import matplotlib.gridspec as gridspec
 import matplotlib.patches as patches
@@ -294,169 +296,145 @@ def plot_joint_rollout(
     pred_dict: TensorDict,
     diff_pred_dict: TensorDict,
     variable_name: str,
+    frames: Optional[List[int]] = None,
     frame_stride: int = 5,
-    re: int = 1000,
+    re: Union[int, float, torch.Tensor] = 1000,
     pad: Optional[List] = [0.012, 0.018, 0.015, 0.025],
-    highlight: Optional[bool] = False,
+    highlight: bool = False,  # Set to False by default; toggle box here
+    model_name: str = "Exp",
+    show_intermodel_diff: bool = False,
+    cmap=cmap,
 ):
     """
-    Plots the rollout comparison between ground truth and predicted sequence for a given variable.
-    The first two frames are always included and highlighted with a rectangle spanning
-    all 5 rows (including colorbars) for those two columns.
+    Versatile and robust rollout plotter.
+    - Handles temporal mismatches between ground truth and predictions.
+    - Uses axes_grid1 for consistent colorbar sizing.
+    - Prevents 'tight_layout' warnings with manual spacing control.
     """
-    # Remove batch dimension if present
-    if getattr(gt_dict, "batch_dims", 0) == 1 and gt_dict.batch_size[0] == 1:
-        gt_dict = gt_dict.squeeze(0)
-    if getattr(pred_dict, "batch_dims", 0) == 1 and pred_dict.batch_size[0] == 1:
-        pred_dict = pred_dict.squeeze(0)
-    if (
-        getattr(diff_pred_dict, "batch_dims", 0) == 1
-        and diff_pred_dict.batch_size[0] == 1
-    ):
-        diff_pred_dict = diff_pred_dict.squeeze(0)
 
-    gt = gt_dict[variable_name]  # shape: [T, H, W]
-    pred = pred_dict[variable_name]  # shape: [T, H, W]
-    diff_pred = diff_pred_dict[variable_name]  # shape: [T, H, W]
+    # 1. Standardize and remove batch dimension
+    def sanitize(td):
+        if getattr(td, "batch_dims", 0) == 1 and td.batch_size[0] == 1:
+            return td.squeeze(0)
+        return td
 
-    # Build indices: always include conditioning frames [0,1], then stride
-    num_frames = min(gt.shape[0], pred.shape[0])
-    indices = [0] + list(range(1, num_frames, frame_stride))
+    gt_dict = sanitize(gt_dict)
+    pred_dict = sanitize(pred_dict)
+    diff_pred_dict = sanitize(diff_pred_dict)
+
+    gt = gt_dict[variable_name]
+    pred = pred_dict[variable_name]
+    diff_pred = diff_pred_dict[variable_name]
+
+    # Extract Reynolds number value
+    re_val = re.item() if isinstance(re, torch.Tensor) else re
+
+    # 2. Build indices and align lengths
+    # We find the smallest sequence length to avoid indexing errors
+    min_frames = min(gt.shape[0], pred.shape[0], diff_pred.shape[0])
+
+    if frames is not None:
+        indices = [idx for idx in frames if idx < min_frames]
+    else:
+        indices = [0] + list(range(1, min_frames, frame_stride))
+
     num_plots = min(len(indices), 15)
+    indices = indices[:num_plots]
 
-    fig = plt.figure(figsize=(1.8 * num_plots, 7.5))
-    spec = gridspec.GridSpec(5, num_plots + 1, width_ratios=[1] * num_plots + [0.05])
+    # 3. Setup Grid
+    num_rows = 6 if show_intermodel_diff else 5
+    # Increased width (2.5) and height (2.2) per plot for better spacing
+    fig = plt.figure(figsize=(2.5 * num_plots, 2.2 * num_rows))
+    spec = gridspec.GridSpec(num_rows, num_plots)
 
-    # Store all axes (main + colorbar) for each column
+    # Store axes for the highlight rectangle
     columns_axes: List = [[] for _ in range(num_plots)]
 
-    for i, idx in enumerate(indices[:num_plots]):
-        # Frame label
-        if i == 0:
-            t_label = "t=0"
-        else:
-            t_label = f"t={idx}"
+    for i, idx in enumerate(indices):
+        t_label = "t=0" if idx == 0 else f"t={idx}"
 
-        # ----- Ground Truth -----
-        ax_gt = fig.add_subplot(spec[0, i])
-        im_gt = ax_gt.imshow(gt[idx].cpu(), cmap=cmap)
-        ax_gt.axis("off")
-        cbar = plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_gt, cbar.ax])
-        ax_gt.set_title(t_label, fontsize=10)
+        # Logic to safely extract frames
+        f_gt = gt[idx].cpu()
+        f_pred = pred[idx].cpu()
+        f_diff = diff_pred[idx].cpu()
 
-        # ----- KAE Prediction -----
-        ax_pred = fig.add_subplot(spec[1, i])
-        im_pred = ax_pred.imshow(pred[idx].cpu(), cmap=cmap)
-        ax_pred.axis("off")
-        cbar = plt.colorbar(im_pred, ax=ax_pred, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_pred, cbar.ax])
+        # Define data rows: (data, label)
+        row_data = [
+            (f_gt, f"Ground Truth\nRe = {re_val:.1f}"),
+            (f_pred, "KAE Prediction"),
+            (f_diff, f"{model_name} Prediction"),
+            (f_gt - f_pred, "KAE Error"),
+            (f_gt - f_diff, f"{model_name} Error"),
+        ]
+        if show_intermodel_diff:
+            row_data.append((f_pred - f_diff, f"KAE vs {model_name}\n(Inter-Model)"))
 
-        # ----- Diff Prediction -----
-        ax_diff_pred = fig.add_subplot(spec[2, i])
-        im_diff_pred = ax_diff_pred.imshow(diff_pred[idx].cpu(), cmap=cmap)
-        ax_diff_pred.axis("off")
-        cbar = plt.colorbar(im_diff_pred, ax=ax_diff_pred, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_diff_pred, cbar.ax])
+        for row_idx, (frame_data, label_text) in enumerate(row_data):
+            ax = fig.add_subplot(spec[row_idx, i])
+            im = ax.imshow(frame_data, cmap=cmap)
+            ax.axis("off")
 
-        # ----- KAE Error -----
-        err = gt[idx] - pred[idx]
-        ax_err = fig.add_subplot(spec[3, i])
-        im_err = ax_err.imshow(err.cpu(), cmap=cmap)
-        ax_err.axis("off")
-        cbar = plt.colorbar(im_err, ax=ax_err, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_err, cbar.ax])
+            # Force colorbar to match image height exactly
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            cbar = plt.colorbar(im, cax=cax)
+            cbar.ax.tick_params(labelsize=8)
 
-        # ----- Diff Error -----
-        diff_err = gt[idx] - diff_pred[idx]
-        ax_diff_err = fig.add_subplot(spec[4, i])
-        im_diff_err = ax_diff_err.imshow(diff_err.cpu(), cmap=cmap)
-        ax_diff_err.axis("off")
-        cbar = plt.colorbar(im_diff_err, ax=ax_diff_err, fraction=0.046, pad=0.04)
-        columns_axes[i].extend([ax_diff_err, cbar.ax])
+            # Store for highlighting
+            columns_axes[i].extend([ax, cax])
 
-        # Row labels
-        if i == 0:
-            ax_gt.text(
-                -0.2,
-                1.5,
-                f"Ground Truth, Re = {re}",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_gt.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_pred.text(
-                -0.2,
-                1.1,
-                "KAE Prediction",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_pred.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_diff_pred.text(
-                -0.2,
-                1.1,
-                "Diff Prediction",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_diff_pred.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_err.text(
-                -0.2,
-                1.1,
-                "KAE Error",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_err.transAxes,
-                ha="left",
-                va="bottom",
-            )
-            ax_diff_err.text(
-                -0.2,
-                1.1,
-                "Diff Error",
-                fontsize=12,
-                fontweight="bold",
-                transform=ax_diff_err.transAxes,
-                ha="left",
-                va="bottom",
-            )
+            if row_idx == 0:
+                ax.set_title(t_label, fontsize=12, fontweight="bold")
 
-    # Layout and title
-    plt.tight_layout(rect=[0, 0.4, 0.98, 0.95])
-    fig.suptitle(f"Joint Rollout for Variable: {variable_name}", fontsize=16)
-    fig.canvas.draw()
+            # Row labels on the far left column
+            if i == 0:
+                ax.text(
+                    -0.35,
+                    0.5,
+                    label_text,
+                    fontsize=11,
+                    fontweight="bold",
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="center",
+                )
 
-    # ---- Highlight conditioning columns ----
+    # 4. Refined Layout Management
+    # Manual adjustment avoids the 'Axes too small' UserWarning from tight_layout
+    plt.subplots_adjust(
+        left=0.15, right=0.95, top=0.92, bottom=0.05, wspace=0.45, hspace=0.35
+    )
+    fig.suptitle(
+        f"Analytical vs Numerical Koopman Rollout: {variable_name}",
+        fontsize=18,
+        fontweight="bold",
+        y=0.98,
+    )
+
+    # 5. Conditional Highlight Logic
     if highlight and pad is not None:
+        fig.canvas.draw()
         pad_left, pad_right, pad_bottom, pad_top = pad
 
-        n_highlight = min(1, num_plots)
-        for col_idx in range(n_highlight):
-            bboxes = [ax.get_position() for ax in columns_axes[col_idx]]
-            x0 = min(b.x0 for b in bboxes) - pad_left
-            x1 = max(b.x1 for b in bboxes) + pad_right
-            y0 = min(b.y0 for b in bboxes) - pad_bottom
-            y1 = max(b.y1 for b in bboxes) + pad_top
+        # Calculate the bounding box for the first column
+        bboxes = [ax.get_position() for ax in columns_axes[0]]
+        x0 = min(b.x0 for b in bboxes) - pad_left
+        x1 = max(b.x1 for b in bboxes) + pad_right
+        y0 = min(b.y0 for b in bboxes) - pad_bottom
+        y1 = max(b.y1 for b in bboxes) + pad_top
 
-            rect = patches.Rectangle(
-                (x0, y0),
-                x1 - x0,
-                y1 - y0,
-                linewidth=3,
-                edgecolor="red",
-                facecolor="none",
-                transform=fig.transFigure,
-                clip_on=False,
-                zorder=10,
-            )
-            fig.add_artist(rect)
+        rect = patches.Rectangle(
+            (x0, y0),
+            x1 - x0,
+            y1 - y0,
+            linewidth=3,
+            edgecolor="red",
+            facecolor="none",
+            transform=fig.transFigure,
+            clip_on=False,
+            zorder=10,
+        )
+        fig.add_artist(rect)
 
     plt.show()
 
@@ -761,3 +739,324 @@ def plot_stability_metrics(metrics: Dict, ttd_threshold: float = 0.1):
 
     plt.tight_layout()
     plt.show()
+
+
+def save_figure(fig, path: Path, dpi: int = 200, tight: bool = True):
+    """
+    Save a matplotlib figure safely:
+    - creates parent directories if missing
+    - applies tight layout
+    - prints saved path
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if tight:
+        fig.tight_layout()
+    fig.savefig(path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[saved] {path}")
+
+
+def run_full_analysis(
+    gt_path: str,
+    kae_path: str,
+    acdm_path: str,
+    output_folder: str,
+    obstacle_mask: Optional[np.ndarray] = None,
+    sequence_idx: int = 0,
+    time_idx: int = -1,
+    channel_idx: int = 0,
+    model_label: str = "model",
+    dataset_label: str = "dataset",
+    regime: str = "tra",
+    save_metadata: bool = True,
+) -> Dict:
+    """
+    Unified workflow: load GT/KAE/ACDM, apply optional obstacle mask, compute MSE,
+    and generate plots.
+
+    Saves figures and CSVs in structured folders.
+
+    Args:
+        gt_path: path to ground truth tensor (torch .pt)
+        kae_path: path to KAE predictions (.npz)
+        acdm_path: path to ACDM predictions (.npz)
+        output_folder: base folder to save results
+        obstacle_mask: 2D array (H, W) or None
+        sequence_idx: which sequence to visualize
+        time_idx: which timestep to visualize
+        channel_idx: which channel to visualize
+        model_label: label for saving files
+        dataset_label: label for dataset
+        regime: experimental regime
+        save_metadata: whether to save metadata CSV
+
+    Returns:
+        dict with masked arrays, MSE, and Mach numbers
+    """
+
+    fields = ["v_x", "v_y", "p", "rho"] if regime == "tra" else ["v_x", "v_y", "p"]
+    cond = "Mach" if regime == "tra" else "Re"
+    # --- Setup directories ---
+    BASE_RESULTS = Path(output_folder)
+    RESULTS_DIR = BASE_RESULTS / dataset_label / model_label
+    DIR_MACH = RESULTS_DIR / f"mse_vs_{cond}"
+    DIR_FIELD = RESULTS_DIR / "mse_vs_field"
+    DIR_TEMPORAL = RESULTS_DIR / "temporal_mse"
+    DIR_DIST = RESULTS_DIR / "mse_distributions"
+
+    for d in [DIR_MACH, DIR_FIELD, DIR_TEMPORAL, DIR_DIST]:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # --- Load data ---
+    gt_sample = torch.load(gt_path)
+    gt_data = gt_sample["data"].cpu().numpy()  # (N_seq, T, C, H, W)
+    kae_data = np.load(kae_path)["arr_0"]
+    acdm_data = np.load(acdm_path)["arr_0"]
+
+    print("Loaded shapes:", gt_data.shape, kae_data.shape, acdm_data.shape)
+    N_seq, T, C, H, W = gt_data.shape
+
+    # --- Prepare mask ---
+    if obstacle_mask is None:
+        obstacle_mask = np.ones((H, W))
+
+    # Ensure mask broadcasting works for arbitrary leading dims
+    def apply_mask(data: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """
+        Apply obstacle mask to the first C-1 channels of any data array.
+        Last two dims must be H x W.
+        """
+        data_masked = np.copy(data)
+        mask_bc = mask
+        for _ in range(data_masked.ndim - 2):
+            mask_bc = mask_bc[None, ...]  # add leading axes
+        data_masked[..., :-1, :, :] *= mask_bc
+        return data_masked
+
+    # --- Mask all arrays ---
+    gt_masked_all = apply_mask(gt_data[None, None, ...], obstacle_mask)
+    kae_masked_all = apply_mask(kae_data, obstacle_mask)
+    acdm_masked_all = apply_mask(acdm_data, obstacle_mask)
+
+    # --- Compute per-sample, per-field, per-time MSE ---
+    kae_mse = np.mean(
+        (kae_masked_all[..., :-1, :, :] - gt_masked_all[..., :-1, :, :]) ** 2,
+        axis=(-2, -1),
+    )[0, 0]
+    acdm_mse = np.mean(
+        (acdm_masked_all[..., :-1, :, :] - gt_masked_all[..., :-1, :, :]) ** 2,
+        axis=(-2, -1),
+    )[0, 0]
+
+    # --- Extract Mach numbers ---
+    Mach_numbers = np.round(kae_data[0, 0, :, 0, -1, 0, 0].astype(float), 2)
+
+    # --- Field comparison + error ---
+    gt_vx = gt_data[sequence_idx, time_idx, channel_idx, :, :]
+    kae_vx = kae_masked_all[0, 0, sequence_idx, time_idx, channel_idx, :, :]
+    acdm_vx = acdm_masked_all[0, 0, sequence_idx, time_idx, channel_idx, :, :]
+    error_kae = kae_vx - gt_vx
+    error_acdm = acdm_vx - gt_vx
+    vmax = max(np.abs(error_kae).max(), np.abs(error_acdm).max())
+    vmin = -vmax
+
+    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+    axes[0, 0].imshow(gt_vx.T, origin="lower")
+    axes[0, 0].set_title("GT v_x")
+    axes[0, 1].imshow(kae_vx.T, origin="lower")
+    axes[0, 1].set_title("KAE v_x")
+    axes[0, 2].imshow(acdm_vx.T, origin="lower")
+    axes[0, 2].set_title("ACDM v_x")
+    axes[1, 0].imshow(
+        error_kae.T, origin="lower", cmap="coolwarm", vmin=vmin, vmax=vmax
+    )
+    axes[1, 0].set_title("KAE - GT")
+    axes[1, 1].imshow(
+        error_acdm.T, origin="lower", cmap="coolwarm", vmin=vmin, vmax=vmax
+    )
+    axes[1, 1].set_title("ACDM - GT")
+    axes[1, 2].imshow(gt_vx.T, origin="lower")
+    axes[1, 2].set_title("GT diagnostic")
+    save_figure(fig, DIR_FIELD / "comparison_field_error.png")
+
+    # --- MSE vs Mach (bar + line) ---
+    df_list = []
+    for model_name, mse_data in zip(
+        ["KAE", "ACDM"], [kae_mse.mean(axis=1), acdm_mse.mean(axis=1)]
+    ):
+        for i in range(N_seq):
+            for j, field in enumerate(fields):
+                df_list.append(
+                    {
+                        "Model": model_name,
+                        "Mach": Mach_numbers[i],
+                        "Field": field,
+                        "MSE": mse_data[i, j],
+                    }
+                )
+    df_mach = pd.DataFrame(df_list)
+    df_mach.to_csv(DIR_MACH / f"mse_vs_{cond}.csv", index=False)
+
+    fig = plt.figure(figsize=(10, 6))
+    sns.barplot(
+        data=df_mach, x="Mach", y="MSE", hue="Model", errorbar="sd", palette="Set2"
+    )
+    plt.yscale("log")
+    plt.title("Field-wise MSE vs Mach")
+    save_figure(fig, DIR_MACH / f"bar_mse_vs_{cond}.png")
+
+    # --- Temporal MSE ---
+    kae_time_field = kae_mse.mean(axis=0)
+    acdm_time_field = acdm_mse.mean(axis=0)
+    fig = plt.figure(figsize=(10, 6))
+    for j, field in enumerate(fields):
+        plt.plot(np.arange(T)[2:], kae_time_field[2:, j], label=f"KAE {field}")
+        plt.plot(np.arange(T)[2:], acdm_time_field[2:, j], "--", label=f"ACDM {field}")
+    plt.yscale("log")
+    plt.xlabel("Timestep")
+    plt.ylabel("Mean MSE")
+    plt.legend()
+    plt.title("Temporal MSE")
+    save_figure(fig, DIR_TEMPORAL / "temporal_mse.png")
+
+    # --- Distribution of per-sample MSE ---
+    kae_mse_flat = kae_mse.reshape(-1)
+    acdm_mse_flat = acdm_mse.reshape(-1)
+
+    Mach_repeated = np.repeat(Mach_numbers, T * len(fields))
+    Field_repeated = np.tile(np.repeat(fields, T), N_seq)
+    Model_repeated = np.concatenate(
+        [np.repeat("KAE", len(kae_mse_flat)), np.repeat("ACDM", len(acdm_mse_flat))]
+    )
+
+    df_dist = pd.DataFrame(
+        {
+            "Mach": np.concatenate([Mach_repeated, Mach_repeated]),
+            "Field": np.concatenate([Field_repeated, Field_repeated]),
+            "Model": Model_repeated,
+            "MSE": np.concatenate([kae_mse_flat, acdm_mse_flat]),
+        }
+    )
+
+    df_dist.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df_dist.dropna(subset=["MSE"], inplace=True)
+    df_dist["log_MSE"] = np.log10(df_dist["MSE"].clip(1e-12))
+    df_dist.to_csv(DIR_DIST / "mse_distribution.csv", index=False)
+
+    fig = plt.figure(figsize=(10, 6))
+    sns.violinplot(
+        data=df_dist,
+        x="Field",
+        y="log_MSE",
+        hue="Model",
+        inner="quartile",
+        cut=2,
+        bw_adjust=0.5,
+    )
+    plt.title("Distribution of Field-wise MSE")
+    fig.savefig(DIR_DIST / "violin_mse_distribution.png", dpi=200)
+    plt.close(fig)
+
+    # --- Metadata ---
+    if save_metadata:
+        metadata = {
+            "MODEL": model_label,
+            "REGIME": regime,
+            "DATASET": dataset_label,
+            "N_seq": N_seq,
+            "T": T,
+            "Fields": ", ".join(fields),
+        }
+        pd.Series(metadata).to_csv(RESULTS_DIR / "metadata.csv")
+        print("[saved] metadata.csv")
+
+    return {
+        "gt_masked_all": gt_masked_all,
+        "kae_masked_all": kae_masked_all,
+        "acdm_masked_all": acdm_masked_all,
+        "kae_mse": kae_mse,
+        "acdm_mse": acdm_mse,
+        f"{cond}_numbers": Mach_numbers,
+    }
+
+
+def plot_koopman_modes(
+    model,
+    eigenvalues_film: np.ndarray,
+    num_modes: int = 16,
+    device: str = "cpu",
+    channel_titles: list[str] = ["v_x", "v_y", "p"],
+):
+    """
+    Decode and visualize Koopman eigenvectors (modes) from latent space.
+
+    Args:
+        model: Koopman model with a decoder (model.decoder).
+        eigenvalues_film: latent Koopman modes / eigenvectors, shape (num_modes, latent_dim) or similar.
+        num_modes: number of leading modes to visualize.
+        device: torch device to use for decoding.
+        channel_titles: optional list of channel names (for 3D data).
+    """
+    # Ensure channel_titles for 3D plotting
+    assert channel_titles is not None, "Cannot name variables"
+
+    # Convert eigenvalues to latent tensor
+    latent_modes = np.real(eigenvalues_film).squeeze()
+    latent_modes_tensor = torch.tensor(latent_modes, dtype=torch.float32, device=device)
+
+    # Decode latent modes to input space
+    with torch.no_grad():
+        decoded_modes = model.decoder(latent_modes_tensor).cpu().numpy()
+    decoded_modes = np.atleast_3d(decoded_modes)  # ensure at least 3D
+
+    # Plot only as many modes as available
+    num_available = decoded_modes.shape[0]
+    num_to_plot = min(num_modes, num_available)
+
+    for i in range(num_to_plot):
+        mode = decoded_modes[i]
+        λ = (
+            eigenvalues_film.squeeze(0)[i]
+            if eigenvalues_film.ndim > 1
+            else eigenvalues_film[i]
+        )
+
+        if mode.ndim == 1:
+            # 1-D signal
+            plt.figure(figsize=(8, 2))
+            plt.plot(mode)
+            plt.title(f"Koopman Mode {i}  (λ = {λ:.3g})")
+            plt.xlabel("Input Dimension")
+            plt.ylabel("Amplitude")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
+
+        elif mode.ndim == 2:
+            # 2-D single-channel image
+            plt.figure(figsize=(4, 4))
+            vmax = np.max(np.abs(mode))
+            plt.imshow(mode, cmap="bwr", vmin=-vmax, vmax=vmax)
+            plt.title(f"Koopman Mode {i}  (λ = {λ:.3g})")
+            plt.axis("off")
+            plt.colorbar(fraction=0.046, pad=0.04)
+            plt.tight_layout()
+            plt.show()
+
+        elif mode.ndim == 3 and mode.shape[0] in [3, 4]:
+            # 3-channel 2-D input (e.g., u-v-w flow)
+            fig, axs = plt.subplots(1, mode.shape[0], figsize=(13, 4))
+            vmax = np.max(np.abs(mode))
+
+            for j in range(mode.shape[0]):
+                im = axs[j].imshow(mode[j], cmap="bwr", vmin=-vmax, vmax=vmax)
+                axs[j].set_title(
+                    channel_titles[j] if j < len(channel_titles) else f"Channel {j}"
+                )
+                axs[j].axis("off")
+                cb = fig.colorbar(im, ax=axs[j], fraction=0.046, pad=0.04)
+                cb.ax.tick_params(labelsize=8)
+
+            fig.suptitle(f"Koopman Mode {i}  (λ = {λ:.3g})", fontsize=14)
+            plt.tight_layout()
+            plt.show()

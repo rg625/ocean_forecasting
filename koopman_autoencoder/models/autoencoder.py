@@ -12,10 +12,10 @@ from .utils import cuda_timer, elapsed_time
 from .networks import (
     ConvEncoder,
     ConvDecoder,
-)
-from .modules import (
     HistoryEncoder,
     TransformerConfig,
+)
+from .modules import (
     KoopmanOperator,
     Re,
 )
@@ -65,7 +65,8 @@ class KoopmanAutoencoder(nn.Module):
         predict_cond: bool = False,
         cond_grad_enabled: bool = False,
         disturb_std: float = 1e-2,
-        is_continuous: Optional[bool] = False,
+        is_continuous: bool = False,
+        rank: int = 4,
         cond_expansion_type: Optional[str] = None,
         **conv_kwargs,
     ):
@@ -101,20 +102,22 @@ class KoopmanAutoencoder(nn.Module):
             **conv_kwargs,
         }
 
+        self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
+
         self.history_encoder = None
         if self.input_frames > 1:
             assert (
                 transformer_config is not None
             ), f"Expected valid transformer config but got {type(transformer_config)} instead"
+
+            # Pass the SHARED self.encoder as the backbone.
+            # HistoryEncoder now uses composition (stores backbone) instead of inheritance.
             self.history_encoder = HistoryEncoder(
-                C=self.total_input_channels,
+                backbone=self.encoder,
                 transformer_config=transformer_config,
-                cond_embedding_dim=cond_embedding_dim,
-                cond_type=cond_type,
-                **common_args,
+                use_positional_encoding=True,  # defaulting to True as per previous logic
             )
 
-        self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
         self.decoder = ConvDecoder(C=self.total_input_channels, **common_args)
 
         assert isinstance(
@@ -126,7 +129,8 @@ class KoopmanAutoencoder(nn.Module):
             mode=operator_mode,
             use_checkpoint=use_checkpoint,
             is_continuous=is_continuous,
-            cond_expansion_type=cond_expansion_type,  # <-- Pass to operator
+            rank=rank,
+            cond_expansion_type=cond_expansion_type,
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
@@ -240,7 +244,7 @@ class KoopmanAutoencoder(nn.Module):
         """Encodes initial states and creates a perturbed version if needed."""
         z0 = self.encode(x_data, cond_input=cond_input)
         z0_disturbed = None
-        if self.training and (self.disturb_std is not None):
+        if self.disturb_std is not None:
             noise = torch.randn_like(z0) * self.disturb_std
             z0_disturbed = z0 + noise
         return z0, z0_disturbed
@@ -290,7 +294,7 @@ class KoopmanAutoencoder(nn.Module):
         self,
         x: TensorDict,
         seq_length: Union[int, Tensor],
-        re_future: Optional[Tensor] = None,  # This arg is specific, let's keep it
+        cond_future: Optional[Tensor] = None,  # This arg is specific, let's keep it
     ) -> KoopmanOutput:
         """Forward pass: Encode, roll out predictions, and decode."""
         total_start, total_end = cuda_timer()
@@ -305,6 +309,7 @@ class KoopmanAutoencoder(nn.Module):
         start, end = cuda_timer()
         start.record()
         z0, z0_disturbed = self._encode_initial_states(x_data, cond_input)
+        z_to_recon = self.present_encoding(x=x_data, cond_input=cond_input)
         end.record()
         torch.cuda.synchronize()
         self.timings["encode"] = elapsed_time(start, end)
@@ -349,18 +354,23 @@ class KoopmanAutoencoder(nn.Module):
             )
             # We detach to ensure this loss only affects the operator, not the encoder
             if self.koopman_operator.is_continuous and hasattr(
-                self.koopman_operator.dynamics, "K"
+                self.koopman_operator.dynamics, "_get_derivative"
             ):
-                dz_dt = self.koopman_operator.dynamics.K(z0.detach())
-                dz_dt_disturbed = self.koopman_operator.dynamics.K(
-                    z0_disturbed.detach()
+                cond_encoded = self.koopman_operator.dynamics._encode_cond(
+                    cond=cond_for_prediction[..., 0]
+                )
+                dz_dt = self.koopman_operator.dynamics._get_derivative(
+                    z0.detach(), cond_encoded=cond_encoded
+                )
+                dz_dt_disturbed = self.koopman_operator.dynamics._get_derivative(
+                    z0_disturbed.detach(), cond_encoded=cond_encoded
                 )
 
         # 6. Decode outputs for the main trajectory
         start, end = cuda_timer()
         start.record()
         x_recon, x_preds = self._decode_outputs(
-            z0, z_preds_stacked, seq_length_int, obstacle_mask
+            z_to_recon, z_preds_stacked, seq_length_int, obstacle_mask
         )
         end.record()
         torch.cuda.synchronize()
@@ -376,6 +386,7 @@ class KoopmanAutoencoder(nn.Module):
         total_end.record()
         torch.cuda.synchronize()
         self.timings["total"] = elapsed_time(total_start, total_end)
+        # np.save("kae_times", np.array(self.timings["total"]))
 
         # 8. Return the final output structure
         return KoopmanOutput(
@@ -386,4 +397,110 @@ class KoopmanAutoencoder(nn.Module):
             disturbed_latents=disturbed_latents,
             dz_dt=dz_dt,
             dz_dt_disturbed=dz_dt_disturbed,
+        )
+
+    def compute_theoretical_evolution(
+        self,
+        z0: Tensor,
+        num_frames: Union[int, Tensor],
+        cond: Optional[Tensor] = None,
+        dt: float = 0.1,
+    ) -> Tensor:
+        """
+        Computes the theoretical state evolution using the matrix exponential.
+        """
+        # 1. Access the dynamics internal module
+        dyn = self.koopman_operator.dynamics
+
+        # 2. Encode conditioning
+        cond_encoded = dyn._encode_cond(cond) if cond is not None else None
+
+        # 3. Extract the Koopman Matrix A
+        # A: [D, D] or [Batch, D, D]
+        A = dyn._get_effective_linear_map(cond_encoded)
+
+        # 4. Handle num_frames (Convert Tensor to int if necessary)
+        if isinstance(num_frames, Tensor):
+            num_frames = int(num_frames.view(-1)[0].item())
+
+        # 5. Pre-compute the time grid
+        # arange(1, num_frames + 1) matches autoregressive indices [1, 2, ..., T]
+        t_steps = torch.arange(1, num_frames + 1, device=z0.device).float() * dt
+
+        z_theoretical = []
+        for t in t_steps:
+            # Analytical solution: z(t) = exp(A * t) @ z0
+            exp_At = torch.matrix_exp(A * t)
+
+            if A.ndim == 2:  # Shared matrix across batch
+                zt = torch.matmul(z0, exp_At.t())
+            else:  # Unique matrix per batch element (LoRA/Conditioned)
+                zt = torch.bmm(exp_At, z0.unsqueeze(-1)).squeeze(-1)
+
+            z_theoretical.append(zt)
+
+        # Stack to [Batch, num_frames, Latent_dim] and ensure it's real
+        return torch.stack(z_theoretical, dim=1).real
+
+    def forward_theoretical(
+        self,
+        x: TensorDict,
+        seq_length: Union[int, Tensor],
+        dt: float = 0.1,
+        cond_future: Optional[Tensor] = None,
+    ) -> KoopmanOutput:
+        """
+        Forward pass using the analytical matrix exponential solution
+        instead of autoregressive rollout.
+        """
+        # 1. Prepare inputs (standard procedure)
+        obstacle_mask, cond_input, x_data, seq_length_int = self._prepare_inputs(
+            x, seq_length
+        )
+
+        # 2. Encode initial state z0
+        # We don't usually disturb for theoretical analysis, but we keep logic consistent
+        z0, _ = self._encode_initial_states(x_data, cond_input)
+
+        # 3. Handle Conditioning
+        cond_for_prediction = x.get("cond_target")
+        if cond_for_prediction is None and cond_input is not None:
+            # Use the last known condition if target isn't provided
+            cond_for_prediction = (
+                cond_input[:, -1].view(-1, 1).repeat(1, seq_length_int)
+            )
+
+        if cond_for_prediction is not None:
+            cond_for_prediction = self.re_norm(cond_for_prediction)
+
+        # We pass the average condition if the operator is condition-dependent
+        # Alternatively, if A changes per step, the matrix exponential is more complex.
+        # Here we assume A is constant over the rollout period for the 'theoretical' base.
+        mean_cond = (
+            cond_for_prediction.mean(dim=1) if cond_for_prediction is not None else None
+        )
+
+        z_preds_theoretical = self.compute_theoretical_evolution(
+            z0=z0, num_frames=seq_length, cond=mean_cond
+        )
+
+        # 5. Decode outputs
+        x_recon, x_preds = self._decode_outputs(
+            z0, z_preds_theoretical, seq_length_int, obstacle_mask
+        )
+
+        # 6. Predict Reynolds (Optional)
+        reynolds = None
+        if self.predict_cond and self.re_predictor is not None:
+            z_all = torch.cat([z0.unsqueeze(1), z_preds_theoretical], dim=1)
+            reynolds = self.re_predictor(z_all.detach())
+
+        return KoopmanOutput(
+            x_recon=x_recon,
+            x_preds=x_preds,
+            z_preds=z_preds_theoretical,
+            reynolds=reynolds,
+            disturbed_latents=None,
+            dz_dt=None,
+            dz_dt_disturbed=None,
         )

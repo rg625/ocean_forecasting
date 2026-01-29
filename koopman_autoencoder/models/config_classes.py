@@ -1,7 +1,7 @@
 from omegaconf import MISSING
 from typing import Dict, Any, Tuple, Optional, List
 from dataclasses import dataclass, field
-from .modules import (
+from .networks import (
     TransformerConfig as ModelTransformerConfig,
 )  # Alias to avoid naming conflict
 
@@ -22,6 +22,7 @@ class DataConfig:
     input_sequence_length: int = MISSING
     max_sequence_length: int = MISSING
     subsample: int = MISSING
+    exhaustive: Optional[bool] = True
 
     variables: Dict[str, int] = field(default_factory=dict)
     static_variables: Dict[str, int] = field(default_factory=dict)
@@ -38,6 +39,8 @@ class DataConfig:
     train_select_cond: Optional[Any] = None
     val_select_cond: Optional[Any] = None
     test_select_cond: Optional[Any] = None
+
+    num_workers: Optional[int] = 4
 
 
 @dataclass
@@ -60,6 +63,7 @@ class ModelConfig:
     cond_grad_enabled: bool = False
     disturb_std: Optional[float] = None
     is_continuous: Optional[bool] = False
+    rank: int = MISSING
 
 
 @dataclass
@@ -72,6 +76,7 @@ class TrainingConfig:
     save_latest_every: int = 1
     num_visual_batches: int = 1
     precision: str = "bfloat16"
+    # curriculum_epochs: int = 15
 
 
 @dataclass
@@ -84,6 +89,10 @@ class LossConfig:
     stability_weight: Optional[float] = None
     weighting_type: str = MISSING
     sigma_blur: Optional[float] = None
+    physics_weight: Optional[float] = None
+    gamma_time: Optional[float] = None
+    gamma_space: Optional[float] = None
+    gamma_spectral: Optional[float] = None
 
 
 @dataclass

@@ -1,11 +1,25 @@
 #!/bin/bash
 
-# A script to train the Koopman Autoencoder model with the specified configuration
+TYPES=("continous") # "discrete"
+ARCHS=("linear") # "mlp"
+REGIMES=("tra") # "stable" "full"
+SIZES=(128) #64
 
-# Define the path to the configuration file
-CONFIG_PATH=~/mnt/ocean_forecasting/koopman_autoencoder/configs/model/128_inc.yaml
-export MASTER_ADDR=localhost
-export MASTER_PORT=12355
-export WANDB_API_KEY=763e928e18a8016e7072d06f3ae5f8e2b304f89c
-# Run the training script with the configuration file
-python ./train_ddp.py --config "$CONFIG_PATH"
+for regime in "${REGIMES[@]}"; do
+    for size in "${SIZES[@]}"; do
+        for type in "${TYPES[@]}"; do
+            for arch in "${ARCHS[@]}"; do
+                # This check remains the same
+                CONFIG="configs/experiment/${regime}/${type}_${arch}_${size}.yaml"
+
+                if [[ -f "$CONFIG" ]]; then
+                    echo "Launching training with config: $CONFIG"
+                    python train.py --config-path configs --config-name experiment/${regime}/${type}_${arch}_${size}
+
+                else
+                    echo "Skipping missing config: $CONFIG"
+                fi
+            done
+        done
+    done
+done

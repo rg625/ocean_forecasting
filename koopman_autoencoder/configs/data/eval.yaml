@@ -4,9 +4,9 @@
 dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
 data_dir: "./data"
 # train_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/train_1000.nc"
-train_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/val_1000.nc"
+train_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_highRey_qg_auto.nc"
 val_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_lowRey_qg_auto.nc"
-test_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/test_1000.nc"
+test_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_lowRey_qg_auto.nc"
 input_sequence_length: 2
 max_sequence_length: 58
 subsample: 1
@@ -20,7 +20,7 @@ normalization:
   type: "MeanStdNormalizer"
   sim: 0
 quantile_range: [2.5, 97.5]
-
+exhaustive: false
 
 control_parameters: ["Re"]
 selection_param: "Re"
@@ -28,3 +28,5 @@ selection_param: "Re"
 train_select_cond: null # 100
 val_select_cond: null # 100 # [900, 1000]
 test_select_cond: null
+
+num_workers: 8

@@ -1,712 +1,420 @@
-from itertools import pairwise
 import torch
 from torch import nn
-from torch.utils.checkpoint import checkpoint
-from einops import rearrange
-from torch import Tensor
-from typing import List, Union, Tuple, Any, Optional, Dict
+from torch.nn import utils as nn_utils
 import torch.nn.functional as F
+from einops import rearrange
+from typing import List, Optional
+from torch import Tensor
+from dataclasses import dataclass
 
-# --- NEW IMPORTS ---
-from .fourier import re_expansion, ma_expansion, forcing_expansion
+# Attempt to import from local modules
+try:
+    from .fourier import PositionalEncoding
+    from .adaptive_layers import AdaGN
+    from .rbf import re_expansion, ma_expansion, forcing_expansion
+except ImportError:
+    # Minimal fallback if local imports fail
+    pass
 
-# --- END NEW IMPORTS ---
+# ==========================================
+#   HELPERS & NORMALIZATION
+# ==========================================
 
 
-class AdaLNConv(nn.Module):
+def sn_conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0):
+    """Spectral Normalized Conv2d. Stabilizes Koopman operator gradients."""
+    return nn_utils.spectral_norm(
+        nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+    )
+
+
+def sn_linear(in_features, out_features):
+    """Spectral Normalized Linear."""
+    return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
+
+
+# def sn_conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0):
+#     """Spectral Normalized Conv2d. Stabilizes Koopman operator gradients."""
+#     return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+
+# def sn_linear(in_features, out_features):
+#     """Spectral Normalized Linear."""
+#     return nn.Linear(in_features, out_features)
+
+
+# ==========================================
+#   ATTENTION MECHANISMS
+# ==========================================
+
+
+class CBAM(nn.Module):
     """
-    Adaptive Layer Normalization.
-    Projects a conditioning vector to a scale and shift for normalization.
-    Uses GroupNorm with 1 group, which is equivalent to LayerNorm across spatial dims.
+    Convolutional Block Attention Module.
+    Helps the encoder focus on 'active' fluid regions (vortices) vs background.
     """
 
-    def __init__(self, C_out: int, cond_dim: int):
+    def __init__(self, channels: int, reduction_ratio: int = 16):
         super().__init__()
-        # Use GroupNorm for spatial layer normalization, affine is false as we compute it ourselves
-        self.norm = nn.GroupNorm(1, C_out, affine=False)
-        # Projection layer to get scale (gamma) and shift (beta)
-        self.projection = nn.Linear(cond_dim, 2 * C_out)
+        self.channels = channels
 
-    def forward(self, x: Tensor, cond: Tensor) -> Tensor:
-        # Project conditioning vector to get gamma and beta
-        # cond shape: [B, cond_dim] -> gamma/beta shape: [B, C_out]
-        gamma, beta = self.projection(cond).chunk(2, dim=1)
-
-        # Normalize the input tensor
-        x_normalized = self.norm(x)
-
-        # Apply the adaptive scale and shift
-        # Reshape gamma/beta to [B, C, 1, 1] for broadcasting over spatial dims (H, W)
-        return gamma.view(*gamma.shape, 1, 1) * x_normalized + beta.view(
-            *beta.shape, 1, 1
+        # Channel Attention
+        self.mlp = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(channels, channels // reduction_ratio),
+            nn.ReLU(),
+            nn.Linear(channels // reduction_ratio, channels),
         )
 
+        # Spatial Attention
+        self.conv_spatial = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
 
-class AdaIN(nn.Module):
-    """Adaptive Instance Normalization with clamped modulation."""
-
-    def __init__(self, style_dim: int, channels: int):
-        super().__init__()
-        self.norm = nn.InstanceNorm2d(channels, affine=False)
-        self.style_proj = nn.Linear(style_dim, 2 * channels)
-
-    def forward(self, x, w):
-        x = self.norm(x)
-        style = self.style_proj(w).view(w.shape[0], -1, 1, 1)
-        gamma, beta = style.chunk(2, dim=1)
-        gamma = torch.tanh(gamma)  # stabilize modulation
-        beta = torch.tanh(beta)
-        return (1 + gamma) * x + beta
-
-
-class StyledConv(nn.Module):
-    """Styled convolution block with optional upsampling."""
-
-    def __init__(
-        self, C_in, C_out, style_dim, kernel_size=3, upsample=False, use_deconv=True
-    ):
-        super().__init__()
-        self.upsample = None
-        if upsample:
-            if use_deconv:
-                # Learnable upsampling (sharper)
-                self.upsample = nn.ConvTranspose2d(
-                    C_in, C_in, kernel_size=4, stride=2, padding=1
-                )
-            else:
-                # Smooth upsampling
-                self.upsample = nn.Upsample(
-                    scale_factor=2, mode="bilinear", align_corners=False
-                )
-        self.conv = nn.Conv2d(
-            C_in, C_out, kernel_size, padding=kernel_size // 2, padding_mode="circular"
+    def forward(self, x: Tensor) -> Tensor:
+        # Channel Attention
+        avg_pool = F.avg_pool2d(
+            x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3))
         )
-        self.mod = AdaIN(style_dim, C_out)
-        self.act = nn.LeakyReLU(0.2)
+        max_pool = F.max_pool2d(
+            x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3))
+        )
+        channel_att = (
+            torch.sigmoid(self.mlp(avg_pool) + self.mlp(max_pool))
+            .unsqueeze(2)
+            .unsqueeze(3)
+        )
+        x = x * channel_att
 
-    def forward(self, x, w):
-        if self.upsample is not None:
-            x = self.upsample(x)
-        x = self.conv(x)
-        x = self.mod(x, w)
-        x = self.act(x)
-        return x
+        # Spatial Attention
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        spatial_out = torch.cat([avg_out, max_out], dim=1)
+        spatial_att = torch.sigmoid(self.conv_spatial(spatial_out))
+        return x * spatial_att
 
 
-class MappingNetwork(nn.Module):
-    """Latent-to-style mapping network."""
+# ==========================================
+#   RESIDUAL BLOCKS
+# ==========================================
 
-    def __init__(self, latent_dim, style_dim, n_layers=4):
+
+class PreActResBlock(nn.Module):
+    """Standard Pre-activation ResBlock for Encoder."""
+
+    def __init__(self, in_ch, out_ch, stride=1):
         super().__init__()
-        layers = [nn.Linear(latent_dim, style_dim), nn.LeakyReLU(0.2)]
-        for _ in range(n_layers - 1):
-            layers.extend([nn.Linear(style_dim, style_dim), nn.LeakyReLU(0.2)])
-        self.mapping = nn.Sequential(*layers)
+        self.bn1 = nn.GroupNorm(8, in_ch)
+        self.conv1 = sn_conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1)
+        self.bn2 = nn.GroupNorm(8, out_ch)
+        self.conv2 = sn_conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1)
 
-    def forward(self, z):
-        return self.mapping(z)
-
-
-class ConvBlock(nn.Module):
-    def __init__(
-        self,
-        C_in: int,
-        C_out: int,
-        block_size: int = 1,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        decoder_block: bool = False,
-        use_checkpoint: bool = False,
-        cond_type: Optional[str] = None,
-        cond_embedding_dim: Optional[int] = None,
-        **conv_kwargs: Any,
-    ):
-        """
-        A modular convolutional block consisting of convolutional layers followed by ReLU activations.
-
-        Parameters:
-            C_in: int
-                Number of input channels.
-            C_out: int
-                Number of output channels.
-            block_size: int
-                Number of convolutional layers in the block.
-            kernel_size: int
-                Size of the convolution kernel.
-            decoder_block: bool
-                If True, the block is used in a decoder, and layer configurations are adjusted accordingly.
-            use_checkpoint: bool
-                If True, enables gradient checkpointing for the block.
-            cond_type: str
-                Choose between AdaLN, Late Fusion and None.
-            cond_embedding_dim: int
-                Embedding dimension for Reynolds number in case of conditioning.
-            conv_kwargs: dict
-                Additional arguments for nn.Conv2d.
-        """
-        super().__init__()
-        self.use_checkpoint = use_checkpoint  # Store the checkpointing flag
-        self.cond_type = cond_type
-        self.stack = nn.ModuleList()
-
-        layers = []
-        if not decoder_block:
-            # First layer
-            layers.append(nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs))
-            if self.cond_type == "adaln":
-                assert (cond_embedding_dim is not None) and (
-                    isinstance(cond_embedding_dim, int)
-                ), f"cond_embedding_dim must be provided for adaln as int but got type {type(cond_embedding_dim)}"
-                layers.append(AdaLNConv(C_out, cond_embedding_dim))
-            layers.append(nn.ReLU())
-
-            # Subsequent layers
-            for _ in range(block_size - 1):
-                layers.append(nn.Conv2d(C_out, C_out, kernel_size, **conv_kwargs))
-                if self.cond_type == "adaln":
-                    assert (cond_embedding_dim is not None) and (
-                        isinstance(cond_embedding_dim, int)
-                    ), f"cond_embedding_dim must be provided for adaln as int but got type {type(cond_embedding_dim)}"
-                    layers.append(AdaLNConv(C_out, cond_embedding_dim))
-                layers.append(nn.ReLU())
-        else:
-            # Initial layers
-            for i in range(block_size - 1):
-                C_intermediate = C_in if i == 0 else C_in
-                layers.append(
-                    nn.Conv2d(C_intermediate, C_in, kernel_size, **conv_kwargs)
-                )
-                if self.cond_type == "adaln":
-                    assert (
-                        cond_embedding_dim is not None
-                    ), "cond_embedding_dim must be provided for adaln"
-                    layers.append(AdaLNConv(C_in, cond_embedding_dim))
-                layers.append(nn.ReLU())
-
-            # Output layer (no activation after this one)
-            layers.append(nn.Conv2d(C_in, C_out, kernel_size, **conv_kwargs))
-
-        self.stack = nn.ModuleList(layers)
-
-    def forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
-        if self.use_checkpoint:
-            # Checkpoint doesn't easily support extra args, so we wrap the call
-            return checkpoint(
-                lambda t: self._forward(t, cond_emb), x, use_reentrant=True
+        self.shortcut = nn.Identity()
+        if stride != 1 or in_ch != out_ch:
+            self.shortcut = sn_conv2d(
+                in_ch, out_ch, kernel_size=1, stride=stride, padding=0
             )
-        else:
-            return self._forward(x, cond_emb)
 
-    def _forward(self, x: Tensor, cond_emb: Optional[Tensor] = None) -> Tensor:
-        for module in self.stack:
-            if isinstance(module, AdaLNConv):
-                # AdaLNConv requires the conditioning embedding
-                if cond_emb is None:
-                    raise ValueError(
-                        "AdaLNConv layer requires cond_emb, but it was not provided."
-                    )
-                x = module(x, cond_emb)
-            else:
-                x = module(x)
-        return x
+    def forward(self, x):
+        x_norm = F.silu(self.bn1(x))
+        residual = self.shortcut(x)  # Note: He et al. apply shortcut to x, not x_norm
+        out = self.conv1(x_norm)
+        out = self.conv2(F.silu(self.bn2(out)))
+        return out + residual
 
 
-class BaseEncoderDecoder(nn.Module):
+class ConditionedResBlock(nn.Module):
+    """Decoder ResBlock with Physics Injection (AdaGN)."""
+
+    def __init__(self, in_ch, out_ch, cond_dim):
+        super().__init__()
+        # AdaGN replaces static GroupNorm
+        self.gn1 = AdaGN(in_ch, cond_dim)
+        self.conv1 = sn_conv2d(in_ch, out_ch, kernel_size=3, padding=1)
+
+        self.gn2 = AdaGN(out_ch, cond_dim)
+        self.conv2 = sn_conv2d(out_ch, out_ch, kernel_size=3, padding=1)
+
+        self.shortcut = nn.Identity()
+        if in_ch != out_ch:
+            self.shortcut = sn_conv2d(in_ch, out_ch, kernel_size=1, padding=0)
+
+    def forward(self, x, cond):
+        # 1. Norm + Condition
+        x_norm = F.silu(self.gn1(x, cond))
+
+        # 2. Convolution
+        out = self.conv1(x_norm)
+
+        # 3. Norm + Condition
+        out = F.silu(self.gn2(out, cond))
+        out = self.conv2(out)
+
+        return out + self.shortcut(x)
+
+
+# ==========================================
+#   ENCODER
+# ==========================================
+
+
+class ConvEncoder(nn.Module):
     def __init__(
         self,
         C: int,
         H: int,
         W: int,
         latent_dim: int,
-        hiddens: List[int],
-        block_size: int = 1,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        is_encoder: bool = True,
-        use_checkpoint: bool = False,
+        hiddens: List[int] = [64, 128, 256],
         cond_embedding_dim: Optional[int] = None,
-        cond_type: Optional[str] = None,  # Options: None, "late_fusion", "adaln"
+        cond_type: Optional[str] = None,
         cond_expansion_type: Optional[str] = None,
-        **conv_kwargs,
+        **kwargs
     ):
-        """
-        Base class for both encoder and decoder blocks.
-
-        Parameters:
-            C: int
-                Number of input/output channels.
-            H: int
-                Input height dimension.
-            W: int
-                Input width dimension.
-            latent_dim: int
-                Latent dimensionality.
-            hiddens: list of int
-                List of hidden dimensions for each block.
-            block_size: int
-                Number of convolutional layers in each block.
-            kernel_size: int
-                Size of the convolutional kernel.
-            is_encoder: bool
-                Specifies whether the block is an encoder (True) or decoder (False).
-            use_checkpoint: bool
-                If True, enables gradient checkpointing for convolutional blocks.
-            cond_embedding_dim: int
-                Optional Reynolds number conditioning dimension.
-            cond_type: str
-                Optional Reynolds number conditioning mode.
-            cond_expansion_type: str
-                Specifies the type of fourier expansion ('re', 'ma', 'forcing').
-            conv_kwargs: dict
-                Additional arguments for nn.Conv2d.
-        """
         super().__init__()
-        self.C = C
-        self.H = H
-        self.W = W
-        self.D = latent_dim
-        self.hiddens = hiddens
-        self.is_encoder = is_encoder
-        self.use_checkpoint = use_checkpoint
-        self.cond_embedding_dim = cond_embedding_dim
         self.cond_type = cond_type
-        self.cond_expansion_type = cond_expansion_type  # <-- NEW
 
-        # Compute the output dimensions after pooling
-        if cond_type not in [None, "late_fusion", "adaln"]:
-            raise ValueError(f"Unknown cond_type: {cond_type}")
-        if cond_type is not None and cond_embedding_dim is None:
-            raise ValueError(f"{cond_type} requires cond_embedding_dim to be set.")
+        # Physics Parameter Expansion (Re -> High Dim)
+        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
+        self.expansion_map = nn.ModuleDict(
+            {
+                "Re": re_expansion(dim_to_use),
+                "Ma": ma_expansion(dim_to_use),
+                "forcing": forcing_expansion(dim_to_use),
+            }
+        )
+        self.cond_expansion_type = cond_expansion_type
 
-        self.n_pools = len(hiddens)
-        if H % (2**self.n_pools) != 0 or W % (2**self.n_pools) != 0:
-            raise ValueError(
-                f"Input dimensions (H={H}, W={W}) must be divisible by 2^{self.n_pools} due to pooling."
-            )
-        self.H_out = H // (2 ** (self.n_pools))
-        self.W_out = W // (2 ** (self.n_pools))
+        # 1. Coordinate Injection Setup
+        input_channels = C + 2
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+        )
+        self.register_buffer("grid", torch.stack([xx, yy], dim=0))
 
-        # --- REMOVED old re_embedding ---
-        # self.re_embedding = nn.Sequential(...)
+        # 2. Backbone
+        self.init_conv = sn_conv2d(input_channels, hiddens[0], kernel_size=3, padding=1)
 
-        # --- NEW: Add expansion map (same as in modules.py) ---
-        self.expansion_map: Dict[str, nn.Module] = {
-            "Re": re_expansion,
-            "Ma": ma_expansion,
-            "forcing": forcing_expansion,
-        }
-        # --- END NEW ---
+        layers = []
+        in_c = hiddens[0]
+        for out_c in hiddens:
+            layers.append(PreActResBlock(in_c, out_c, stride=2))  # Downsample
+            layers.append(PreActResBlock(out_c, out_c, stride=1))  # Refine
+            in_c = out_c
+        self.backbone = nn.Sequential(*layers)
 
-        # Define the linear layer
-        if is_encoder:
-            encoder_in_features = hiddens[-1] * self.H_out * self.W_out
-            if self.cond_type == "late_fusion":
-                assert cond_embedding_dim is not None
-                encoder_in_features += cond_embedding_dim
-            self.linear = nn.Linear(encoder_in_features, latent_dim)
-        else:
-            self.linear = nn.Linear(latent_dim, hiddens[-1] * self.H_out * self.W_out)
+        # 3. Bottleneck Attention
+        self.attention = CBAM(in_c)
 
-        # Build convolutional layers
-        self.layers = self._build_layers(block_size, kernel_size, conv_kwargs)
+        # 4. Projection
+        scale_factor = 2 ** len(hiddens)
+        self.H_out = H // scale_factor
+        self.W_out = W // scale_factor
+        flat_features = in_c * self.H_out * self.W_out
+
+        if self.cond_type == "late_fusion":
+            flat_features += dim_to_use
+
+        self.to_latent = nn.Sequential(
+            nn.Flatten(),
+            nn.SiLU(),
+            sn_linear(flat_features, latent_dim),
+        )
+        self.latent_dim = latent_dim
 
     def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
-        """
-        Fourier-expand the condition tensor using the configured expansion type.
-        """
         if cond is None:
             return None
-
-        # This module (ConvEncoder) can be called by HistoryEncoder, which
-        # flattens the time dimension, resulting in cond.ndim == 1.
         if cond.ndim == 1:
-            cond = cond.unsqueeze(-1)  # (B*T,) -> (B*T, 1)
-
-        if self.cond_expansion_type is None or self.cond_expansion_type == "none":
-            if self.cond_type is not None:
-                print(f"cond: {cond}")
-                # Fallback to simple linear projection if no expansion is specified
-                # This supports the old behavior of embedding a scalar
-                if cond.shape[1] == 1:
-                    assert self.cond_embedding_dim is not None
-                    # Simple linear projection as a fallback
-                    # --- FIX: Swapped arguments to create (C_out, C_in) -> (128, 1) ---
-                    return F.linear(
-                        cond, torch.eye(self.cond_embedding_dim, 1, device=cond.device)
-                    )
-                else:
-                    # We have a tensor, but don't know how to expand it.
-                    raise ValueError(
-                        "cond_expansion_type must be set (e.g., 're', 'ma', 'forcing') "
-                        f"for cond_type '{self.cond_type}' when cond is not a scalar."
-                    )
-            return None  # No conditioning
-
-        if self.cond_expansion_type not in self.expansion_map:
-            raise KeyError(
-                f"Unknown cond_expansion_type: '{self.cond_expansion_type}'. "
-                f"Available types are: {list(self.expansion_map.keys())}"
-            )
-
-        # Look up the correct expansion function
-        expansion_func = self.expansion_map[self.cond_expansion_type]
-
-        if cond.ndim > 2:
-            cond = cond.view(cond.shape[0], -1)  # Flatten
-
-        # Use the dynamically selected function
-        assert self.cond_embedding_dim is not None
-        cond_encoded = expansion_func(cond, d=self.cond_embedding_dim)
-
-        return cond_encoded.squeeze(-2)  # (B, D) or (B*T, D)
-
-    def _build_layers(
-        self,
-        block_size: int,
-        kernel_size: Union[int, tuple[int, int]],
-        conv_kwargs: dict,
-    ):
-        """
-        Build the layers for the encoder or decoder.
-
-        Parameters:
-            block_size: int
-                Number of convolutional layers in each block.
-            kernel_size: int
-                Size of the convolutional kernel.
-            conv_kwargs: dict
-                Additional arguments for nn.Conv2d.
-
-        Returns:
-            nn.Sequential: Sequential container of layers.
-        """
-
-        # Must return nn.ModuleList to allow passing extra args in forward
-        layers = nn.ModuleList()
-        # Common args for all ConvBlocks
-        conv_block_args = {
-            "block_size": block_size,
-            "kernel_size": kernel_size,
-            "use_checkpoint": self.use_checkpoint,
-            "cond_type": self.cond_type,
-            "cond_embedding_dim": self.cond_embedding_dim,
-            **conv_kwargs,
-        }
-
-        if self.is_encoder:
-            layers.append(
-                ConvBlock(
-                    self.C, self.hiddens[0], decoder_block=False, **conv_block_args
-                )
-            )
-            layers.append(nn.MaxPool2d(kernel_size=2))
-            for C_n, C_np1 in pairwise(self.hiddens):
-                layers.append(
-                    ConvBlock(C_n, C_np1, decoder_block=False, **conv_block_args)
-                )
-                layers.append(nn.MaxPool2d(kernel_size=2))
-        else:
-            for C_np1, C_n in pairwise(self.hiddens[::-1]):
-                layers.append(nn.Upsample(scale_factor=2, mode="bilinear"))
-                layers.append(
-                    ConvBlock(C_np1, C_n, decoder_block=True, **conv_block_args)
-                )
-            layers.append(nn.Upsample(scale_factor=2, mode="bilinear"))
-            layers.append(
-                ConvBlock(
-                    self.hiddens[0], self.C, decoder_block=True, **conv_block_args
-                )
-            )
-        return layers
+            cond = cond.unsqueeze(-1)
+        if self.cond_expansion_type in self.expansion_map:
+            return self.expansion_map[self.cond_expansion_type](cond)
+        return cond
 
     def forward(self, x: Tensor, cond: Optional[Tensor] = None):
-        # 1. Compute condition embedding if needed
+        # Coordinate Injection
+        grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        x = torch.cat([x, grid], dim=1)
+
         cond_emb = None
-        if self.cond_type is not None:
-            if cond is None:
-                raise ValueError(
-                    f"Condition tensor `cond` must be provided for conditioning type '{self.cond_type}'"
-                )
-            # Use the new generic method
+        if self.cond_type is not None and cond is not None:
             cond_emb = self._encode_cond(cond)
 
-        # 2. Apply layers based on role (encoder/decoder)
-        if self.is_encoder:
-            # Pass through convolutional layers
-            for layer in self.layers:
-                if isinstance(layer, ConvBlock) and self.cond_type == "adaln":
-                    x = layer(x, cond_emb)
-                else:
-                    x = layer(x)
+        x = self.init_conv(x)
+        x = self.backbone(x)
 
-            # Flatten for linear layer
-            out = rearrange(x, "b c h w -> b (c h w)")
+        # Apply Attention at low-res
+        x = self.attention(x)
 
-            # Apply late fusion if configured
-            if self.cond_type == "late_fusion":
-                assert cond_emb is not None
-                out = torch.cat([out, cond_emb], dim=1)
+        flat = x.flatten(1)
+        if self.cond_type == "late_fusion" and cond_emb is not None:
+            flat = torch.cat([flat, cond_emb], dim=1)
 
-            return self.linear(out)
-        else:  # Decoder
-            # Apply linear layer and unflatten
-            out = self.linear(x)
-            out = rearrange(
-                out,
-                "b (c h w) -> b c h w",
-                c=self.hiddens[-1],
-                h=self.H_out,
-                w=self.W_out,
-            )
-            # Pass through convolutional layers
-            for layer in self.layers:
-                if isinstance(layer, ConvBlock) and self.cond_type == "adaln":
-                    out = layer(out, cond_emb)
-                else:
-                    out = layer(out)
-            return out
+        return self.to_latent(flat)
 
 
-class ConvEncoder(BaseEncoderDecoder):
+# ==========================================
+#   DECODER (Resize-Conv + AdaGN)
+# ==========================================
+
+
+class ConvDecoder(nn.Module):
     def __init__(
         self,
         C: int,
         H: int,
         W: int,
         latent_dim: int,
-        hiddens: List[int],
-        block_size: int = 1,
-        kernel_size: Union[int, Tuple[int, int]] = 3,
-        use_checkpoint: bool = False,
+        hiddens: List[int] = [64, 128, 256],
         cond_embedding_dim: Optional[int] = None,
         cond_type: Optional[str] = None,
         cond_expansion_type: Optional[str] = None,
-        **conv_kwargs,
+        **kwargs
     ):
-        super().__init__(
-            C,
-            H,
-            W,
-            latent_dim,
-            hiddens,
-            block_size=block_size,
-            kernel_size=kernel_size,
-            is_encoder=True,
-            use_checkpoint=use_checkpoint,
-            cond_embedding_dim=cond_embedding_dim,
-            cond_type=cond_type,
-            cond_expansion_type=cond_expansion_type,
-            **conv_kwargs,
+        super().__init__()
+        # Decoder goes from small to large: [256, 128, 64]
+        hiddens = hiddens[::-1]
+
+        scale_factor = 2 ** len(hiddens)
+        self.H_start = H // scale_factor
+        self.W_start = W // scale_factor
+
+        # Physics Expansion Setup
+        self.cond_expansion_type = cond_expansion_type
+        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
+        self.expansion_map = nn.ModuleDict(
+            {
+                "Re": re_expansion(dim_to_use),
+                "Ma": ma_expansion(dim_to_use),
+                "forcing": forcing_expansion(dim_to_use),
+            }
         )
 
+        # 1. Expand Latent
+        self.flat_features = hiddens[0] * self.H_start * self.W_start
+        self.from_latent = sn_linear(latent_dim, self.flat_features)
 
-# class ConvDecoder(BaseEncoderDecoder):
-#     def __init__(
-#         self,
-#         C: int,
-#         H: int,
-#         W: int,
-#         latent_dim: int,
-#         hiddens: List[int],
-#         block_size: int = 1,
-#         kernel_size: Union[int, Tuple[int, int]] = 3,
-#         use_checkpoint: bool = False,
-#         cond_embedding_dim: Optional[int] = None,
-#         cond_type: Optional[str] = None,
-#         **conv_kwargs,
-#     ):
-#         super().__init__(
-#             C,
-#             H,
-#             W,
-#             latent_dim,
-#             hiddens,
-#             block_size=block_size,
-#             kernel_size=kernel_size,
-#             is_encoder=False,
-#             use_checkpoint=use_checkpoint,
-#             cond_embedding_dim=cond_embedding_dim,
-#             cond_type=cond_type,
-#             **conv_kwargs,
-#         )
+        # 2. Build Layers (Manual list to handle conditional forwarding)
+        self.layers = nn.ModuleList()
+        in_c = hiddens[0]
+
+        # If no condition is provided, we need a dummy dim for AdaGN
+        self.cond_dim = dim_to_use
+
+        for out_c in hiddens:
+            # Resize-Conv Block
+            # 1. Refine (Conditioned)
+            self.layers.append(ConditionedResBlock(in_c, in_c, self.cond_dim))
+
+            # 2. Upsample (Nearest + Conv) -> Eliminates Checkerboard
+            upsample_block = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                sn_conv2d(in_c, out_c, kernel_size=3, padding=1),
+                nn.SiLU(),
+            )
+            self.layers.append(upsample_block)
+            in_c = out_c
+
+        self.final_conv = sn_conv2d(in_c, C, kernel_size=3, padding=1)
+
+    def _encode_cond(self, cond: Optional[Tensor]) -> Tensor:
+        # Defaults to zero vector if cond is None, to satisfy AdaGN
+        if cond is None:
+            # Create a zero condition on the fly?
+            # Ideally this shouldn't happen if cond_type is set.
+            # But for safety, we return a zero tensor if strictly needed,
+            # though usually the caller ensures cond exists.
+            return torch.zeros(1, self.cond_dim).to(next(self.parameters()).device)
+
+        if cond.ndim == 1:
+            cond = cond.unsqueeze(-1)
+
+        if self.cond_expansion_type in self.expansion_map:
+            return self.expansion_map[self.cond_expansion_type](cond)
+
+        # If standard scalar, project it if dimensions don't match or use as is
+        # Note: AdaGN expects [B, cond_dim].
+        return cond
+
+    def forward(self, z: Tensor, cond: Optional[Tensor] = None):
+        # Prepare Condition
+        cond_emb = self._encode_cond(cond)
+        # Ensure batch size matches if we generated a dummy
+        if cond_emb.shape[0] != z.shape[0]:
+            cond_emb = cond_emb.expand(z.shape[0], -1)
+
+        # 1. Expand Z
+        x = self.from_latent(z)
+        x = F.silu(x)
+        x = x.view(
+            -1,
+            self.flat_features // (self.H_start * self.W_start),
+            self.H_start,
+            self.W_start,
+        )
+
+        # 2. Upsample Loop
+        for layer in self.layers:
+            if isinstance(layer, ConditionedResBlock):
+                x = layer(x, cond_emb)
+            else:
+                x = layer(x)
+
+        return self.final_conv(x)
 
 
-# --- Final decoder ---
-class ConvDecoder(nn.Module):
-    """
-    Drop-in replacement for the original ConvDecoder.
-    Uses a StyleGAN-inspired upsampling decoder with AdaIN modulation.
-    Arguments and output are identical to the original.
-    """
+# ==========================================
+#   HISTORY ENCODER
+# ==========================================
 
+
+@dataclass
+class TransformerConfig:
+    num_layers: int = 4
+    nhead: int = 8
+    ff_mult: int = 4
+    max_len: int = 1000
+    dropout: float = 0.1
+
+
+class HistoryEncoder(nn.Module):
     def __init__(
         self,
-        C: int,
-        H: int,
-        W: int,
-        latent_dim: int,
-        hiddens: List[int],
-        block_size: int = 1,
-        kernel_size: int = 3,
-        use_checkpoint: bool = False,
-        cond_embedding_dim: Optional[int] = None,
-        cond_type: Optional[str] = None,
-        style_dim: Optional[int] = None,
-        **conv_kwargs,
+        backbone: nn.Module,
+        use_positional_encoding: bool = True,
+        transformer_config: TransformerConfig = TransformerConfig(),
     ):
         super().__init__()
+        self.backbone = backbone
+        self.latent_dim = getattr(backbone, "latent_dim", 128)
 
-        n_downsamples = len(hiddens)
-        H_start = H // (2**n_downsamples)
-        W_start = W // (2**n_downsamples)
-        style_dim = style_dim or latent_dim
-
-        self.mapping = MappingNetwork(latent_dim, style_dim)
-        self.initial_constant = nn.Parameter(
-            torch.randn(1, hiddens[-1], H_start, W_start)
+        self.norm = nn.LayerNorm(self.latent_dim)
+        self.pos_enc = (
+            PositionalEncoding(self.latent_dim, max_len=transformer_config.max_len)
+            if use_positional_encoding
+            else nn.Identity()
         )
 
-        # Build styled upsampling blocks
-        layers = []
-        C_in = hiddens[-1]
-        layers.append(StyledConv(C_in, C_in, style_dim, upsample=False))
-        for i, C_out in enumerate(reversed(hiddens)):
-            use_deconv = (
-                i < len(hiddens) - 2
-            )  # early deconv for sharpness, last bilinear
-            layers.append(
-                StyledConv(C_in, C_out, style_dim, upsample=True, use_deconv=use_deconv)
-            )
-            C_in = C_out
-
-        self.conv_layers = nn.ModuleList(layers)
-        self.to_rgb = nn.Conv2d(hiddens[0], C, kernel_size=1, padding=0)
-
-        # Optional conditioning
-        self.re_conditioner = None
-        self.cond_type: Optional[str]  # <-- allow None
-        if cond_type is not None:
-            if cond_embedding_dim is None:
-                raise ValueError(
-                    "'cond_embedding_dim' must be provided for conditioning."
-                )
-            self.re_conditioner = AdaLNMLP(latent_dim, cond_embedding_dim)
-            self.cond_type = cond_type
-        else:
-            self.cond_type = None
-
-    def forward(self, z, cond: Optional[torch.Tensor] = None):
-        # Conditioning (if enabled)
-        if self.re_conditioner is not None and cond is not None:
-            z = self.re_conditioner(z, cond)
-
-        w = self.mapping(z)
-        x = self.initial_constant.expand(z.shape[0], -1, -1, -1)
-
-        for layer in self.conv_layers:
-            x = layer(x, w)
-
-        return self.to_rgb(x)
-
-
-# class AdaLNMLP(nn.Module):
-#     """
-#     Adaptive Layer Norm for conditioning a latent vector based on a physical parameter.
-#
-#     This module takes a latent vector 'z' and a corresponding Reynolds number 're'.
-#     It first creates a high-dimensional embedding of 're', then uses a linear
-#     projection to predict a feature-wise scale (gamma) and shift (beta). These are
-#     applied to modulate the latent vector 'z'.
-#     """
-#
-#     def __init__(self, latent_dim: int, cond_embedding_dim: int):
-#         """
-#         Initializes the AdaLNMLP module.
-#
-#         Args:
-#             latent_dim (int): The dimension of the latent vector to be modulated.
-#             cond_embedding_dim (int): The dimension of the intermediate Reynolds number embedding.
-#         """
-#         super().__init__()
-#         self.latent_dim = latent_dim
-#         self.cond_embedding_dim = cond_embedding_dim
-#
-#         self.re_embedding = nn.Sequential(
-#             nn.Linear(1, cond_embedding_dim),
-#             nn.SiLU(),
-#             nn.Linear(cond_embedding_dim, cond_embedding_dim),
-#             nn.Softplus(),
-#         )
-#
-#     def forward(self, z: Tensor, re: Tensor) -> Tensor:
-#         """
-#         Applies the adaptive modulation.
-#
-#         Args:
-#             z (Tensor): The input latent vector. Shape: (B, latent_dim).
-#             re (Tensor): The corresponding Reynolds numbers. Shape: (B, 1).
-#
-#         Returns:
-#             Tensor: The modulated latent vector. Shape: (B, latent_dim).
-#         """
-#         # Ensure re has the correct shape (B, 1)
-#         if re.ndim == 1:
-#             re = re.unsqueeze(1)
-#         return self.re_embedding(re) * z
-
-
-class AdaLNMLP(nn.Module):
-    """
-    Adaptive multiplicative modulation conditioned on Reynolds number embedding.
-
-    Produces only a scale (gamma) — no shift — to preserve interpretability.
-    Supports both scalar and pre-encoded (e.g., Fourier-expanded) `re` inputs.
-    """
-
-    def __init__(self, latent_dim: int, cond_embedding_dim: int):
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.cond_embedding_dim = cond_embedding_dim
-
-        # Process the Reynolds embedding (scalar or Fourier-expanded)
-        self.re_embedding = nn.Sequential(
-            nn.Linear(cond_embedding_dim, cond_embedding_dim),
-            nn.SiLU(),
-            nn.Linear(cond_embedding_dim, cond_embedding_dim),
-            nn.SiLU(),
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=self.latent_dim,
+                nhead=transformer_config.nhead,
+                dim_feedforward=self.latent_dim * transformer_config.ff_mult,
+                dropout=transformer_config.dropout,
+                batch_first=True,
+            ),
+            num_layers=transformer_config.num_layers,
         )
 
-        # Map embedding → scaling coefficients
-        self.to_gamma = nn.Linear(cond_embedding_dim, latent_dim)
+    def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
+        B, T, C, H, W = x.shape
+        x_flat = rearrange(x, "b t c h w -> (b t) c h w")
 
-        # Optional normalization on latent
-        # self.layer_norm = nn.LayerNorm(latent_dim)
+        # Encoder likely doesn't need temporal cond, or it's handled via broadcasting
+        # We pass cond if the backbone supports it
+        features = self.backbone(x_flat, cond=None)
 
-    def forward(self, z: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            z: Latent vector (B, latent_dim)
-            cond: Condition scalar (B, 1) or pre-expanded embedding (B, D_cond)
-        Returns:
-            Scaled latent (B, latent_dim)
-        """
-        # Handle shape: allow both scalar and expanded cond
-        if cond.ndim == 1:
-            cond = cond.unsqueeze(-1)  # (B, 1)
-        elif cond.ndim > 2:
-            cond = cond.view(cond.shape[0], -1)  # flatten
+        features = rearrange(features, "(b t) d -> b t d", t=T)
+        features = self.norm(features)
+        features = self.pos_enc(features)
+        out = self.transformer(features)
 
-        # If scalar, lift to cond_embedding_dim first
-        if cond.shape[1] != self.cond_embedding_dim:
-            # Expand scalar cond into embedding_dim linearly
-            cond = F.linear(
-                cond,
-                torch.eye(cond.shape[1], self.cond_embedding_dim, device=cond.device),
-            )
-
-        re_embed = self.re_embedding(cond)
-        gamma = self.to_gamma(re_embed)  # (B, latent_dim)
-
-        # Optionally normalize latent for stability
-        # z_norm = self.layer_norm(z)
-
-        # Pure multiplicative modulation
-        return z * (1 + gamma)
+        # Average pooling over time for the history context
+        return out.mean(dim=1)

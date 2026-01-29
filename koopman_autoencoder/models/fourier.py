@@ -1,92 +1,62 @@
-"""Copyright (c) Microsoft Corporation. Licensed under the MIT license."""
-
-import math
 import numpy as np
 import torch
 import torch.nn as nn
+from torch import Tensor
+import random
+
+seed = 12345
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 
 
-class FourierExpansion(nn.Module):
-    """A Fourier series-style expansion into a high-dimensional space.
+class GaussianFourierFeatureTransform(nn.Module):
+    """
+    Maps coordinates (x, y) to a high-dimensional vector using random Fourier features.
+    This effectively allows the network to learn high-frequency functions (sharp edges, turbulence)
+    much faster than standard coordinate inputs.
 
-    Attributes:
-        lower (float): Lower wavelength.
-        upper (float): Upper wavelength.
-        assert_range (bool): Assert that the encoded tensor is within the specified wavelength
-            range.
+    Output dim will be 2 * mapping_size.
+    Scale determines the frequency spread (higher = sharper but potentially noisier).
     """
 
-    def __init__(self, lower: float, upper: float, assert_range: bool = True) -> None:
-        """Initialise.
-
-        Args:
-            lower (float): Lower wavelength.
-            upper (float): Upper wavelength.
-            assert_range (bool, optional): Assert that the encoded tensor is within the specified
-                wavelength range. Defaults to `True`.
-        """
+    def __init__(self, in_channels=2, mapping_size=64, scale=10.0):
         super().__init__()
-        self.lower = lower
-        self.upper = upper
-        self.assert_range = assert_range
+        self._in_channels = in_channels
+        self._mapping_size = mapping_size
 
-    def forward(self, x: torch.Tensor, d: int) -> torch.Tensor:
-        """Perform the expansion.
+        # B matrix is fixed, not learned (random projection)
+        # Shape: [in_channels, mapping_size]
+        self.register_buffer("B", torch.randn(in_channels, mapping_size) * scale)
 
-        Adds a dimension of length `d` to the end of the shape of `x`.
+    def forward(self, x):
+        # x: [B, 2, H, W] -> [B, H, W, 2]
+        x = x.permute(0, 2, 3, 1)
 
-        Args:
-            x (:class:`torch.Tensor`): Input to expand of shape `(..., n)`. All elements of `x` must
-                lie within `[self.lower, self.upper]` if `self.assert_range` is `True`.
-            d (int): Dimensionality. Must be a multiple of two.
+        # Project: (2 * pi * x) @ B
+        # [B, H, W, 2] @ [2, M] -> [B, H, W, M]
+        x_proj = (2 * np.pi * x) @ self.B
 
-        Raises:
-            AssertionError: If `self.assert_range` is `True` and not all elements of `x` are not
-                within `[self.lower, self.upper]`.
-            ValueError: If `d` is not a multiple of two.
+        # Compute sin and cos
+        # Final shape: [B, H, W, 2*M]
+        out = torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
-        Returns:
-            torch.Tensor: Fourier series-style expansion of `x` of shape `(..., n, d)`.
-        """
-        # If the input is not within the configured range, the embedding might be ambiguous!
-        in_range = torch.logical_and(
-            self.lower <= x.abs(), torch.all(x.abs() <= self.upper)
+        # Back to [B, 2*M, H, W]
+        return out.permute(0, 3, 1, 2)
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 1000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        pos = torch.arange(0, max_len).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2) * (-torch.log(torch.tensor(10000.0)) / d_model)
         )
-        in_range_or_zero = torch.all(
-            torch.logical_or(in_range, x == 0)
-        )  # Allow zeros to pass through.
-        if self.assert_range and not in_range_or_zero:
-            raise AssertionError(
-                f"The input tensor is not within the configured range"
-                f" `[{self.lower}, {self.upper}]`."
-            )
+        pe[:, 0::2] = torch.sin(pos * div_term)
+        pe[:, 1::2] = torch.cos(pos * div_term)
+        self.pe = pe.unsqueeze(0)  # Shape: (1, max_len, d_model)
 
-        # We will use half of the dimensionality for `sin` and the other half for `cos`.
-        if not (d % 2 == 0):
-            raise ValueError("The dimensionality must be a multiple of two.")
-
-        # Always perform the expansion with `float64`s to avoid numerical accuracy shenanigans.
-        x = x.double()
-
-        wavelengths = torch.logspace(
-            math.log10(self.lower),
-            math.log10(self.upper),
-            d // 2,
-            base=10,
-            device=x.device,
-            dtype=x.dtype,
-        )
-        prod = torch.einsum("...i,j->...ij", x, 2 * np.pi / wavelengths)
-        encoding = torch.cat((torch.sin(prod), torch.cos(prod)), dim=-1)
-
-        return encoding.float()  # Cast to `float32` to avoid incompatibilities.
-
-
-re_expansion = FourierExpansion(100, 1000)
-""":class:`.FourierExpansion`: Fourier expansion for the absolute Reynolds number encoding."""
-
-ma_expansion = FourierExpansion(1e-13, 1.0)
-""":class:`.FourierExpansion`: Fourier expansion for the absolute Mach number encoding."""
-
-forcing_expansion = FourierExpansion(1.9e-12, 7.1e-12)
-""":class:`.FourierExpansion`: Fourier expansion for the absolute forcing amplitude encoding."""
+    def forward(self, x: Tensor) -> Tensor:
+        return x + self.pe[:, : x.size(1)].to(x.device)

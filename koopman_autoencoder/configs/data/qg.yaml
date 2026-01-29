@@ -21,6 +21,9 @@ quantile_range: [2.5, 97.5]
 
 control_parameters: ["forcing"]
 selection_param: "forcing"
+
 train_select_cond: null
 val_select_cond: null
 test_select_cond: null
+
+num_workers: 8

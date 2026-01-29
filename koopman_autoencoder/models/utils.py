@@ -1,5 +1,6 @@
 # models/utils.py
 
+import json
 import os
 from tensordict import TensorDict
 import torch
@@ -8,10 +9,10 @@ from torch.optim import Optimizer
 from pathlib import Path
 from typing import Dict, Any, Type, Tuple, Union, List, Optional
 import logging
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig
 from hydra import initialize, compose
+import numpy as np
 
-# Re-importing locally to make this file self-contained and reflect fix
 from .metrics import Metric
 from .config_classes import Config
 from .dataloader import (
@@ -22,6 +23,10 @@ from .dataloader import (
     MeanStdNormalizer,
     QuantileNormalizer,
 )
+
+# Now import with the package root being `src`
+from turbpred.params import DataParams, ModelParamsDecoder
+from turbpred.model_diffusion import DiffusionModel
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -59,6 +64,30 @@ def average_losses(total_losses: Dict[str, Tensor], n_batches: int) -> Dict[str,
     return {key: (value / n_batches).item() for key, value in total_losses.items()}
 
 
+def _find_config_root(cfg: Any) -> Optional[DictConfig]:
+    """
+    Recursively searches for the actual configuration root within a nested DictConfig.
+    It identifies the root by looking for keys that MUST exist in your Config schema,
+    specifically 'output_dir' or 'data'.
+    """
+    if not isinstance(cfg, (dict, DictConfig)):
+        raise NotImplementedError("Config needs to be read by OmegaConf")
+
+    # Check if this node looks like the config root
+    # (We check for 'data' because 'output_dir' might sometimes be missing/defaulted)
+    if "data" in cfg or "output_dir" in cfg:
+        return cfg
+
+    # Recursively search children
+    for key in cfg:
+        val = cfg[key]
+        if isinstance(val, (dict, DictConfig)):
+            found = _find_config_root(val)
+            if found is not None:
+                return found
+    return None
+
+
 def load_config(
     config_path: Union[str, None], cli_args: Optional[List[str]] = None
 ) -> Config:
@@ -67,34 +96,39 @@ def load_config(
     Works in notebooks and scripts.
 
     Args:
-        config_path: Path to the experiment YAML relative to the configs root, e.g., "experiment/128_inc"
+        config_path: Path to the experiment YAML relative to the configs root, e.g., "experiment/stable/128_inc"
         cli_args: Optional list of CLI-style overrides.
 
     Returns:
         Config: Structured and fully resolved configuration.
     """
-    # Repo root (assumes this file is in models/)
+
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     configs_root_abs = os.path.join(repo_root, "../configs")
 
-    # Make configs_root relative to current working dir (Hydra requires relative paths)
-    configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
+    try:
+        configs_root = os.path.relpath(configs_root_abs, start=os.getcwd())
+    except ValueError:
+        configs_root = configs_root_abs
 
-    # Strip .yaml if present
     if config_path is not None:
         config_name = os.path.splitext(config_path)[0]
     else:
         config_name = ""
 
-    # Initialize Hydra from the relative configs root
     with initialize(config_path=configs_root, version_base=None):
         cfg_dict = compose(config_name=config_name, overrides=cli_args or [])
 
-    # Extract 'experiment' if present
-    cfg_dict = cfg_dict.get("experiment", cfg_dict)
+    real_config = _find_config_root(cfg_dict)
 
-    # Merge into structured dataclass
-    cfg: Config = OmegaConf.merge(OmegaConf.structured(Config()), cfg_dict)
+    if real_config is None:
+        real_config = cfg_dict
+
+    cfg: Config = OmegaConf.merge(OmegaConf.structured(Config()), real_config)
+
+    if OmegaConf.is_missing(cfg, "output_dir"):
+        cfg.output_dir = "outputs"
+
     OmegaConf.resolve(cfg)
 
     return cfg
@@ -150,6 +184,7 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            exhaustive=cfg.data.exhaustive,
             select_cond=None if ignore_cond else cfg.data.train_select_cond,
             **common_args,  # This will now pass all the new args
         )
@@ -160,6 +195,7 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            exhaustive=cfg.data.exhaustive,
             select_cond=None if ignore_cond else cfg.data.val_select_cond,
             **common_args,  # This will now pass all the new args
         )
@@ -170,6 +206,7 @@ def load_datasets(
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
             subsample=cfg.data.subsample,
+            exhaustive=cfg.data.exhaustive,
             select_cond=None if ignore_cond else cfg.data.test_select_cond,
             **common_args,  # This will now pass all the new args
         )
@@ -202,7 +239,10 @@ def load_checkpoint(
         checkpoint = torch.load(cp_path, map_location="cpu")
         model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
         if "optimizer_state_dict" in checkpoint:
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            except ValueError:
+                print("Optimizer state incompatible, reinitializing optimizer")
 
         start_epoch = checkpoint.get("epoch", -1) + 1
         history = checkpoint.get("history", {})
@@ -214,6 +254,82 @@ def load_checkpoint(
     except Exception as e:
         logger.error(f"Failed to load checkpoint from {cp_path}: {e}", exc_info=True)
         raise RuntimeError("Critical error loading checkpoint.") from e
+
+
+def load_acdm(
+    ckpt: str,
+    device: torch.device,
+    rollout_steps: int = 60,
+    subsample: int = 2,
+    regime: Optional[str] = "tra",  # "tra", "stable", or "full"
+):
+    """
+    Load a pretrained ACDM diffusion model from checkpoint.
+
+    Args:
+        ckpt (str): Path to checkpoint (.pth)
+        DEVICE (torch.device): CPU or CUDA device
+        ROLL_OUT_STEPS (int): Rollout steps for sequence length
+        cfg: Config object with cfg.data.subsample
+        regime (str): One of {"tra", "stable", "full"}
+
+    Returns:
+        model_diff (DiffusionModel): Loaded diffusion model in eval mode
+    """
+
+    assert regime in {"tra", "stable", "full"}, f"Invalid regime: {regime}"
+
+    # ----- Regime-dependent fields -----
+    if regime == "tra":
+        simFields = ["dens", "pres"]
+        simParams = ["mach"]
+    else:  # "stable" or "full"
+        simFields = ["pres"]
+        simParams = ["rey"]
+
+    # ----- Model parameters -----
+    p_md = ModelParamsDecoder(
+        arch="direct-ddpm+Prev",
+        diffSteps=20,
+        diffSchedule="linear",
+        diffCondIntegration="clean" if "ncn" in ckpt else "noisy",
+        trainingNoise=0.0,
+    )
+
+    # ----- Data parameters -----
+    p_d = DataParams(
+        batch=64,
+        augmentations=["normalize"],
+        sequenceLength=[rollout_steps, subsample],
+        randSeqOffset=True,
+        dataSize=[128, 64],
+        dimension=2,
+        simFields=simFields,
+        simParams=simParams,
+        normalizeMode="incMixed",
+    )
+
+    # ----- Model construction -----
+    condChannels = 2 * (p_d.dimension + len(p_d.simFields) + len(p_d.simParams))
+
+    model_diff = DiffusionModel(
+        p_d,
+        p_md,
+        dimension=0,
+        condChannels=condChannels,
+    )
+
+    model_diff.training = False
+    model_diff.inferenceConditioningIntegration = "clean" if "ncn" in ckpt else "noisy"
+
+    # ----- Load checkpoint -----
+    loaded = torch.load(ckpt, map_location="cpu")
+    model_diff.load_state_dict(loaded["stateDictDecoder"], strict=True)
+
+    model_diff.to(device)
+    model_diff.eval()
+
+    return model_diff
 
 
 def compute_all_metrics(
@@ -370,3 +486,82 @@ def surgically_transfer_checkpoint(
     new_optimizer.state = new_optimizer_state
 
     return new_model, new_optimizer
+
+
+def save_timing_to_json(timing_data, model_name, filename="benchmarks.json"):
+    # Load existing data if file exists
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            data = json.load(f)
+    else:
+        data = {}
+
+    # Initialize model key if not present
+    if model_name not in data:
+        data[model_name] = []
+
+    # Append new timing entry
+    data[model_name].append(timing_data)
+
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=4)
+
+
+def tensordict_to_eval_array_with_cond(
+    input_seq_td, predicted_seq_td, variables=["v_x", "v_y", "p"]
+):
+    """
+    Converts TensorDict sequences to NumPy array with Re channel.
+    Assumes input_seq_td has shape [B, T, H, W] per variable, or [T, H, W] if batch=1.
+    predicted_seq_td has shape [B, T_pred, H, W] or [T_pred, H, W].
+    Returns array: [B, T_total, C+1, H, W]
+    """
+
+    # Ensure batch dimension
+    def ensure_batch(td_var):
+        arr = td_var.cpu().numpy()
+        if arr.ndim == 3:  # [T, H, W] -> [1, T, H, W]
+            arr = arr[None, ...]
+        return arr
+
+    input_arrs = [
+        ensure_batch(input_seq_td[var].transpose(-2, -1)) for var in variables
+    ]  # list of [B, T, H, W]
+    predicted_arrs = [
+        ensure_batch(predicted_seq_td[var].transpose(-2, -1)) for var in variables
+    ]  # [B, T_pred, H, W]
+
+    # Stack channels: (B, T, C, H, W)
+    input_arr = np.stack(input_arrs, axis=2)
+    predicted_arr = np.stack(predicted_arrs, axis=2)
+
+    B = input_arr.shape[0]
+    H, W = input_arr.shape[-2:]
+
+    # Concatenate last input frame with predicted sequence along time
+    last_input_frame = input_arr[:, -2:, :, :, :]  # (B, 1, C, H, W)
+    predicted_arr = predicted_arr[:, :-2, :, :, :]
+    print(f"last_input_frame: {last_input_frame.shape}")
+    print(f"predicted_arr: {predicted_arr.shape}")
+    full_seq = np.concatenate(
+        [last_input_frame, predicted_arr], axis=1
+    )  # (B, T_total, C, H, W)
+
+    # Add Re channel
+    re_vals = input_seq_td["cond_input"].cpu().numpy()
+    if re_vals.ndim == 0:
+        re_vals = np.full(B, re_vals, dtype=np.float32)
+    elif re_vals.ndim == 1 and re_vals.shape[0] != B:
+        re_vals = np.tile(re_vals, B)[:B]
+
+    Re_channel = np.zeros((B, full_seq.shape[1], 1, H, W), dtype=np.float32)
+    for b in range(B):
+        Re_channel[b, :, 0, :, :] = re_vals[b]
+
+    # Concatenate Re channel
+    print(f"full_seq: {full_seq.shape}")
+    print(f"Re_channel: {Re_channel.shape}")
+    full_seq_with_re = np.concatenate(
+        [full_seq, Re_channel], axis=2
+    )  # (B, T_total, C+1, H, W)
+    return full_seq_with_re

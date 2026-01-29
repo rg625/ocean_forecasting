@@ -91,7 +91,11 @@ def main(cfg: DictConfig):
         )
     else:
         train_loader, val_loader, test_loader = create_dataloaders(
-            train_dataset, val_dataset, test_dataset, cfg.training
+            train_dataset,
+            val_dataset,
+            test_dataset,
+            cfg.training,
+            num_workers=cfg.data.num_workers,
         )
     logger.info("Dataloaders created.")
 
