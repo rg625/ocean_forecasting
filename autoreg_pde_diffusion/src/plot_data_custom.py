@@ -12,52 +12,38 @@ plt.style.use("seaborn-v0_8-whitegrid")
 
 cmap = sns.color_palette("icefire", as_cmap=True)
 
-datasetName = "longer"
+datasetName = "stable"
 modelMinMax = (0, 1)
 evalMinMax = (0, 1)
 sequenceMinMax = (0, 1)
 # sequenceMinMax = (8, 9)
 timeSteps = (
-    [14, 29, 44, 59]
-    if datasetName in ["lowRey", "highRey", "varReyIn", "interp", "extrap"]
+    [0, 1, 2, 3, 4]
+    if datasetName in ["lowRey", "highRey", "stable", "interp", "extrap"]
     else ([9, 49, 129, 209] if datasetName in ["longer"] else [9, 39, 69, 99])
 )
 spatialZoom = (
     [[20, 84], [0, 64]]
     # [[0, 128], [0, 64]]
-    if datasetName in ["lowRey", "highRey", "varReyIn"]
+    if datasetName in ["lowRey", "highRey", "stable"]
     else (
         [[6, 70], [0, 64]]
         if datasetName in ["interp", "extrap", "longer"]
         else [[0, 40], [0, 40]]
     )
 )
-field = "pres"
+field = "vort"
 
 predictionFolder = (
-    "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling/%s"
-    % datasetName
+    "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/results/stable"
 )
 outputFolder = "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results"
 
 models = {
-    "Simulation": "groundTruth.dict",  # groundTruth_on_stable_only for incompressible
-    # "ResNet": "resnet-m2.npz",
-    # "Dil-ResNet": "dil-resnet-m2.npz",
-    # "FNO16": "fno-16modes-m2.npz",
-    # "FNO32": "fno-32modes-m2.npz",
-    # "TF-MGN": "tf-mgn.npz",
-    # "TF-Enc": "tf-enc.npz",
-    # "TF-VAE": "tf-vae.npz",
-    # "U-Net": "unet-m2.npz",
-    # "U-Net-ut": "unet-m8.npz",
-    # "U-Net-tn": "unet-m2-noise0.01.npz",
-    # "Refiner": "refiner-r4_std%s.npz"
-    # % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
-    "ACDM-ncn": "acdm-r%d_ncn.npz" % (100 if datasetName in ["zInterp"] else 20),
-    "ACDM": "acdm-r%d.npz" % (100 if datasetName in ["zInterp"] else 20),
-    "RK4": "continous_linear_128_tra.npz",
-    # "EXP": "continous_linear_128_exp.npz",
+    "EXP": "continous_linear_128_2_exp_processed.npz",  # groundTruth_on_stable_only for incompressible
+    r"$\Delta$ t = 0.05s": "continous_linear_128_1_processed.npz",
+    r"$\Delta$ t = 0.1s": "continous_linear_128_2_processed.npz",
+    r"$\Delta$ t = 0.2s": "continous_linear_128_4_processed.npz",
 }
 
 
@@ -93,15 +79,14 @@ for modelName, modelPath in models.items():
         prediction = torch.squeeze(
             prediction[:, :, :, :, getFieldIndex(datasetName, field)]
         )
-        # Store GT frames for MSE (shape: [T, H, W])
-        gtFrames = prediction.permute(0, 2, 1).numpy()
         # gtFrames = prediction.permute(0, 2, 1).numpy()
         print("Loaded ground truth with shape: %s" % (str(list(prediction.shape))))
 
     else:
         fullPath = os.path.join(predictionFolder, modelPath)
         prediction = torch.from_numpy(np.load(fullPath)["arr_0"])
-        prediction = prediction * obsMask
+        # prediction = prediction * obsMask
+        print(f"prediction: {prediction.shape}")
         prediction = prediction[
             modelMinMax[0] : modelMinMax[1],
             evalMinMax[0] : evalMinMax[1],
@@ -135,25 +120,14 @@ fig, axs = plt.subplots(
     squeeze=False,
 )
 
-
-mseData = []
-assert gtFrames is not None, "Cannot iterate through empty gt."
-for i, frames in enumerate(frameData):
-    if modelNames[i] == "Simulation":
-        mseData.append([0.0 for _ in timeSteps])
-    else:
-        mse_per_t = []
-        for j in range(len(timeSteps)):
-            diff = frames[j] - gtFrames[j]
-            mse = np.mean(diff**2)
-            mse_per_t.append(mse)
-        mseData.append(mse_per_t)
-
 # Plot the frames
+dt = 0.4
+
 for i in range(len(modelNames)):
     for j in range(len(timeSteps)):
         if i == len(modelNames) - 1:
-            axs[i, j].set_xlabel(f"$t={timeSteps[j]+1}$", fontsize=8)
+            physical_time = (timeSteps[j] + 1) * dt
+            axs[i, j].set_xlabel(f"$t={physical_time:.1f}s$", fontsize=8)
         if j == 0:
             axs[i, j].set_ylabel(getModelName(modelNames[i]), fontsize=8)
         axs[i, j].set_xticks([])
@@ -162,18 +136,7 @@ for i in range(len(modelNames)):
         im = axs[i, j].imshow(
             frameData[i][j], interpolation="nearest", cmap=cmap, norm=norm
         )
-        mse_val = mseData[i][j]
-        axs[i, j].text(
-            0.5,
-            0.95,
-            f"MSE={mse_val:.2e}",
-            transform=axs[i, j].transAxes,
-            ha="center",
-            va="top",
-            fontsize=7,
-            color="black",
-            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1.5),
-        )
+
 # Reduce space between rows/columns
 fig.subplots_adjust(
     left=0.05,
@@ -200,5 +163,7 @@ fig.colorbar(im, cax=cbar_ax)
 cbar_ax.tick_params(labelsize=8)
 
 fig.savefig(
-    f"{outputFolder}/data_{datasetName}_{field}_play.pdf", dpi=250, bbox_inches="tight"
+    f"{outputFolder}/data_{datasetName}_{field}_timestep.pdf",
+    dpi=250,
+    bbox_inches="tight",
 )

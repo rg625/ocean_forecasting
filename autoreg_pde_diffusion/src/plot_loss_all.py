@@ -23,9 +23,10 @@ plt.rcParams["ps.fonttype"] = 42
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 
-outputFolder = "results"
+outputFolder = "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results"
 
-datasets = ["lowRey", "highRey"]  # , "extrap", "interp", "zInterp"]
+datasets = ["extrap", "interp", "longer"]  # , "extrap", "interp", "zInterp"]
+# datasets = ["lowRey", "highRey"]  # , "extrap", "interp", "zInterp"]
 metric = "MSE"
 
 legend = True
@@ -38,6 +39,7 @@ if metric == "MSE":
         "highRey": 1e5,
         "extrap": 1e3,
         "interp": 1e3,
+        "longer": 1e3,
         "zInterp": 1e2,
     }
     yLabelMap = {
@@ -45,6 +47,7 @@ if metric == "MSE":
         "highRey": "$(10^{-5})$",
         "extrap": "$(10^{-3})$",
         "interp": "$(10^{-3})$",
+        "longer": "$(10^{-3})$",
         "zInterp": "$(10^{-2})$",
     }
     yLimitMap = {
@@ -52,6 +55,7 @@ if metric == "MSE":
         "highRey": [0, 10.9],
         "extrap": [0, 7.6],
         "interp": [0, 11],
+        "longer": [0, 11],
         "zInterp": [0, 20],
     }
 
@@ -61,6 +65,7 @@ else:
         "highRey": 1e2,
         "extrap": 1e1,
         "interp": 1e1,
+        "longer": 1e1,
         "zInterp": 1e1,
     }
     yLabelMap = {
@@ -68,6 +73,7 @@ else:
         "highRey": "$(10^{-2})$",
         "extrap": "$(10^{-1})$",
         "interp": "$(10^{-1})$",
+        "longer": "$(10^{-1})$",
         "zInterp": "$(10^{-1})$",
     }
     yLimitMap = {
@@ -75,6 +81,7 @@ else:
         "highRey": [0, 7.6],
         "extrap": [0, 5.0],
         "interp": [0, 5.0],
+        "longer": [0, 5.0],
         "zInterp": [0, 12],
     }
 
@@ -97,7 +104,10 @@ if not load:
         sequenceMinMax = (0, 16)
         timeMinMax = (0, 240)
 
-        predictionFolder = "results/sampling/%s" % datasetName
+        predictionFolder = (
+            "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling/%s"
+            % datasetName
+        )
 
         models = {
             # "ResNet": "resnet-m2.npz",
@@ -110,17 +120,18 @@ if not load:
             # "U-Net": "unet-m2.npz",
             # "U-Net-ut": "unet-m8.npz",
             # "U-Net-tn": "unet-m2-noise0.01.npz",
-            "Refiner": "refiner-r4_std%s.npz"
-            % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
+            # "Refiner": "refiner-r4_std%s.npz"
+            # % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
             "ACDM-ncn": "acdm-r%d_ncn.npz"
             % (100 if datasetName in ["zInterp"] else 20),
             "ACDM": "acdm-r%d.npz" % (100 if datasetName in ["zInterp"] else 20),
-            "Continous Linear 128": "continous_linear_128.npz",
-            "Continous Linear 1024": "continous_linear_1024.npz",
-            "Continous Linear 1024 Full": "continous_linear_1024_transit.npz",
-            "Discrete Linear 1024": "discrete_linear_1024.npz",
-            "Continous MLP 1024": "continous_mlp_1024.npz",
-            "Discrete MLP 1024": "discrete_mlp_1024.npz",
+            "Tra Continous Linear 128": "continous_linear_128_tra.npz",
+            # "Inc Continous Linear 128": "continous_linear_128_stable.npz",
+            # "Continous Linear 1024": "continous_linear_1024.npz",
+            # "Continous Linear 1024 Full": "continous_linear_1024_transit.npz",
+            # "Discrete Linear 1024": "discrete_linear_1024.npz",
+            # "Continous MLP 1024": "continous_mlp_1024.npz",
+            # "Discrete MLP 1024": "discrete_mlp_1024.npz",
         }
 
         groundTruthDict = torch.load(os.path.join(predictionFolder, "groundTruth.dict"))
@@ -239,14 +250,35 @@ if not load:
                 ]
 
     if save:
-        torch.save(modelNames, "results/temp/%s_ModelNames.loss" % metric)
-        torch.save(distanceMean, "results/temp/%s_DistanceMean.loss" % metric)
-        torch.save(distanceStd, "results/temp/%s_DistanceStd.loss" % metric)
+        torch.save(
+            modelNames,
+            "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/temp/%s_ModelNames.loss"
+            % metric,
+        )
+        torch.save(
+            distanceMean,
+            "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/temp/%s_DistanceMean.loss"
+            % metric,
+        )
+        torch.save(
+            distanceStd,
+            "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/temp/%s_DistanceStd.loss"
+            % metric,
+        )
 
 else:
-    modelNames = torch.load("results/temp/%s_ModelNames.loss" % metric)
-    distanceMean = torch.load("results/temp/%s_DistanceMean.loss" % metric)
-    distanceStd = torch.load("results/temp/%s_DistanceStd.loss" % metric)
+    modelNames = torch.load(
+        "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/temp/%s_ModelNames.loss"
+        % metric
+    )
+    distanceMean = torch.load(
+        "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/temp/%s_DistanceMean.loss"
+        % metric
+    )
+    distanceStd = torch.load(
+        "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/temp/%s_DistanceStd.loss"
+        % metric
+    )
 
 
 fig, axs = plt.subplots(ncols=len(datasets), figsize=(16, 1.2), dpi=150)
@@ -268,12 +300,12 @@ for i in range(len(datasets)):
         0.0,
         1.0,
         2.5,
-        3.5,
-        5.0,
-        6.0,
-        7.0,
-        8.5,
-        9.5,
+        # 3.5,
+        # 5.0,
+        # 6.0,
+        # 7.0,
+        # 8.5,
+        # 9.5,
     ]  # , 5.0, 6.0, 7.0, 8.5, 9.5, 10.5, 12.0, 13.5]#, 13.5, 14.5]
     axs[i].set_xlim([-0.8, 15.3])
     legHandle = axs[i].bar(
