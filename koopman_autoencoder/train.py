@@ -185,6 +185,7 @@ def main(cfg: DictConfig):
             is_continuous=cfg.model.is_continuous,
             rank=cfg.model.rank,
             cond_expansion_type=cfg.data.selection_param,
+            use_attention=cfg.model.use_attention,
             **cfg.model.conv_kwargs,
         ).to(device)
         # model = torch.compile(model)
@@ -196,7 +197,7 @@ def main(cfg: DictConfig):
 
     # --- Optimizer, Loss, Metrics, and Scheduler ---
     model_params = model.module.parameters() if is_ddp else model.parameters()
-    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr)
+    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr, weight_decay=1e-4)
     if cfg.loss.get("ssim_weight", None) is not None:
         criterion = KoopmanLoss(to_unit_range=train_dataset.to_unit_range, **cfg.loss)
     else:

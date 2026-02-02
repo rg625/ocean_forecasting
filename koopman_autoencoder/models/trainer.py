@@ -111,13 +111,10 @@ class Trainer:
             "loss_recon": {"train": [], "val": []},
             "loss_pred": {"train": [], "val": []},
             "loss_latent": {"train": [], "val": []},
-            "loss_grad": {"train": [], "val": []},
+            "loss_phys": {"train": [], "val": []},  # Changed from loss_grad
+            # You don't need to add the sub-metrics (like latent_energy) here
+            # because the new _log_metrics will add them automatically.
         }
-        if self.eval_metrics:
-            metric_key = (
-                f"metric_{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
-            )
-            self.history[metric_key] = {"val": []}
 
     @staticmethod
     def is_main_process() -> bool:
@@ -216,13 +213,14 @@ class Trainer:
 
                 # Forward Pass
                 out = self.model(noisy_input_td, target_td["seq_length"])
+                # out = self.model(input_td, target_td["seq_length"])
 
                 x_true_recon = TensorDict(
                     {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
                     batch_size=input_td.batch_size[0],
                 )
 
-                loss_dict = self.criterion(
+                loss = self.criterion(
                     model_module.koopman_operator,
                     out.x_recon,
                     out.x_preds,
@@ -237,9 +235,10 @@ class Trainer:
                     out.dz_dt,
                     out.dz_dt_disturbed,
                 )
+                loss_dict = loss.metrics
 
             # --- 3. LOSS SPIKE GUARD ---
-            total_loss = loss_dict["total_loss"]
+            total_loss = loss.total_loss
 
             # Check for NaN/Inf
             if not torch.isfinite(total_loss):
@@ -272,10 +271,10 @@ class Trainer:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
 
-            detached_losses = {
-                k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
-            }
-            epoch_losses = accumulate_losses(epoch_losses, detached_losses)
+            # detached_losses = {
+            #     k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
+            # }
+            epoch_losses = accumulate_losses(epoch_losses, loss_dict)
             valid_batches += 1
 
         # Prevent division by zero if all batches failed
@@ -324,11 +323,11 @@ class Trainer:
                     disturbed_latents=out.disturbed_latents,
                     dz_dt=out.dz_dt,
                     dz_dt_disturbed=out.dz_dt_disturbed,
-                )
-                detached_losses = {
-                    k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
-                }
-                total_losses = accumulate_losses(total_losses, detached_losses)
+                ).metrics
+                # detached_losses = {
+                #     k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
+                # }
+                total_losses = accumulate_losses(total_losses, loss_dict)
 
                 if self.eval_metrics and not out.x_preds.is_empty():
                     preds_denorm = dataloader.denormalize(out.x_preds)
@@ -375,8 +374,15 @@ class Trainer:
         logger.info(f"Epoch {epoch:04d} [{mode.upper()}] {metrics_str}")
 
         for key, value in metrics.items():
-            if key in self.history and mode in self.history[key]:
-                self.history[key][mode].append(value)
+            # Automatically initialize the key if it doesn't exist
+            if key not in self.history:
+                self.history[key] = {"train": [], "val": []}
+
+            # Ensure the specific mode list exists (e.g. if a metric is val-only)
+            if mode not in self.history[key]:
+                self.history[key][mode] = []
+
+            self.history[key][mode].append(value)
 
         wandb.log(self.model.timings)
 
@@ -464,54 +470,103 @@ class Trainer:
     def plot_and_save_history(self):
         if not self.is_main_process():
             return
-        fig, ax = plt.subplots(2, 1, figsize=(15, 12), sharex=True)
 
-        loss_keys = [k for k in self.history if "loss" in k]
-        metric_keys = [k for k in self.history if "metric" in k]
+        # Categorize keys
+        all_keys = list(self.history.keys())
+        loss_keys = sorted([k for k in all_keys if "loss" in k])
+        # External metrics (usually from self.eval_metrics)
+        metric_keys = sorted([k for k in all_keys if "metric" in k])
+        # Internal detailed metrics (e.g., latent_energy, phys_time, recon_u)
+        detail_keys = sorted(
+            [k for k in all_keys if k not in loss_keys and k not in metric_keys]
+        )
 
-        for key in loss_keys:
-            if self.history[key]["train"]:
-                ax[0].plot(self.history[key]["train"], label=f"Train {key}", alpha=0.8)
-            if self.history[key]["val"]:
-                val_epochs = range(
-                    self.start_epoch,
-                    self.start_epoch + len(self.history[key]["val"]) * self.log_epoch,
-                    self.log_epoch,
-                )
-                ax[0].plot(
-                    val_epochs,
-                    self.history[key]["val"],
-                    label=f"Val {key}",
-                    linestyle="--",
-                )
-        ax[0].set_ylabel("Loss")
-        ax[0].set_title("Training & Validation Loss")
-        ax[0].legend()
-        ax[0].grid(True, alpha=0.3)
+        # Determine how many subplots we need
+        rows = 1
+        if metric_keys:
+            rows += 1
+        if detail_keys:
+            rows += 1
 
-        if any(self.history[k]["val"] for k in metric_keys):
-            for key in metric_keys:
-                if self.history[key]["val"]:
-                    val_epochs = range(
-                        self.start_epoch,
-                        self.start_epoch
-                        + len(self.history[key]["val"]) * self.log_epoch,
-                        self.log_epoch,
+        fig, ax = plt.subplots(rows, 1, figsize=(15, 6 * rows), sharex=True)
+        if rows == 1:
+            ax = [ax]  # Ensure ax is iterable if only 1 row
+
+        # Helper to plot a group of keys on a specific axis
+        def plot_group(keys, axis, title):
+            has_data = False
+            for key in keys:
+                # Plot Train
+                if self.history[key].get("train"):
+                    axis.plot(
+                        self.history[key]["train"], label=f"Train {key}", alpha=0.7
                     )
-                    ax[1].plot(
+                    has_data = True
+
+                # Plot Val
+                if self.history[key].get("val"):
+                    val_len = len(self.history[key]["val"])
+                    # Calculate correct x-axis indices for validation steps
+                    val_epochs = [
+                        self.start_epoch + (i + 1) * self.log_epoch
+                        for i in range(val_len)
+                    ]
+                    # Handle case where validation might have run one extra time or differently
+                    # simple fallback: linspace
+                    if len(val_epochs) != val_len:
+                        val_epochs = list(range(val_len))
+
+                    axis.plot(
                         val_epochs,
                         self.history[key]["val"],
                         label=f"Val {key}",
                         linestyle="--",
+                        linewidth=2,
                     )
-            ax[1].set_ylabel("Metric Value")
-            ax[1].set_title("Validation Metrics")
-            ax[1].legend()
-            ax[1].grid(True, alpha=0.3)
+                    has_data = True
+
+            if has_data:
+                axis.set_ylabel("Value")
+                axis.set_title(title)
+                axis.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+                axis.grid(True, alpha=0.3)
+                if (
+                    self.cfg
+                    and hasattr(self.cfg, "log_scale_plots")
+                    and self.cfg.log_scale_plots
+                ):
+                    axis.set_yscale("log")
+
+        # --- Plotting ---
+        current_ax_idx = 0
+
+        # 1. Main Losses
+        if loss_keys:
+            plot_group(loss_keys, ax[current_ax_idx], "Loss Functions")
+            current_ax_idx += 1
+
+        # 2. Detailed Physics/Latent Metrics
+        if detail_keys:
+            plot_group(
+                detail_keys, ax[current_ax_idx], "Detailed Diagnostics (Physics/Latent)"
+            )
+            current_ax_idx += 1
+
+        # 3. Validation Metrics
+        if metric_keys:
+            plot_group(metric_keys, ax[current_ax_idx], "Evaluation Metrics")
+            current_ax_idx += 1
 
         ax[-1].set_xlabel("Epoch")
         plt.tight_layout()
-        fig.savefig(self.output_dir / "training_history.png", dpi=300)
+
+        # Save
+        fig.savefig(
+            self.output_dir / "training_history.png", dpi=300, bbox_inches="tight"
+        )
+
+        # Save YAML
         with open(self.output_dir / "training_history.yaml", "w") as f:
             yaml.dump(self.history, f, indent=2)
+
         plt.close(fig)

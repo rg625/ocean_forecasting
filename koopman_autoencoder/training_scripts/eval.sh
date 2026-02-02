@@ -53,7 +53,7 @@ python evaluate.py \
   --type continous \
   --arch linear \
   --regime tra \
-  --ckpt 60 \
+  --ckpt 100 \
   --gpu 0 \
   --out_dir "$BASE_OUT_DIR" \
   --eval_cases interp extrap longer

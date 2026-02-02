@@ -12,7 +12,7 @@ conv_kwargs:
   padding_mode: reflect
 
 latent_dim: 128
-cond_embedding_dim: 128
+cond_embedding_dim: 64
 cond_type: adaln
 operator_mode: linear
 

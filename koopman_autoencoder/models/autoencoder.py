@@ -20,6 +20,9 @@ from .modules import (
     Re,
 )
 
+# Import locally to avoid circular dependencies if factories are in .rbf
+from .rbf import re_expansion, ma_expansion, forcing_expansion
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -68,6 +71,7 @@ class KoopmanAutoencoder(nn.Module):
         is_continuous: bool = False,
         rank: int = 4,
         cond_expansion_type: Optional[str] = None,
+        use_attention: bool = True,
         **conv_kwargs,
     ):
         super().__init__()
@@ -88,7 +92,25 @@ class KoopmanAutoencoder(nn.Module):
         self.predict_cond = predict_cond
         self.cond_grad_enabled = cond_grad_enabled
         self.disturb_std = disturb_std
+        self.use_attention = use_attention
         self.timings: Dict = {}
+
+        # 1. Establish the Single Source of Truth for Physics Embeddings
+        # Ensure we have a concrete integer for dimensions (default to 64 if None)
+        self.shared_embed_dim = (
+            cond_embedding_dim if cond_embedding_dim is not None else 64
+        )
+
+        # Instantiate the Learnable RBFs ONCE.
+        # These objects hold the learnable centers/gammas that must stay synchronized.
+        self.shared_expansion_map = nn.ModuleDict(
+            {
+                "Re": re_expansion(self.shared_embed_dim),
+                "Ma": ma_expansion(self.shared_embed_dim),
+                "forcing": forcing_expansion(self.shared_embed_dim),
+            }
+        )
+
         # --- Module Initialization ---
         common_args = {
             "H": height,
@@ -98,11 +120,17 @@ class KoopmanAutoencoder(nn.Module):
             "block_size": block_size,
             "kernel_size": kernel_size,
             "use_checkpoint": use_checkpoint,
-            "cond_expansion_type": cond_expansion_type,
             **conv_kwargs,
         }
 
-        self.encoder = ConvEncoder(C=self.total_input_channels, **common_args)
+        self.encoder = ConvEncoder(
+            C=self.total_input_channels,
+            cond_type=self.cond_type,
+            cond_expansion_type=cond_expansion_type,
+            shared_expansion_map=self.shared_expansion_map,
+            use_attention=self.use_attention,
+            **common_args,
+        )
 
         self.history_encoder = None
         if self.input_frames > 1:
@@ -125,12 +153,13 @@ class KoopmanAutoencoder(nn.Module):
         ), f"expected 'cond_embedding_dim' to be int but got {type(cond_embedding_dim)} instead."
         self.koopman_operator = KoopmanOperator(
             latent_dim=latent_dim,
-            cond_embedding_dim=cond_embedding_dim,
+            cond_embedding_dim=self.shared_embed_dim,  # Force sync
             mode=operator_mode,
             use_checkpoint=use_checkpoint,
             is_continuous=is_continuous,
             rank=rank,
             cond_expansion_type=cond_expansion_type,
+            shared_expansion_map=self.shared_expansion_map,  # Force sync
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
@@ -157,7 +186,7 @@ class KoopmanAutoencoder(nn.Module):
         stacked_present = torch.cat(present_list, dim=1)
         if cond_input is not None:
             cond_input = cond_input[
-                ..., :-1
+                ..., -1:
             ]  # Get condition for the last (present) frame
         return self.encoder(stacked_present, cond=cond_input)
 
@@ -231,14 +260,15 @@ class KoopmanAutoencoder(nn.Module):
         if "cond_input" not in keys_to_exclude and "cond_input" in x:
             keys_to_exclude.append("cond_input")
 
-        x_data = x.exclude(*keys_to_exclude)
+        # x_data = x.exclude(*keys_to_exclude)
 
         seq_len_int = (
             int(seq_length.view(-1)[0].item())
             if isinstance(seq_length, Tensor)
             else int(seq_length)
         )
-        return obstacle_mask, cond_input, x_data, seq_len_int
+        # return obstacle_mask, cond_input, x_data, seq_len_int
+        return obstacle_mask, cond_input, x, seq_len_int
 
     def _encode_initial_states(self, x_data: TensorDict, cond_input: Optional[Tensor]):
         """Encodes initial states and creates a perturbed version if needed."""
@@ -259,6 +289,10 @@ class KoopmanAutoencoder(nn.Module):
         z_preds_list = []
         z_current = z_init
         for frame in range(seq_length):
+            if self.disturb_std is not None:
+                z_current = z_current + torch.randn_like(z_current) * self.disturb_std
+            else:
+                pass
             # Use the condition for the *specific* frame
             frame_cond = (
                 cond_for_prediction[:, frame]
@@ -309,7 +343,6 @@ class KoopmanAutoencoder(nn.Module):
         start, end = cuda_timer()
         start.record()
         z0, z0_disturbed = self._encode_initial_states(x_data, cond_input)
-        z_to_recon = self.present_encoding(x=x_data, cond_input=cond_input)
         end.record()
         torch.cuda.synchronize()
         self.timings["encode"] = elapsed_time(start, end)
@@ -369,8 +402,12 @@ class KoopmanAutoencoder(nn.Module):
         # 6. Decode outputs for the main trajectory
         start, end = cuda_timer()
         start.record()
+        if self.training:
+            # Add small noise to z before decoding to force decoder robustness
+            z0 = z0 + torch.randn_like(z0) * 0.01
+
         x_recon, x_preds = self._decode_outputs(
-            z_to_recon, z_preds_stacked, seq_length_int, obstacle_mask
+            z0, z_preds_stacked, seq_length_int, obstacle_mask
         )
         end.record()
         torch.cuda.synchronize()

@@ -12,7 +12,7 @@ plt.style.use("seaborn-v0_8-whitegrid")
 
 cmap = sns.color_palette("icefire", as_cmap=True)
 
-datasetName = "longer"
+datasetName = "extrap"
 modelMinMax = (0, 1)
 evalMinMax = (0, 1)
 sequenceMinMax = (0, 1)

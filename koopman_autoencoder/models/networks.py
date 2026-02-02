@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import utils as nn_utils
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 from typing import List, Optional
 from torch import Tensor
 from dataclasses import dataclass
@@ -10,7 +10,6 @@ from dataclasses import dataclass
 # Attempt to import from local modules
 try:
     from .fourier import PositionalEncoding
-    from .adaptive_layers import AdaGN
     from .rbf import re_expansion, ma_expansion, forcing_expansion
 except ImportError:
     # Minimal fallback if local imports fail
@@ -112,32 +111,25 @@ class PreActResBlock(nn.Module):
 
 
 class ConditionedResBlock(nn.Module):
-    """Decoder ResBlock with Physics Injection (AdaGN)."""
+    """Decoder ResBlock with Physics Injection (GroupNorm)."""
 
-    def __init__(self, in_ch, out_ch, cond_dim):
+    def __init__(self, in_ch, out_ch):
         super().__init__()
-        # AdaGN replaces static GroupNorm
-        self.gn1 = AdaGN(in_ch, cond_dim)
+        self.gn1 = nn.GroupNorm(8, in_ch)
         self.conv1 = sn_conv2d(in_ch, out_ch, kernel_size=3, padding=1)
 
-        self.gn2 = AdaGN(out_ch, cond_dim)
+        self.gn2 = nn.GroupNorm(8, out_ch)
         self.conv2 = sn_conv2d(out_ch, out_ch, kernel_size=3, padding=1)
 
         self.shortcut = nn.Identity()
         if in_ch != out_ch:
             self.shortcut = sn_conv2d(in_ch, out_ch, kernel_size=1, padding=0)
 
-    def forward(self, x, cond):
-        # 1. Norm + Condition
-        x_norm = F.silu(self.gn1(x, cond))
-
-        # 2. Convolution
-        out = self.conv1(x_norm)
-
-        # 3. Norm + Condition
-        out = F.silu(self.gn2(out, cond))
+    def forward(self, x):
+        out = F.silu(self.gn1(x))
+        out = self.conv1(out)
+        out = F.silu(self.gn2(out))
         out = self.conv2(out)
-
         return out + self.shortcut(x)
 
 
@@ -157,20 +149,28 @@ class ConvEncoder(nn.Module):
         cond_embedding_dim: Optional[int] = None,
         cond_type: Optional[str] = None,
         cond_expansion_type: Optional[str] = None,
+        shared_expansion_map: Optional[nn.ModuleDict] = None,
+        use_attention: bool = True,  # Default to False for cleaner dynamics
         **kwargs
     ):
         super().__init__()
         self.cond_type = cond_type
-
+        self.use_attention = use_attention
         # Physics Parameter Expansion (Re -> High Dim)
         dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
-        self.expansion_map = nn.ModuleDict(
-            {
-                "Re": re_expansion(dim_to_use),
-                "Ma": ma_expansion(dim_to_use),
-                "forcing": forcing_expansion(dim_to_use),
-            }
-        )
+
+        if shared_expansion_map is not None:
+            self.expansion_map = shared_expansion_map
+        else:
+            # Fallback only for unit tests
+            self.expansion_map = nn.ModuleDict(
+                {
+                    "Re": re_expansion(dim_to_use),
+                    "Ma": ma_expansion(dim_to_use),
+                    "forcing": forcing_expansion(dim_to_use),
+                }
+            )
+
         self.cond_expansion_type = cond_expansion_type
 
         # 1. Coordinate Injection Setup
@@ -192,7 +192,7 @@ class ConvEncoder(nn.Module):
         self.backbone = nn.Sequential(*layers)
 
         # 3. Bottleneck Attention
-        self.attention = CBAM(in_c)
+        self.attention = CBAM(in_c) if use_attention else nn.Identity()
 
         # 4. Projection
         scale_factor = 2 ** len(hiddens)
@@ -233,8 +233,9 @@ class ConvEncoder(nn.Module):
         x = self.init_conv(x)
         x = self.backbone(x)
 
-        # Apply Attention at low-res
-        x = self.attention(x)
+        # Apply Attention at low-res (if enabled)
+        if self.use_attention:
+            x = self.attention(x)
 
         flat = x.flatten(1)
         if self.cond_type == "late_fusion" and cond_emb is not None:
@@ -244,7 +245,7 @@ class ConvEncoder(nn.Module):
 
 
 # ==========================================
-#   DECODER (Resize-Conv + AdaGN)
+#   DECODER (Resize-Conv)
 # ==========================================
 
 
@@ -256,29 +257,19 @@ class ConvDecoder(nn.Module):
         W: int,
         latent_dim: int,
         hiddens: List[int] = [64, 128, 256],
-        cond_embedding_dim: Optional[int] = None,
-        cond_type: Optional[str] = None,
-        cond_expansion_type: Optional[str] = None,
         **kwargs
     ):
         super().__init__()
         # Decoder goes from small to large: [256, 128, 64]
         hiddens = hiddens[::-1]
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+        )
+        self.register_buffer("grid", torch.stack([xx, yy], dim=0))  # [2, H, W]
 
         scale_factor = 2 ** len(hiddens)
         self.H_start = H // scale_factor
         self.W_start = W // scale_factor
-
-        # Physics Expansion Setup
-        self.cond_expansion_type = cond_expansion_type
-        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
-        self.expansion_map = nn.ModuleDict(
-            {
-                "Re": re_expansion(dim_to_use),
-                "Ma": ma_expansion(dim_to_use),
-                "forcing": forcing_expansion(dim_to_use),
-            }
-        )
 
         # 1. Expand Latent
         self.flat_features = hiddens[0] * self.H_start * self.W_start
@@ -286,54 +277,34 @@ class ConvDecoder(nn.Module):
 
         # 2. Build Layers (Manual list to handle conditional forwarding)
         self.layers = nn.ModuleList()
-        in_c = hiddens[0]
-
-        # If no condition is provided, we need a dummy dim for AdaGN
-        self.cond_dim = dim_to_use
+        curr_c = hiddens[0]
 
         for out_c in hiddens:
-            # Resize-Conv Block
-            # 1. Refine (Conditioned)
-            self.layers.append(ConditionedResBlock(in_c, in_c, self.cond_dim))
+            # A. Refinement Block
+            self.layers.append(ConditionedResBlock(curr_c, curr_c))
 
-            # 2. Upsample (Nearest + Conv) -> Eliminates Checkerboard
-            upsample_block = nn.Sequential(
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                sn_conv2d(in_c, out_c, kernel_size=3, padding=1),
-                nn.SiLU(),
+            # B. PixelShuffle Upsample
+            # Step 1: Conv to (out_c * 4) channels
+            # Step 2: PixelShuffle(2) folds channels into H and W
+            self.layers.append(
+                nn.Sequential(
+                    sn_conv2d(curr_c, out_c * 4, kernel_size=3, padding=1),
+                    nn.PixelShuffle(2),
+                    nn.SiLU(),
+                )
             )
-            self.layers.append(upsample_block)
-            in_c = out_c
+            curr_c = out_c
 
-        self.final_conv = sn_conv2d(in_c, C, kernel_size=3, padding=1)
-
-    def _encode_cond(self, cond: Optional[Tensor]) -> Tensor:
-        # Defaults to zero vector if cond is None, to satisfy AdaGN
-        if cond is None:
-            # Create a zero condition on the fly?
-            # Ideally this shouldn't happen if cond_type is set.
-            # But for safety, we return a zero tensor if strictly needed,
-            # though usually the caller ensures cond exists.
-            return torch.zeros(1, self.cond_dim).to(next(self.parameters()).device)
-
-        if cond.ndim == 1:
-            cond = cond.unsqueeze(-1)
-
-        if self.cond_expansion_type in self.expansion_map:
-            return self.expansion_map[self.cond_expansion_type](cond)
-
-        # If standard scalar, project it if dimensions don't match or use as is
-        # Note: AdaGN expects [B, cond_dim].
-        return cond
+        # 4. Final Projection: (Features 64 + Grid 2) -> Output Channels (C)
+        # curr_c is hiddens[-1] (usually 64)
+        self.final_conv = sn_conv2d(curr_c + 2, C, kernel_size=3, padding=1)
 
     def forward(self, z: Tensor, cond: Optional[Tensor] = None):
-        # Prepare Condition
-        cond_emb = self._encode_cond(cond)
-        # Ensure batch size matches if we generated a dummy
-        if cond_emb.shape[0] != z.shape[0]:
-            cond_emb = cond_emb.expand(z.shape[0], -1)
-
-        # 1. Expand Z
+        """
+        Deterministic forward pass.
+        'cond' is ignored to allow the decoder to focus purely on latent dynamics.
+        """
+        # 1. Expand Z from [B, latent_dim] to [B, C_start, H_start, W_start]
         x = self.from_latent(z)
         x = F.silu(x)
         x = x.view(
@@ -345,11 +316,16 @@ class ConvDecoder(nn.Module):
 
         # 2. Upsample Loop
         for layer in self.layers:
-            if isinstance(layer, ConditionedResBlock):
-                x = layer(x, cond_emb)
-            else:
-                x = layer(x)
+            x = layer(x)
 
+        # 3. Coordinate Injection (The "Crisp Detail" Engine)
+        # self.grid is [2, H, W], we expand it to [B, 2, H, W]
+        grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+
+        # 4. Concatenate: [B, C_final, H, W] + [B, 2, H, W] -> [B, C_final + 2, H, W]
+        x = torch.cat([x, grid], dim=1)
+
+        # 5. Final projection to physical space (e.g., 66 in -> 4 out)
         return self.final_conv(x)
 
 
@@ -370,15 +346,14 @@ class TransformerConfig:
 class HistoryEncoder(nn.Module):
     def __init__(
         self,
-        backbone: nn.Module,
+        backbone: ConvEncoder,
         use_positional_encoding: bool = True,
         transformer_config: TransformerConfig = TransformerConfig(),
     ):
         super().__init__()
         self.backbone = backbone
-        self.latent_dim = getattr(backbone, "latent_dim", 128)
+        self.latent_dim = backbone.latent_dim
 
-        self.norm = nn.LayerNorm(self.latent_dim)
         self.pos_enc = (
             PositionalEncoding(self.latent_dim, max_len=transformer_config.max_len)
             if use_positional_encoding
@@ -399,15 +374,20 @@ class HistoryEncoder(nn.Module):
     def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
         B, T, C, H, W = x.shape
         x_flat = rearrange(x, "b t c h w -> (b t) c h w")
+        cond_flat = None
+        if cond is not None:
+            if cond.ndim == 2:  # [B, Dim] -> Static condition
+                # Repeat for each timestep
+                cond_flat = repeat(cond, "b d -> (b t) d", t=T)
+            elif cond.ndim == 3:  # [B, T, Dim] -> Dynamic condition
+                cond_flat = rearrange(cond, "b t d -> (b t) d")
 
-        # Encoder likely doesn't need temporal cond, or it's handled via broadcasting
-        # We pass cond if the backbone supports it
-        features = self.backbone(x_flat, cond=None)
+        features = self.backbone(x_flat, cond=cond_flat)
 
         features = rearrange(features, "(b t) d -> b t d", t=T)
-        features = self.norm(features)
         features = self.pos_enc(features)
         out = self.transformer(features)
 
         # Average pooling over time for the history context
-        return out.mean(dim=1)
+        # return out.mean(dim=1)
+        return out[:, -1, :]

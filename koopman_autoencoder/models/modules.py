@@ -3,6 +3,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union
+import math
 
 import torch
 import torch.nn as nn
@@ -91,15 +92,21 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
         super().__init__()
         self.config = config
 
-        # Setup Expansion Map
+        # FIX: Initialize an empty ModuleDict by default so standalone usage doesn't crash.
+        # The Wrapper (KoopmanOperator) will overwrite this with the shared map.
+        self.expansion_map = nn.ModuleDict()
+
+        # We also provide default fallbacks if not overwritten, for safety
         dim_to_use = config.cond_embedding_dim if config.cond_embedding_dim > 0 else 64
-        self.expansion_map = nn.ModuleDict(
-            {
-                "Re": re_expansion(dim_to_use),
-                "Ma": ma_expansion(dim_to_use),
-                "forcing": forcing_expansion(dim_to_use),
-            }
-        )
+        if not hasattr(self, "expansion_map") or len(self.expansion_map) == 0:
+            self.expansion_map = nn.ModuleDict(
+                {
+                    "Re": re_expansion(dim_to_use),
+                    "Ma": ma_expansion(dim_to_use),
+                    "forcing": forcing_expansion(dim_to_use),
+                }
+            )
+
         if config.mode == KoopmanMode.MLP and config.cond_embedding_dim > 0:
             self.conditioner = AdaLNMLP(config.latent_dim, config.cond_embedding_dim)
 
@@ -159,28 +166,31 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
         # Scale update to be small initially
         return K_base.unsqueeze(0) + update * 0.1
 
-    def _apply_lora_from_tensor(
-        self, base_weight: Tensor, uv_tensor: Tensor, rank: int
+    @staticmethod
+    def _compute_lora_update(
+        base_weight: Tensor, uv_tensor: Tensor, rank: int
     ) -> Tensor:
         """
-        Applies LoRA update logic using a pre-computed UV tensor.
-        Matches the exact logic of your original code but allows splitting W/D updates.
+        Shared LoRA computation.
+        Args:
+            base_weight: [D, D]
+            uv_tensor: [B, 2 * rank * D]
+        Returns:
+            Effective Weight [B, D, D]
         """
-        B, _ = uv_tensor.shape
+        B = uv_tensor.shape[0]
         D = base_weight.shape[0]
 
-        # [B, 2 * Rank * D] -> [B, 2 * Rank, D]
+        # Reshape to [B, 2*rank, D]
         uv = uv_tensor.view(B, rank * 2, D)
-
-        # Split into U and V
         u, v = uv.chunk(2, dim=1)  # [B, Rank, D]
 
-        # Compute Update: sum(u_r outer v_r)
-        # Matches torch.einsum("brd, bre -> bde", u, v)
+        # Update = U @ V.T -> [B, D, D]
         update = torch.einsum("brd, bre -> bde", u, v)
 
-        # Apply update to base weight (broadcasting [D, D] to [B, D, D])
-        return base_weight.unsqueeze(0) + update
+        # Apply scaling factor (standard LoRA practice)
+        scale = 1.0 / rank
+        return base_weight.unsqueeze(0) + (update * scale)
 
     @abc.abstractmethod
     def forward(self, z: Tensor, cond: Optional[Tensor], dt: Optional[float]) -> Tensor:
@@ -211,15 +221,6 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
             # Hypnet predicts deltas for real/imag
             self.hypnet = self._build_hypnet(config.latent_dim * 2)
 
-        # --- Linear Mode ---
-        # elif config.mode == KoopmanMode.LINEAR:
-        #     self.K_base = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
-        #     self._init_linear_weights()
-        #     # Hypnet predicts LoRA update
-        #     output_dim = config.latent_dim * 2 * config.rank
-        #     self.hypnet = self._build_hypnet(output_dim)
-        #     # self.conditioner = AdaLNMLP(config.latent_dim, config.cond_embedding_dim)
-
         # --- Stable Linear Mode ---
         if config.mode == KoopmanMode.LINEAR:
             # 1. Rotational Part (Skew-Symmetric Base)
@@ -241,8 +242,22 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
 
         # --- MLP Mode ---
         elif config.mode == KoopmanMode.MLP:
-            self.K_base = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
-            self._init_linear_weights()
+            # 1. Rotational Part (Skew-Symmetric Base)
+            self.W_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+
+            # 2. Growth/Decay Part (Symmetric Base)
+            # We treat this as a free symmetric matrix, NOT a PSD matrix.
+            self.D_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+
+            # 3. Hypernetworks
+            # Output dim accommodates updates for both W and D
+            output_dim = config.latent_dim * config.latent_dim * 2
+            if config.rank > 0:
+                output_dim = config.latent_dim * 2 * config.rank * 2
+
+            self.hypnet = self._build_hypnet(output_dim)
+
+            self._init_stable_weights()
             # Hypnet predicts LoRA update
             output_dim = config.latent_dim * 2 * config.rank
             self.hypnet = self._build_hypnet(output_dim)
@@ -257,22 +272,12 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
                     nn.init.kaiming_normal_(
                         layer.weight, a=0.01, mode="fan_in", nonlinearity="leaky_relu"
                     )
-                    # nn.init.constant_(layer.bias, 0)
 
             nn.init.orthogonal_(self.K_mlp[-1].weight, gain=0.1)
-            # nn.init.constant_(self.K[-1].bias, 0)
 
-    # def _init_linear_weights(self):
-    #     # Initialize close to skew-symmetric (rotation) + small damping for stability
-    #     W = torch.randn(self.config.latent_dim, self.config.latent_dim)
-    #     with torch.no_grad():
-    #         self.K_base.weight.data = (W - W.T) * 0.1 - 0.01 * torch.eye(
-    #             self.config.latent_dim
-    #         )
     def _init_stable_weights(self):
         # 1. Initialize W as Orthogonal (Pure Rotation, Energy Conserved)
-        # This is CRITICAL. Random normal init leads to chaos.
-        nn.init.orthogonal_(self.W_param.weight, gain=1.0)
+        nn.init.kaiming_uniform_(self.W_param.weight, a=math.sqrt(5))
 
         # 2. Initialize D to ZERO (Neutral Stability)
         # We start with NO dissipation. The model learns where to damp.
@@ -310,30 +315,6 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
                 return torch.bmm(K, z.unsqueeze(-1)).squeeze(-1)
             return F.linear(z, K)
 
-    # def _get_effective_linear_map(self, cond_encoded: Optional[Tensor]):
-    #     """Returns the effective Matrix K or Lambda for Linear/Eigen modes."""
-    #     if self.config.mode in [KoopmanMode.LINEAR, KoopmanMode.MLP]:
-    #         K = self.K_base.weight
-    #         if self.hypnet is not None and cond_encoded is not None:
-    #             K = self._apply_lora_update(
-    #                 K, cond_encoded, self.hypnet, self.config.rank
-    #             )
-    #         return K
-
-    #     elif self.config.mode == KoopmanMode.EIGEN:
-    #         real, imag = self.unconstrained_real_parts, self.imaginary_parts
-    #         if self.hypnet is not None and cond_encoded is not None:
-    #             delta = self.hypnet(cond_encoded)
-    #             d_real, d_imag = delta.chunk(2, dim=1)
-    #             real = real.unsqueeze(0) + d_real
-    #             imag = imag.unsqueeze(0) + d_imag
-
-    #         # Stability constraints applied AFTER modulation
-    #         real = -F.softplus(real)
-    #         return torch.complex(real, imag)
-
-    #     return None
-
     def _get_effective_linear_map(self, cond_encoded: Optional[Tensor]):
         """
         Returns K = Skew(W) + Sym(D).
@@ -351,8 +332,8 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
                 uv_w, uv_d = uv_all.chunk(2, dim=1)
 
                 # Apply Low-Rank Updates
-                W = self._apply_lora_from_tensor(W, uv_w, self.config.rank)
-                D = self._apply_lora_from_tensor(D, uv_d, self.config.rank)
+                W = self._compute_lora_update(W, uv_w, self.config.rank)
+                D = self._compute_lora_update(D, uv_d, self.config.rank)
 
             # --- Construct Operator ---
 
@@ -552,6 +533,7 @@ class KoopmanOperator(nn.Module):
         is_continuous: bool = False,
         rank: int = 4,
         cond_expansion_type: Optional[str] = None,
+        shared_expansion_map: Optional[nn.ModuleDict] = None,
     ):
         super().__init__()
 
@@ -576,6 +558,10 @@ class KoopmanOperator(nn.Module):
             self.dynamics = ContinuousKoopmanOperator(self.config)
         else:
             self.dynamics = DiscreteKoopmanOperator(self.config)
+
+        # Inject the shared physics brain if provided
+        if shared_expansion_map is not None:
+            self.dynamics.expansion_map = shared_expansion_map
 
     def forward(
         self, z: Tensor, cond: Optional[Tensor] = None, dt: Optional[float] = None

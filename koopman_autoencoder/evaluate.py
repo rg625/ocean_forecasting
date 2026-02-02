@@ -96,7 +96,9 @@ class EvalConfig:
         return (
             self.base_output_dir
             / self.experiment_name
-            / "run-20260129_110558/checkpoints"
+            # / "run-20260129_110558/checkpoints"
+            # / "run-20260131_160228/checkpoints"
+            / "run-20260201_123906/checkpoints"
             / f"epoch_{self.ckpt_index}.pth"
         )
 
@@ -239,6 +241,7 @@ class KoopmanEvaluator:
             is_continuous=self.exp_cfg.model.is_continuous,
             rank=self.exp_cfg.model.rank,
             cond_expansion_type=self.exp_cfg.data.selection_param,
+            use_attention=self.exp_cfg.model.use_attention,
             **self.exp_cfg.model.conv_kwargs,
         ).to(self.device)
 

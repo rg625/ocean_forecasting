@@ -44,24 +44,48 @@ def tensor_dict_to_json(data: Union[TensorDict, Tensor]):
 
 
 def accumulate_losses(
-    total_losses: Dict[str, Tensor], losses: Dict[str, Tensor]
-) -> Dict[str, Tensor]:
-    """Accumulates loss values from a dictionary into a running total."""
-    for key, value in losses.items():
-        if not isinstance(value, Tensor):
-            continue
-        if key not in total_losses:
-            total_losses[key] = value.clone()
+    total_losses: Dict[str, Union[Tensor, float]],
+    batch_losses: Dict[str, Union[Tensor, float]],
+) -> Dict[str, Union[Tensor, float]]:
+    """
+    Accumulates loss values (Tensors or floats) into a running total.
+    """
+    for key, value in batch_losses.items():
+        # 1. Handle Tensor: detach and clone to stop graph growth
+        if isinstance(value, Tensor):
+            val = value.detach().clone()
+        # 2. Handle Float/Int: usage as is
+        elif isinstance(value, (float, int)):
+            val = float(value)
         else:
-            total_losses[key] += value
+            continue  # Skip non-numeric types
+
+        if key not in total_losses:
+            total_losses[key] = val
+        else:
+            total_losses[key] += val
+
     return total_losses
 
 
-def average_losses(total_losses: Dict[str, Tensor], n_batches: int) -> Dict[str, float]:
-    """Averages accumulated losses and converts to floats."""
-    if n_batches == 0:
-        return {k: 0.0 for k in total_losses}
-    return {key: (value / n_batches).item() for key, value in total_losses.items()}
+def average_losses(
+    total_losses: Dict[str, Union[Tensor, float]], num_batches: int
+) -> Dict[str, float]:
+    """
+    Averages the accumulated losses over the number of batches.
+    """
+    avg_losses: Dict = {}
+    if num_batches <= 0:
+        return avg_losses
+
+    for key, value in total_losses.items():
+        # Check if it is a Tensor before calling .item()
+        if isinstance(value, Tensor):
+            avg_losses[key] = value.item() / num_batches
+        else:
+            avg_losses[key] = value / num_batches
+
+    return avg_losses
 
 
 def _find_config_root(cfg: Any) -> Optional[DictConfig]:
@@ -225,10 +249,10 @@ def load_checkpoint(
     model: nn.Module,
     optimizer: Optimizer,
     strict: Optional[bool] = True,
+    reset_optimizer: Optional[bool] = True,
 ) -> Tuple[nn.Module, Optimizer, Dict[str, Any], int]:
     """
     Loads a model, optimizer, history, and start epoch from a checkpoint.
-    Returns the initial state if the checkpoint is not found.
     """
     cp_path = Path(checkpoint_path)
     if not cp_path.is_file():
@@ -237,20 +261,36 @@ def load_checkpoint(
 
     try:
         checkpoint = torch.load(cp_path, map_location="cpu")
-        model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
-        if "optimizer_state_dict" in checkpoint:
-            try:
-                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-            except ValueError:
-                print("Optimizer state incompatible, reinitializing optimizer")
 
-        start_epoch = checkpoint.get("epoch", -1) + 1
-        history = checkpoint.get("history", {})
+        # 1. Load Model Weights
+
+        model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+
+        # 2. Handle Optimizer & Epoch
+        if reset_optimizer:
+            print(
+                ">> WARNING: Optimizer state reset! Starting fresh for new hyperparameters."
+            )
+            # We explicitly DO NOT load the optimizer state.
+            # We also reset history and epoch to start a "clean" new run phase.
+            history = {}
+            start_epoch = 0
+        else:
+            # Standard Resume behavior
+            if "optimizer_state_dict" in checkpoint:
+                try:
+                    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                except ValueError:
+                    print("Optimizer state incompatible, reinitializing optimizer")
+
+            start_epoch = checkpoint.get("epoch", -1) + 1
+            history = checkpoint.get("history", {})
 
         logger.info(
-            f"Checkpoint loaded from {cp_path}. Resuming from epoch {start_epoch}."
+            f"Checkpoint loaded from {cp_path}. Effective start epoch: {start_epoch}."
         )
         return model, optimizer, history, start_epoch
+
     except Exception as e:
         logger.error(f"Failed to load checkpoint from {cp_path}: {e}", exc_info=True)
         raise RuntimeError("Critical error loading checkpoint.") from e

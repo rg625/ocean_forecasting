@@ -64,6 +64,7 @@ class ModelConfig:
     disturb_std: Optional[float] = None
     is_continuous: Optional[bool] = False
     rank: int = MISSING
+    use_attention: Optional[bool] = False
 
 
 @dataclass
