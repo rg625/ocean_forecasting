@@ -1,0 +1,13 @@
+defaults:
+  - _self_
+  - /data: qg
+  - /model: continous_linear_128_qg
+  - /metric: base
+  - /training: qg
+  - /loss: qg
+  - /lr_scheduler: linear_decay
+
+# Top-level run configuration
+output_dir: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/models_output_qg"
+ckpt: null # "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/models_output_qg/run-20260201_194724/checkpoints/epoch_30.pth"
+log_epoch: 10

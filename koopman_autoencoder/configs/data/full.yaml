@@ -1,0 +1,25 @@
+# configs/data/base.yaml
+# base config for data loading
+
+# data:
+dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
+data_dir: "./data"
+train_file: "/rds-d6/user/rg625/hpc-work/ocean_forecasting/acdm/128_inc/train.nc"
+val_file: "/rds-d6/user/rg625/hpc-work/ocean_forecasting/acdm/128_inc/val.nc"
+test_file: "/rds-d6/user/rg625/hpc-work/ocean_forecasting/acdm/128_inc/test.nc"
+input_sequence_length: 2
+max_sequence_length: 8
+subsample: 2
+variables:
+  v_x: 1
+  v_y: 1
+  p: 1
+static_variables:
+  obstacle_mask: 1
+normalization:
+  type: "MeanStdNormalizer"
+  sim: 0
+quantile_range: [2.5, 97.5]
+train_re: null
+val_re: null
+test_re: null
