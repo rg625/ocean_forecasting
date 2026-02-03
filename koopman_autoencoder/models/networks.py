@@ -20,16 +20,24 @@ except ImportError:
 # ==========================================
 
 
-def sn_conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0):
+def sn_conv2d(
+    in_channels, out_channels, kernel_size, stride=1, padding=0, spectral=True
+):
     """Spectral Normalized Conv2d. Stabilizes Koopman operator gradients."""
-    return nn_utils.spectral_norm(
-        nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-    )
+    if spectral:
+        return nn_utils.spectral_norm(
+            nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+        )
+    else:
+        return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
 
 
-def sn_linear(in_features, out_features):
+def sn_linear(in_features, out_features, spectral=True):
     """Spectral Normalized Linear."""
-    return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
+    if spectral:
+        return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
+    else:
+        return nn.Linear(in_features, out_features)
 
 
 # ==========================================
@@ -89,17 +97,26 @@ class CBAM(nn.Module):
 class PreActResBlock(nn.Module):
     """Standard Pre-activation ResBlock for Encoder."""
 
-    def __init__(self, in_ch, out_ch, stride=1):
+    def __init__(self, in_ch, out_ch, stride=1, spectral=True):
         super().__init__()
         self.bn1 = nn.GroupNorm(8, in_ch)
-        self.conv1 = sn_conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1)
+        self.conv1 = sn_conv2d(
+            in_ch, out_ch, kernel_size=3, stride=stride, padding=1, spectral=spectral
+        )
         self.bn2 = nn.GroupNorm(8, out_ch)
-        self.conv2 = sn_conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1)
+        self.conv2 = sn_conv2d(
+            out_ch, out_ch, kernel_size=3, stride=1, padding=1, spectral=spectral
+        )
 
         self.shortcut = nn.Identity()
         if stride != 1 or in_ch != out_ch:
             self.shortcut = sn_conv2d(
-                in_ch, out_ch, kernel_size=1, stride=stride, padding=0
+                in_ch,
+                out_ch,
+                kernel_size=1,
+                stride=stride,
+                padding=0,
+                spectral=spectral,
             )
 
     def forward(self, x):
@@ -113,17 +130,23 @@ class PreActResBlock(nn.Module):
 class ConditionedResBlock(nn.Module):
     """Decoder ResBlock with Physics Injection (GroupNorm)."""
 
-    def __init__(self, in_ch, out_ch):
+    def __init__(self, in_ch, out_ch, spectral=True):
         super().__init__()
         self.gn1 = nn.GroupNorm(8, in_ch)
-        self.conv1 = sn_conv2d(in_ch, out_ch, kernel_size=3, padding=1)
+        self.conv1 = sn_conv2d(
+            in_ch, out_ch, kernel_size=3, padding=1, spectral=spectral
+        )
 
         self.gn2 = nn.GroupNorm(8, out_ch)
-        self.conv2 = sn_conv2d(out_ch, out_ch, kernel_size=3, padding=1)
+        self.conv2 = sn_conv2d(
+            out_ch, out_ch, kernel_size=3, padding=1, spectral=spectral
+        )
 
         self.shortcut = nn.Identity()
         if in_ch != out_ch:
-            self.shortcut = sn_conv2d(in_ch, out_ch, kernel_size=1, padding=0)
+            self.shortcut = sn_conv2d(
+                in_ch, out_ch, kernel_size=1, padding=0, spectral=spectral
+            )
 
     def forward(self, x):
         out = F.silu(self.gn1(x))
@@ -151,17 +174,23 @@ class ConvEncoder(nn.Module):
         cond_expansion_type: Optional[str] = None,
         shared_expansion_map: Optional[nn.ModuleDict] = None,
         use_attention: bool = True,  # Default to False for cleaner dynamics
+        spectral: bool = False,
         **kwargs
     ):
         super().__init__()
         self.cond_type = cond_type
         self.use_attention = use_attention
+        self.cond_expansion_type = cond_expansion_type
         # Physics Parameter Expansion (Re -> High Dim)
-        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
+
+        if cond_embedding_dim is not None:
+            dim_to_use = cond_embedding_dim
 
         if shared_expansion_map is not None:
             self.expansion_map = shared_expansion_map
-        else:
+        elif shared_expansion_map is None and (
+            cond_expansion_type is not None or cond_embedding_dim is not None
+        ):
             # Fallback only for unit tests
             self.expansion_map = nn.ModuleDict(
                 {
@@ -171,8 +200,9 @@ class ConvEncoder(nn.Module):
                 }
             )
 
-        self.cond_expansion_type = cond_expansion_type
-
+            self.cond_expansion_type = cond_expansion_type
+        else:
+            self.expansion_map = None
         # 1. Coordinate Injection Setup
         input_channels = C + 2
         yy, xx = torch.meshgrid(
@@ -181,7 +211,9 @@ class ConvEncoder(nn.Module):
         self.register_buffer("grid", torch.stack([xx, yy], dim=0))
 
         # 2. Backbone
-        self.init_conv = sn_conv2d(input_channels, hiddens[0], kernel_size=3, padding=1)
+        self.init_conv = sn_conv2d(
+            input_channels, hiddens[0], kernel_size=3, padding=1, spectral=spectral
+        )
 
         layers = []
         in_c = hiddens[0]
@@ -257,11 +289,22 @@ class ConvDecoder(nn.Module):
         W: int,
         latent_dim: int,
         hiddens: List[int] = [64, 128, 256],
+        spectral: bool = False,
         **kwargs
     ):
         super().__init__()
         # Decoder goes from small to large: [256, 128, 64]
         hiddens = hiddens[::-1]
+
+        dim_to_use = 64
+        self.expansion_map = nn.ModuleDict(
+            {
+                "Re": re_expansion(dim_to_use),
+                "Ma": ma_expansion(dim_to_use),
+                "forcing": forcing_expansion(dim_to_use),
+            }
+        )
+
         yy, xx = torch.meshgrid(
             torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
         )
@@ -273,7 +316,7 @@ class ConvDecoder(nn.Module):
 
         # 1. Expand Latent
         self.flat_features = hiddens[0] * self.H_start * self.W_start
-        self.from_latent = sn_linear(latent_dim, self.flat_features)
+        self.from_latent = sn_linear(latent_dim, self.flat_features, spectral=spectral)
 
         # 2. Build Layers (Manual list to handle conditional forwarding)
         self.layers = nn.ModuleList()
@@ -288,8 +331,10 @@ class ConvDecoder(nn.Module):
             # Step 2: PixelShuffle(2) folds channels into H and W
             self.layers.append(
                 nn.Sequential(
-                    sn_conv2d(curr_c, out_c * 4, kernel_size=3, padding=1),
-                    nn.PixelShuffle(2),
+                    nn.Upsample(scale_factor=2, mode="nearest"),
+                    sn_conv2d(
+                        curr_c, out_c, kernel_size=3, padding=1, spectral=spectral
+                    ),
                     nn.SiLU(),
                 )
             )
@@ -297,7 +342,9 @@ class ConvDecoder(nn.Module):
 
         # 4. Final Projection: (Features 64 + Grid 2) -> Output Channels (C)
         # curr_c is hiddens[-1] (usually 64)
-        self.final_conv = sn_conv2d(curr_c + 2, C, kernel_size=3, padding=1)
+        self.final_conv = sn_conv2d(
+            curr_c + 2, C, kernel_size=3, padding=1, spectral=spectral
+        )
 
     def forward(self, z: Tensor, cond: Optional[Tensor] = None):
         """

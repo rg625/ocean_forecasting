@@ -72,6 +72,7 @@ class KoopmanAutoencoder(nn.Module):
         rank: int = 4,
         cond_expansion_type: Optional[str] = None,
         use_attention: bool = True,
+        spectral: bool = False,
         **conv_kwargs,
     ):
         super().__init__()
@@ -97,19 +98,20 @@ class KoopmanAutoencoder(nn.Module):
 
         # 1. Establish the Single Source of Truth for Physics Embeddings
         # Ensure we have a concrete integer for dimensions (default to 64 if None)
-        self.shared_embed_dim = (
-            cond_embedding_dim if cond_embedding_dim is not None else 64
-        )
+        if cond_embedding_dim is not None:
+            self.shared_embed_dim = cond_embedding_dim
 
-        # Instantiate the Learnable RBFs ONCE.
-        # These objects hold the learnable centers/gammas that must stay synchronized.
-        self.shared_expansion_map = nn.ModuleDict(
-            {
-                "Re": re_expansion(self.shared_embed_dim),
-                "Ma": ma_expansion(self.shared_embed_dim),
-                "forcing": forcing_expansion(self.shared_embed_dim),
-            }
-        )
+            # Instantiate the Learnable RBFs ONCE.
+            # These objects hold the learnable centers/gammas that must stay synchronized.
+            self.shared_expansion_map = nn.ModuleDict(
+                {
+                    "Re": re_expansion(self.shared_embed_dim),
+                    "Ma": ma_expansion(self.shared_embed_dim),
+                    "forcing": forcing_expansion(self.shared_embed_dim),
+                }
+            )
+        else:
+            self.shared_expansion_map = None
 
         # --- Module Initialization ---
         common_args = {
@@ -120,6 +122,7 @@ class KoopmanAutoencoder(nn.Module):
             "block_size": block_size,
             "kernel_size": kernel_size,
             "use_checkpoint": use_checkpoint,
+            "spectral": spectral,
             **conv_kwargs,
         }
 
@@ -148,12 +151,13 @@ class KoopmanAutoencoder(nn.Module):
 
         self.decoder = ConvDecoder(C=self.total_input_channels, **common_args)
 
-        assert isinstance(
-            cond_embedding_dim, int
-        ), f"expected 'cond_embedding_dim' to be int but got {type(cond_embedding_dim)} instead."
+        if cond_type is not None:
+            assert isinstance(
+                cond_embedding_dim, int
+            ), f"expected 'cond_embedding_dim' to be int but got {type(cond_embedding_dim)} instead."
         self.koopman_operator = KoopmanOperator(
             latent_dim=latent_dim,
-            cond_embedding_dim=self.shared_embed_dim,  # Force sync
+            cond_embedding_dim=cond_embedding_dim,  # Force sync
             mode=operator_mode,
             use_checkpoint=use_checkpoint,
             is_continuous=is_continuous,
@@ -536,6 +540,169 @@ class KoopmanAutoencoder(nn.Module):
             x_recon=x_recon,
             x_preds=x_preds,
             z_preds=z_preds_theoretical,
+            reynolds=reynolds,
+            disturbed_latents=None,
+            dz_dt=None,
+            dz_dt_disturbed=None,
+        )
+
+    def compute_stabilized_evolution(
+        self,
+        z0: Tensor,
+        num_frames: Union[int, Tensor],
+        cond: Optional[Tensor] = None,
+        stabilization_gamma: float = 0.017,
+        dt: float = 0.1,
+        method: Literal["euler", "rk4"] = "euler",
+    ) -> Tensor:
+        """
+        Integrates the latent dynamics while injecting energy ('gamma')
+        to counteract the model's learned damping.
+
+        Args:
+            z0: Initial latent state [Batch, Latent]
+            num_frames: Number of steps to roll out
+            cond: Physics condition [Batch, Cond_Dim] (optional)
+            stabilization_gamma: Energy injection rate (default 0.017 matches your spectrum)
+            dt: Time step
+            method: Integration scheme ('euler' is usually sufficient for stabilization)
+        """
+        # 1. Setup
+        if isinstance(num_frames, Tensor):
+            num_frames = int(num_frames.view(-1)[0].item())
+
+        # Ensure we can access the dynamics module for derivatives
+        if not (
+            self.koopman_operator.is_continuous
+            and hasattr(self.koopman_operator.dynamics, "_get_derivative")
+        ):
+            # Fallback for discrete or MLP operators: simple multiplicative boost
+            # z_{t+1} = Op(z_t) * (1 + gamma)
+            z_current = z0
+            preds = []
+            for _ in range(num_frames):
+                # We assume cond is static for the rollout here; if dynamic, logic changes slightly
+                z_current = self.koopman_operator(z_current, cond=cond)
+                z_current = z_current * (1.0 + stabilization_gamma)
+                preds.append(z_current)
+            return torch.stack(preds, dim=1)
+
+        # 2. Continuous Logic (Physics Derivative)
+        dyn = self.koopman_operator.dynamics
+        cond_encoded = dyn._encode_cond(cond) if cond is not None else None
+
+        z_current = z0
+        z_preds = []
+
+        for _ in range(num_frames):
+            if method == "euler":
+                # k1 = f(z)
+                dz = dyn._get_derivative(z_current, cond_encoded=cond_encoded)
+
+                # --- THE FIX: Gamma Injection ---
+                # z_dot_stabilized = z_dot + gamma * z
+                dz_stabilized = dz + (stabilization_gamma * z_current)
+
+                # Step
+                z_next = z_current + dz_stabilized * dt
+
+            elif method == "rk4":
+                # slightly more expensive, usually not needed just for stabilization
+                # Note: We apply gamma injection to the final update, or inside the derivative function.
+                # Applying inside usually consistent: f_stable(z) = f(z) + gamma*z
+
+                def f_stable(z_in):
+                    d = dyn._get_derivative(z_in, cond_encoded=cond_encoded)
+                    return d + (stabilization_gamma * z_in)
+
+                k1 = f_stable(z_current)
+                k2 = f_stable(z_current + dt * k1 / 2)
+                k3 = f_stable(z_current + dt * k2 / 2)
+                k4 = f_stable(z_current + dt * k3)
+
+                z_next = z_current + (dt / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+
+            z_preds.append(z_next)
+            z_current = z_next
+
+        return torch.stack(z_preds, dim=1)
+
+    def forward_stabilized(
+        self,
+        x: TensorDict,
+        seq_length: Union[int, Tensor],
+        stabilization_gamma: float = 0.017,
+        dt: float = 0.1,
+        cond_future: Optional[Tensor] = None,
+    ) -> KoopmanOutput:
+        """
+        Forward pass that manually injects energy to prevent long-term diffusion.
+        Use this for validation/inference on long rollouts.
+        """
+        # 1. Prepare inputs
+        obstacle_mask, cond_input, x_data, seq_length_int = self._prepare_inputs(
+            x, seq_length
+        )
+
+        # 2. Encode initial state z0
+        # We don't disturb latents during stable inference usually
+        z0, _ = self._encode_initial_states(x_data, cond_input)
+
+        # 3. Handle Conditioning
+        # We need a single condition vector for the rollout (assuming constant physics params like Re)
+        cond_for_prediction = x.get("cond_target")
+
+        # Fallback to input condition if target missing
+        if cond_for_prediction is None and cond_input is not None:
+            # Take the last frame's condition
+            cond_vec = cond_input[:, -1]
+        elif cond_for_prediction is not None:
+            # If target provided (e.g. sequence of Re), take mean or first
+            # Usually Re is constant over time, so mean/first is same
+            cond_vec = cond_for_prediction[:, 0]
+        else:
+            cond_vec = None
+
+        if cond_vec is not None:
+            cond_vec = self.re_norm(cond_vec)
+
+        # 4. Compute Stabilized Evolution (The Core Logic)
+        z_preds_stable = self.compute_stabilized_evolution(
+            z0=z0,
+            num_frames=seq_length_int,
+            cond=cond_vec,
+            stabilization_gamma=stabilization_gamma,
+            dt=dt,
+        )
+
+        # 5. Decode outputs
+        # Note: Decoder condition needs to be repeated for time dimension
+        x_recon = self.decode(z0, obstacle_mask=obstacle_mask)
+
+        x_preds = TensorDict({}, batch_size=[z0.size(0), 0])
+        if seq_length_int > 0:
+            # Flatten B, T -> B*T for decoding
+            B, T, D = z_preds_stable.shape
+            z_flat = z_preds_stable.reshape(B * T, D)
+
+            decoded_flat = self.decode(z_flat, obstacle_mask=obstacle_mask)
+
+            # Reshape back to [B, T, C, H, W]
+            x_preds = decoded_flat.apply(
+                lambda t: t.view(B, T, *t.shape[1:]),
+                batch_size=[B, T],
+            )
+
+        # 6. Predict Reynolds (Optional)
+        reynolds = None
+        if self.predict_cond and self.re_predictor is not None:
+            z_all = torch.cat([z0.unsqueeze(1), z_preds_stable], dim=1)
+            reynolds = self.re_predictor(z_all.detach())
+
+        return KoopmanOutput(
+            x_recon=x_recon,
+            x_preds=x_preds,
+            z_preds=z_preds_stable,
             reynolds=reynolds,
             disturbed_latents=None,
             dz_dt=None,

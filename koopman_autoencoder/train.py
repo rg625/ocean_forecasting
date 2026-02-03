@@ -186,6 +186,7 @@ def main(cfg: DictConfig):
             rank=cfg.model.rank,
             cond_expansion_type=cfg.data.selection_param,
             use_attention=cfg.model.use_attention,
+            spectral=cfg.model.spectral,
             **cfg.model.conv_kwargs,
         ).to(device)
         # model = torch.compile(model)

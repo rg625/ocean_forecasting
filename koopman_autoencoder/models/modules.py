@@ -3,7 +3,6 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Union
-import math
 
 import torch
 import torch.nn as nn
@@ -42,12 +41,12 @@ class KoopmanConfig:
     """Centralized configuration for Koopman Operator."""
 
     latent_dim: int
-    cond_embedding_dim: int = 0
+    cond_embedding_dim: Optional[int] = None
     mode: KoopmanMode = KoopmanMode.LINEAR
     assume_orthogonal_eigenvectors: bool = True
     use_checkpoint: bool = False
     cond_expansion_type: Optional[str] = None
-    rank: int = 32  # For Low-Rank Adaptation (Linear Mode)
+    rank: Optional[int] = 32  # For Low-Rank Adaptation (Linear Mode)
     hidden_dim: int = 32  # Width for Hypnets and MLPs
 
 
@@ -94,38 +93,49 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
 
         # FIX: Initialize an empty ModuleDict by default so standalone usage doesn't crash.
         # The Wrapper (KoopmanOperator) will overwrite this with the shared map.
-        self.expansion_map = nn.ModuleDict()
+        if (
+            config.cond_expansion_type is not None
+            and config.cond_embedding_dim is not None
+            and config.rank is not None
+        ):
+            self.expansion_map = nn.ModuleDict()
 
-        # We also provide default fallbacks if not overwritten, for safety
-        dim_to_use = config.cond_embedding_dim if config.cond_embedding_dim > 0 else 64
-        if not hasattr(self, "expansion_map") or len(self.expansion_map) == 0:
-            self.expansion_map = nn.ModuleDict(
-                {
-                    "Re": re_expansion(dim_to_use),
-                    "Ma": ma_expansion(dim_to_use),
-                    "forcing": forcing_expansion(dim_to_use),
-                }
-            )
+            # We also provide default fallbacks if not overwritten, for safety
+            dim_to_use = config.cond_embedding_dim
+            if not hasattr(self, "expansion_map") or len(self.expansion_map) == 0:
+                self.expansion_map = nn.ModuleDict(
+                    {
+                        "Re": re_expansion(dim_to_use),
+                        "Ma": ma_expansion(dim_to_use),
+                        "forcing": forcing_expansion(dim_to_use),
+                    }
+                )
 
-        if config.mode == KoopmanMode.MLP and config.cond_embedding_dim > 0:
+        if config.mode == KoopmanMode.MLP and config.cond_embedding_dim is not None:
             self.conditioner = AdaLNMLP(config.latent_dim, config.cond_embedding_dim)
 
     def _build_hypnet(self, output_dim: int) -> Optional[KoopmanHypnet]:
-        if self.config.cond_embedding_dim > 0:
-            return KoopmanHypnet(
-                self.config.cond_embedding_dim, output_dim, self.config.hidden_dim
-            )
-        return None
+        assert (
+            self.config.cond_embedding_dim is not None
+        ), f"Need integer conditioning dimension, not {type(self.config.cond_embedding_dim)}"
+        return KoopmanHypnet(
+            self.config.cond_embedding_dim, output_dim, self.config.hidden_dim
+        )
 
     def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
         if cond is None:
+            assert (
+                self.config.cond_embedding_dim is None
+            ), f"Broken logic, cannot have condition {type(cond)} and coditioning dim {type(self.config.cond_embedding_dim)}"
             return None
 
         # 1. Shape Normalization
         if cond.ndim == 1:
             cond = cond.unsqueeze(-1)
         elif (
-            cond.ndim == 2 and cond.shape[1] != 1 and self.config.cond_embedding_dim > 0
+            cond.ndim == 2
+            and cond.shape[1] != 1
+            and self.config.cond_embedding_dim is not None
         ):
             if cond.shape[1] != self.config.cond_embedding_dim:
                 # Assume sequence (B, T) -> Average to (B, 1) if not embedding
@@ -149,22 +159,6 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
         if cond is not None:
             return self.conditioner(z, cond)
         return z
-
-    def _apply_lora_update(
-        self, K_base: Tensor, cond_encoded: Tensor, hypnet: nn.Module, rank: int
-    ) -> Tensor:
-        uv = hypnet(cond_encoded)  # [B, 2 * D * Rank]
-        B, _ = uv.shape
-        D = self.config.latent_dim
-
-        uv = uv.view(B, rank * 2, D)
-        u, v = uv.chunk(2, dim=1)  # [B, Rank, D]
-
-        # update = sum(u_r outer v_r)
-        update = torch.einsum("brd, bre -> bde", u, v)
-
-        # Scale update to be small initially
-        return K_base.unsqueeze(0) + update * 0.1
 
     @staticmethod
     def _compute_lora_update(
@@ -218,8 +212,9 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
             q, _ = torch.linalg.qr(torch.randn(config.latent_dim, config.latent_dim))
             self.eigenvectors = nn.Parameter(q)
 
-            # Hypnet predicts deltas for real/imag
-            self.hypnet = self._build_hypnet(config.latent_dim * 2)
+            if config.rank is not None:
+                # Hypnet predicts deltas for real/imag
+                self.hypnet = self._build_hypnet(config.latent_dim * 2)
 
         # --- Stable Linear Mode ---
         if config.mode == KoopmanMode.LINEAR:
@@ -230,37 +225,37 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
             # We treat this as a free symmetric matrix, NOT a PSD matrix.
             self.D_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
 
-            # 3. Hypernetworks
-            # Output dim accommodates updates for both W and D
-            output_dim = config.latent_dim * config.latent_dim * 2
-            if config.rank > 0:
-                output_dim = config.latent_dim * 2 * config.rank * 2
+            if config.rank is not None:
+                # 3. Hypernetworks
+                # Output dim accommodates updates for both W and D
+                output_dim = config.latent_dim * config.latent_dim * 2
+                if config.rank > 0:
+                    output_dim = config.latent_dim * 2 * config.rank * 2
 
-            self.hypnet = self._build_hypnet(output_dim)
+                self.hypnet = self._build_hypnet(output_dim)
 
             self._init_stable_weights()
 
         # --- MLP Mode ---
         elif config.mode == KoopmanMode.MLP:
-            # 1. Rotational Part (Skew-Symmetric Base)
-            self.W_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+            # # 1. Rotational Part (Skew-Symmetric Base)
+            # self.W_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
 
-            # 2. Growth/Decay Part (Symmetric Base)
-            # We treat this as a free symmetric matrix, NOT a PSD matrix.
-            self.D_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+            # # 2. Growth/Decay Part (Symmetric Base)
+            # # We treat this as a free symmetric matrix, NOT a PSD matrix.
+            # self.D_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
 
-            # 3. Hypernetworks
-            # Output dim accommodates updates for both W and D
-            output_dim = config.latent_dim * config.latent_dim * 2
-            if config.rank > 0:
-                output_dim = config.latent_dim * 2 * config.rank * 2
+            # if config.rank is not None:
 
-            self.hypnet = self._build_hypnet(output_dim)
+            #     # 3. Hypernetworks
+            #     # Output dim accommodates updates for both W and D
+            #     output_dim = config.latent_dim * config.latent_dim * 2
+            #     if config.rank > 0:
+            #         output_dim = config.latent_dim * 2 * config.rank * 2
 
-            self._init_stable_weights()
-            # Hypnet predicts LoRA update
-            output_dim = config.latent_dim * 2 * config.rank
-            self.hypnet = self._build_hypnet(output_dim)
+            #     self.hypnet = self._build_hypnet(output_dim)
+
+            #     self._init_stable_weights()
 
             self.K_mlp = nn.Sequential(
                 nn.Linear(config.latent_dim, config.latent_dim, bias=False),
@@ -277,7 +272,7 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
 
     def _init_stable_weights(self):
         # 1. Initialize W as Orthogonal (Pure Rotation, Energy Conserved)
-        nn.init.kaiming_uniform_(self.W_param.weight, a=math.sqrt(5))
+        nn.init.orthogonal_(self.W_param.weight, gain=1.0)
 
         # 2. Initialize D to ZERO (Neutral Stability)
         # We start with NO dissipation. The model learns where to damp.
@@ -300,13 +295,14 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         Exposed for analysis, though internal forward uses efficient steps.
         """
         if self.config.mode == KoopmanMode.MLP:
-            K = self._get_effective_linear_map(cond_encoded)
-            if K.ndim == 3:
-                return torch.bmm(K, z.unsqueeze(-1)).squeeze(-1) + self.K_mlp(z)
+            # K = self._get_effective_linear_map(cond_encoded)
+            # if K.ndim == 3:
+            #     return torch.bmm(K, z.unsqueeze(-1)).squeeze(-1) + self.K_mlp(z)
             dz_dt = self.K_mlp(z)
             # dz_dt = self.K(z)
-            residual_z = self._apply_conditioning_mlp(dz_dt, cond_encoded)
-            return residual_z + F.linear(z, K)
+            # residual_z = self._apply_conditioning_mlp(dz_dt, cond_encoded)
+            # return residual_z + F.linear(z, K)
+            return self._apply_conditioning_mlp(dz_dt, cond_encoded)
 
         # For Linear/Eigen, we construct K_eff and mul
         else:
@@ -320,49 +316,52 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         Returns K = Skew(W) + Sym(D).
         Allows Limit Cycles (Re(lambda) ~ 0) and prevents wash-out.
         """
-        if self.config.mode == KoopmanMode.LINEAR:
-            W = self.W_param.weight
-            D = self.D_param.weight
+        assert (
+            self.config.mode == KoopmanMode.LINEAR
+        ), f"Can only apply LoRA in Linear mode, not {self.config.mode}"
+        W = self.W_param.weight
+        D = self.D_param.weight
 
-            # --- LoRA / Hypernetwork Update ---
-            if self.hypnet is not None and cond_encoded is not None:
-                uv_all = self.hypnet(cond_encoded)
+        # --- LoRA / Hypernetwork Update ---
+        if self.hypnet is not None and cond_encoded is not None:
+            assert (
+                self.config.rank is not None
+            ), f"Can only apply LoRA without specified rank, got {self.config.rank} instead"
+            uv_all = self.hypnet(cond_encoded)
 
-                # Split features for W and D
-                uv_w, uv_d = uv_all.chunk(2, dim=1)
+            # Split features for W and D
+            uv_w, uv_d = uv_all.chunk(2, dim=1)
 
-                # Apply Low-Rank Updates
-                W = self._compute_lora_update(W, uv_w, self.config.rank)
-                D = self._compute_lora_update(D, uv_d, self.config.rank)
+            # Apply Low-Rank Updates
+            W = self._compute_lora_update(W, uv_w, self.config.rank)
+            D = self._compute_lora_update(D, uv_d, self.config.rank)
 
-            # --- Construct Operator ---
+        # --- Construct Operator ---
 
-            # 1. Skew-Symmetric Part (Advection/Oscillation)
-            # Re(lambda) = 0. Preserves Energy.
-            if W.ndim == 3:  # Batched
-                W_T = W.transpose(1, 2)
-            else:
-                W_T = W.T
-            K_skew = 0.5 * (W - W_T)
+        # 1. Skew-Symmetric Part (Advection/Oscillation)
+        # Re(lambda) = 0. Preserves Energy.
+        if W.ndim == 3:  # Batched
+            W_T = W.transpose(1, 2)
+        else:
+            W_T = W.T
+        K_skew = 0.5 * (W - W_T)
 
-            # 2. Symmetric Part (Growth/Decay)
-            # Allows Re(lambda) != 0.
-            if D.ndim == 3:
-                D_T = D.transpose(1, 2)
-            else:
-                D_T = D.T
+        # 2. Symmetric Part (Growth/Decay)
+        # Allows Re(lambda) != 0.
+        if D.ndim == 3:
+            D_T = D.transpose(1, 2)
+        else:
+            D_T = D.T
 
-            # Note: We use (D + D_T) instead of (D^T @ D).
-            # This allows negative eigenvalues (dissipation) AND positive ones (energy injection).
-            # We scale it down significantly so dynamics are dominated by rotation initially.
-            K_sym = 0.5 * (D + D_T)
+        # Note: We use (D + D_T) instead of (D^T @ D).
+        # This allows negative eigenvalues (dissipation) AND positive ones (energy injection).
+        # We scale it down significantly so dynamics are dominated by rotation initially.
+        K_sym = 0.5 * (D + D_T)
 
-            # Combine: K = Rotation + Deformation
-            K = K_skew + K_sym
+        # Combine: K = Rotation + Deformation
+        K = K_skew + K_sym
 
-            return K
-
-        return super()._get_effective_linear_map(cond_encoded)
+        return K
 
     def _forward_eigen(
         self, z: Tensor, dt: float, cond_encoded: Optional[Tensor]
@@ -418,12 +417,14 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
 class DiscreteKoopmanOperator(BaseKoopmanOperator):
     """
     Discrete Time Dynamics: z_{t+1} = K(c) * z
+    Adjusted to mimic the Continuous operator's structure (Skew/Sym decomposition).
     """
 
     def __init__(self, config: KoopmanConfig):
         super().__init__(config)
         self.hypnet = None
 
+        # --- Eigen Mode ---
         if config.mode == KoopmanMode.EIGEN:
             self.unconstrained_log_magnitude = nn.Parameter(
                 torch.randn(config.latent_dim)
@@ -431,29 +432,60 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             self.angle = nn.Parameter(torch.randn(config.latent_dim))
             q, _ = torch.linalg.qr(torch.randn(config.latent_dim, config.latent_dim))
             self.eigenvectors = nn.Parameter(q)
-            self.hypnet = self._build_hypnet(config.latent_dim * 2)
 
+            if config.rank is not None:
+                self.hypnet = self._build_hypnet(config.latent_dim * 2)
+
+        # --- Linear Mode (Mimicking Continuous Skew/Sym) ---
         elif config.mode == KoopmanMode.LINEAR:
-            self.K_base = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
-            self._init_linear_weights()
-            output_dim = config.latent_dim * 2 * config.rank
-            self.hypnet = self._build_hypnet(output_dim)
+            # Rotational Part
+            self.W_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+            # Growth/Decay Part
+            self.D_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+
+            if config.rank is not None:
+                output_dim = config.latent_dim * 2 * config.rank * 2
+                self.hypnet = self._build_hypnet(output_dim)
+
+            self._init_stable_weights()
 
         elif config.mode == KoopmanMode.MLP:
-            self.K = nn.Sequential(
-                nn.Linear(config.latent_dim, config.latent_dim),
+            self.K_mlp = nn.Sequential(
+                nn.Linear(config.latent_dim, config.latent_dim, bias=False),
                 nn.SiLU(),
-                nn.Linear(config.latent_dim, config.latent_dim),
+                nn.Linear(config.latent_dim, config.latent_dim, bias=False),
             )
-            for layer in self.K[:-1]:
-                if isinstance(layer, nn.Linear):
-                    nn.init.kaiming_normal_(
-                        layer.weight, a=0.01, mode="fan_in", nonlinearity="leaky_relu"
-                    )
-                    nn.init.constant_(layer.bias, 0)
+            nn.init.orthogonal_(self.K_mlp[-1].weight, gain=0.1)
 
-            nn.init.orthogonal_(self.K[-1].weight, gain=0.1)
-            nn.init.constant_(self.K[-1].bias, 0)
+    def _get_effective_linear_map(self, cond_encoded: Optional[Tensor]):
+        """
+        Mirroring the Continuous logic: K = Skew(W) + Sym(D)
+        In discrete terms, this acts as the transition matrix.
+        """
+        W = self.W_param.weight
+        D = self.D_param.weight
+
+        if self.hypnet is not None and cond_encoded is not None:
+            assert (
+                self.config.rank is not None
+            ), f"Can only apply LoRA without specified rank, got {self.config.rank} instead"
+            uv_all = self.hypnet(cond_encoded)
+            uv_w, uv_d = uv_all.chunk(2, dim=1)
+            W = self._compute_lora_update(W, uv_w, self.config.rank)
+            D = self._compute_lora_update(D, uv_d, self.config.rank)
+
+        # 1. Skew-Symmetric (Unitary/Rotation)
+        W_T = W.transpose(-1, -2) if W.ndim == 3 else W.T
+        K_skew = 0.5 * (W - W_T)
+
+        # 2. Symmetric (Scaling)
+        D_T = D.transpose(-1, -2) if D.ndim == 3 else D.T
+        K_sym = 0.5 * (D + D_T)
+
+        # Discrete Transition: Identity + (Rotation + Deformation)
+        # This approximates z_next = z + (K_skew + K_sym)z
+        identity = torch.eye(self.config.latent_dim, device=W.device)
+        return identity + K_skew + K_sym
 
     def _init_linear_weights(self):
         nn.init.eye_(self.K_base.weight)
@@ -483,9 +515,7 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
                 mag_logits = mag_logits.unsqueeze(0) + d_mag
                 angle = angle.unsqueeze(0) + d_ang
 
-            # Stability: Magnitude <= 1
             lambdas = torch.polar(torch.exp(-F.softplus(mag_logits)), angle)
-
             P = self.eigenvectors
             P_inv = (
                 P.T
@@ -498,20 +528,14 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             return (P.to(torch.complex64) @ z_eig_next.T).T.real
 
         elif self.config.mode == KoopmanMode.LINEAR:
-            K = self.K_base.weight
-            if self.hypnet is not None and cond_encoded is not None:
-                K = self._apply_lora_update(
-                    K, cond_encoded, self.hypnet, self.config.rank
-                )
-
+            K = self._get_effective_linear_map(cond_encoded)
             if K.ndim == 3:
                 return torch.bmm(K, z.unsqueeze(-1)).squeeze(-1)
             return F.linear(z, K)
 
         elif self.config.mode == KoopmanMode.MLP:
-            # For discrete, the net predicts the Residual: z_new = z + Net(z)
             z_conditioned = self._apply_conditioning_mlp(z, cond_encoded)
-            return z + self.K(z_conditioned)
+            return z + self.K_mlp(z_conditioned)
 
         else:
             raise RuntimeError(f"Unsupported Koopman mode: {self.config.mode}")
@@ -526,7 +550,7 @@ class KoopmanOperator(nn.Module):
     def __init__(
         self,
         latent_dim: int,
-        cond_embedding_dim: int,
+        cond_embedding_dim: Optional[int] = None,
         mode: Union[KoopmanMode, str] = KoopmanMode.LINEAR,
         assume_orthogonal_eigenvectors: bool = True,
         use_checkpoint: bool = False,

@@ -63,8 +63,9 @@ class ModelConfig:
     cond_grad_enabled: bool = False
     disturb_std: Optional[float] = None
     is_continuous: Optional[bool] = False
-    rank: int = MISSING
+    rank: Optional[int] = None
     use_attention: Optional[bool] = False
+    spectral: bool = MISSING
 
 
 @dataclass

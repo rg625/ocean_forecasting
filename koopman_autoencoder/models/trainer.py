@@ -268,7 +268,7 @@ class Trainer:
                 self.scaler.update()
             else:
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
                 self.optimizer.step()
 
             # detached_losses = {

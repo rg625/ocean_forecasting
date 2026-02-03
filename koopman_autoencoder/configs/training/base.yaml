@@ -9,5 +9,5 @@ patience: 20
 use_checkpoint: False
 save_latest_every: 10
 num_visual_batches: 1
-precision: float32
-# precision: bfloat16
+# precision: float32
+precision: bfloat16
