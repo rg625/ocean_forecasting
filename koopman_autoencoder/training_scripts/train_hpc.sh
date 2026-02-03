@@ -10,7 +10,7 @@
 #SBATCH --time=10:45:00
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=rg625@cam.ac.uk
-#SBATCH --array=0-15   # Total experiments: 2 TYPES x 2 MODLES x 4 DIMENSIONS = 16
+#SBATCH --array=0-1   # Total experiments: 2 TYPES x 2 MODLES x 4 DIMENSIONS = 16
 
 # Load required modules
 . /etc/profile.d/modules.sh
@@ -24,34 +24,37 @@ nvidia-smi
 # Activate conda environment
 source /home/rg625/.bashrc
 conda activate koopman-ocean
-
+wandb enabled
 # Move to project directory
 cd /home/rg625/rds/hpc-work/ocean_forecasting/
 
 # Define arrays of options
-TYPES=("continous" "discrete")
-MODELS=("mlp" "linear")
-DIMENSIONS=(128 256 512 1024)  # Adjust if needed
-
+TYPES=("continous")
+MODELS=("linear")
+DIMENSIONS=(128)  # Adjust if needed
+REGIMES=("full" "tra")
 # Map SLURM_ARRAY_TASK_ID to parameters
 IDX=$SLURM_ARRAY_TASK_ID
 
 NUM_DIM=${#DIMENSIONS[@]}
 NUM_MODELS=${#MODELS[@]}
 NUM_TYPES=${#TYPES[@]}
+NUM_REGIMES=${#REGIMES[@]}
 
 TYPE_IDX=$(( IDX / (NUM_MODELS * NUM_DIM) ))
 MODEL_IDX=$(( (IDX / NUM_DIM) % NUM_MODELS ))
 DIM_IDX=$(( IDX % NUM_DIM ))
+REGIME_IDX=$(( IDX % NUM_DIM ))
 
 TYPE=${TYPES[$TYPE_IDX]}
 MODEL=${MODELS[$MODEL_IDX]}
 DIM=${DIMENSIONS[$DIM_IDX]}
+REGIME=${REGIMES[$REGIME_IDX]}
 
-CONFIG_PATH=experiment/${TYPE}_${MODEL}_${DIM}.yaml
+CONFIG_PATH=experiment/${REGIME}/${TYPE}_${MODEL}_${DIM}
 
 echo "IDX=$IDX TYPE=$TYPE MODEL=$MODEL DIM=$DIM CONFIG_PATH=$CONFIG_PATH"
 echo "Running training for config: $CONFIG_PATH"
 
 # Run training
-python koopman_autoencoder/train.py --config "$CONFIG_PATH"
+python train.py --config-path configs --config-name experiment/${REGIME}/${TYPE}_${MODEL}_${DIM}

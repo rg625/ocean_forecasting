@@ -3,9 +3,9 @@
 # data:
 dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
 data_dir: "./data"
-train_file: "qg/train_sim.nc"
-val_file: "qg/test_sim.nc"
-test_file: "qg/test_sim.nc"
+train_file: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/data/qg/train_sim.nc"
+val_file: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/data/qg/test_sim.nc"
+test_file: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/data/qg/test_sim.nc"
 input_sequence_length: 2
 max_sequence_length: 8
 subsample: 2

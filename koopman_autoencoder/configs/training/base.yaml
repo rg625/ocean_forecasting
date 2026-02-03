@@ -2,7 +2,7 @@
 # base config for training
 
 # training:
-batch_size: 32
+batch_size: 64
 random_sequence_length: False
 num_epochs: 200
 patience: 20

@@ -1,11 +1,11 @@
 defaults:
   - _self_
-  - /data: base
-  - /model: continous_linear_128_inc
+  - /data: full
+  - /model: continous_linear_128_full
   - /metric: base
-  - /training: base
-  - /loss: base
-  - /lr_scheduler: linear_decay
+  - /training: full
+  - /loss: full
+  - /lr_scheduler: linear_decay_full
 
 # Top-level run configuration
 output_dir: "model_outputs_full/continous_linear_128"
