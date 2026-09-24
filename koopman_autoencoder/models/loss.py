@@ -70,14 +70,32 @@ class LossUtils:
 
     @staticmethod
     def sobolev_gradients(tensor: Tensor) -> Tuple[Optional[Tensor], Optional[Tensor]]:
-        """Computes spatial gradients (dx, dy). Expects [B, T, C, H, W] or [B, C, H, W]."""
+        """Computes spatial gradients (dx, dy). Safely handles 1D data."""
         if tensor.ndim == 5:  # B, T, C, H, W
-            dx = tensor[..., :, 1:] - tensor[..., :, :-1]
-            dy = tensor[..., 1:, :] - tensor[..., :-1, :]
+            # If width > 1 calculate gradient, else gradient is 0
+            dx = (
+                tensor[..., :, 1:] - tensor[..., :, :-1]
+                if tensor.shape[-1] > 1
+                else torch.zeros_like(tensor)
+            )
+            # If height > 1 calculate gradient, else gradient is 0
+            dy = (
+                tensor[..., 1:, :] - tensor[..., :-1, :]
+                if tensor.shape[-2] > 1
+                else torch.zeros_like(tensor)
+            )
             return dx, dy
         elif tensor.ndim == 4:  # B, C, H, W
-            dx = tensor[..., :, 1:] - tensor[..., :, :-1]
-            dy = tensor[..., 1:, :] - tensor[..., :-1, :]
+            dx = (
+                tensor[..., :, 1:] - tensor[..., :, :-1]
+                if tensor.shape[-1] > 1
+                else torch.zeros_like(tensor)
+            )
+            dy = (
+                tensor[..., 1:, :] - tensor[..., :-1, :]
+                if tensor.shape[-2] > 1
+                else torch.zeros_like(tensor)
+            )
             return dx, dy
         return None, None
 
@@ -107,7 +125,6 @@ class LossUtils:
         phase_loss = LossUtils.calc_distance(
             torch.view_as_real(fft_pred), torch.view_as_real(fft_target), mode
         ).mean()
-
         return amp_loss + phase_loss
 
     @staticmethod
@@ -273,7 +290,11 @@ class PredictionLoss(BaseModule):
             diff = (pred[key] - self.preprocess(true[key])) ** 2
             step_loss = reduce(diff, "b t ... -> b t", "mean")
 
-            weighted_loss = step_loss * weights.view(1, -1)
+            # weighted_loss = step_loss * weights.view(1, -1)
+            actual_len = step_loss.shape[1]
+            current_weights = weights[:actual_len]
+
+            weighted_loss = step_loss * current_weights.view(1, -1)
             loss_val = reduce(weighted_loss, "b t ->", "mean")
 
             total_loss = total_loss + loss_val
@@ -382,7 +403,7 @@ class LatentDynamicsLoss(BaseModule):
         norm_p = torch.norm(latent_pred, p=2, dim=-1)
         norm_t = torch.norm(true_latents, p=2, dim=-1)
         energy_loss = F.mse_loss(norm_p, norm_t)
-        loss_accum += 1.0 * energy_loss  # Weight from previous diagnosis
+        loss_accum += 0.0 * energy_loss  # Weight from previous diagnosis
         metrics["latent_energy"] = energy_loss.detach().item()
 
         # 4. Smoothness (2nd derivative minimization) - Manifold Mismatch Fix
@@ -407,6 +428,8 @@ class LatentDynamicsLoss(BaseModule):
         self, op: nn.Module, z_true: Tensor, cond: Optional[Tensor]
     ) -> Tensor:
         """Checks Forward and Backward consistency of the operator."""
+        if z_true.shape[1] < 2:
+            return torch.tensor(0.0, device=z_true.device)
         z0 = z_true[:, :-1].reshape(-1, z_true.shape[-1])
         z1 = z_true[:, 1:].reshape(-1, z_true.shape[-1])
 

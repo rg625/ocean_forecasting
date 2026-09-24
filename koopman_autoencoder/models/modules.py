@@ -1,3 +1,4 @@
+# mypy: disable-error-code="arg-type"
 import abc
 import logging
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint
+from torchdiffeq import odeint
 
 # Setup logger for industry-standard monitoring
 logger = logging.getLogger(__name__)
@@ -48,6 +50,10 @@ class KoopmanConfig:
     cond_expansion_type: Optional[str] = None
     rank: Optional[int] = 32  # For Low-Rank Adaptation (Linear Mode)
     hidden_dim: int = 32  # Width for Hypnets and MLPs
+    init_scale: float = 1.0  # Azencot forward-operator init scaling (spectral radius)
+    integrator: str = "rk4"
+    rtol: float = 1e-5
+    atol: float = 1e-6
 
 
 # --- Components ---
@@ -145,6 +151,7 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
         # 2. Physics Expansion
         if (
             self.config.cond_expansion_type
+            and hasattr(self, "expansion_map")
             and self.config.cond_expansion_type in self.expansion_map
         ):
             return self.expansion_map[self.config.cond_expansion_type](cond)
@@ -238,37 +245,27 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
 
         # --- MLP Mode ---
         elif config.mode == KoopmanMode.MLP:
-            # # 1. Rotational Part (Skew-Symmetric Base)
-            # self.W_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+            assert (
+                config.cond_embedding_dim is not None
+            ), "MLP mode requires conditioning input"
 
-            # # 2. Growth/Decay Part (Symmetric Base)
-            # # We treat this as a free symmetric matrix, NOT a PSD matrix.
-            # self.D_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
-
-            # if config.rank is not None:
-
-            #     # 3. Hypernetworks
-            #     # Output dim accommodates updates for both W and D
-            #     output_dim = config.latent_dim * config.latent_dim * 2
-            #     if config.rank > 0:
-            #         output_dim = config.latent_dim * 2 * config.rank * 2
-
-            #     self.hypnet = self._build_hypnet(output_dim)
-
-            #     self._init_stable_weights()
+            D = config.latent_dim
 
             self.K_mlp = nn.Sequential(
-                nn.Linear(config.latent_dim, config.latent_dim, bias=False),
+                nn.Linear(config.cond_embedding_dim, config.hidden_dim),
                 nn.SiLU(),
-                nn.Linear(config.latent_dim, config.latent_dim, bias=False),
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.SiLU(),
+                nn.Linear(config.hidden_dim, D * D),
             )
+
+            # Stable init
             for layer in self.K_mlp[:-1]:
                 if isinstance(layer, nn.Linear):
-                    nn.init.kaiming_normal_(
-                        layer.weight, a=0.01, mode="fan_in", nonlinearity="leaky_relu"
-                    )
+                    nn.init.kaiming_normal_(layer.weight)
 
-            nn.init.orthogonal_(self.K_mlp[-1].weight, gain=0.1)
+            nn.init.zeros_(self.K_mlp[-1].weight)
+            nn.init.zeros_(self.K_mlp[-1].bias)
 
     def _init_stable_weights(self):
         # 1. Initialize W as Orthogonal (Pure Rotation, Energy Conserved)
@@ -290,78 +287,66 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         return torch.complex(real_part, self.imaginary_parts)
 
     def _get_derivative(self, z: Tensor, cond_encoded: Optional[Tensor]) -> Tensor:
-        """
-        Computes dz/dt = f(z, cond)
-        Exposed for analysis, though internal forward uses efficient steps.
-        """
-        if self.config.mode == KoopmanMode.MLP:
-            # K = self._get_effective_linear_map(cond_encoded)
-            # if K.ndim == 3:
-            #     return torch.bmm(K, z.unsqueeze(-1)).squeeze(-1) + self.K_mlp(z)
-            dz_dt = self.K_mlp(z)
-            # dz_dt = self.K(z)
-            # residual_z = self._apply_conditioning_mlp(dz_dt, cond_encoded)
-            # return residual_z + F.linear(z, K)
-            return self._apply_conditioning_mlp(dz_dt, cond_encoded)
-
-        # For Linear/Eigen, we construct K_eff and mul
-        else:
+        if self.config.mode in [KoopmanMode.LINEAR, KoopmanMode.MLP]:
             K = self._get_effective_linear_map(cond_encoded)
+
             if K.ndim == 3:
                 return torch.bmm(K, z.unsqueeze(-1)).squeeze(-1)
+
             return F.linear(z, K)
+
+        raise RuntimeError("Derivative only valid for linear/mlp modes")
 
     def _get_effective_linear_map(self, cond_encoded: Optional[Tensor]):
         """
-        Returns K = Skew(W) + Sym(D).
-        Allows Limit Cycles (Re(lambda) ~ 0) and prevents wash-out.
+        Returns effective K matrix for all modes.
         """
-        assert (
-            self.config.mode == KoopmanMode.LINEAR
-        ), f"Can only apply LoRA in Linear mode, not {self.config.mode}"
+
+        # ---------------------------------------------------------
+        # MLP MODE: cond -> full matrix
+        # ---------------------------------------------------------
+        if self.config.mode == KoopmanMode.MLP:
+            assert cond_encoded is not None, "MLP mode requires conditioning"
+
+            B = cond_encoded.shape[0]
+            D = self.config.latent_dim
+
+            K = self.K_mlp(cond_encoded).view(B, D, D)
+
+            # Stabilize matrix decomposition
+            K_skew = 0.5 * (K - K.transpose(1, 2))
+            K_sym = 0.1 * 0.5 * (K + K.transpose(1, 2))
+
+            return K_skew + K_sym
+
+        # ---------------------------------------------------------
+        # LINEAR MODE
+        # ---------------------------------------------------------
+        assert self.config.mode == KoopmanMode.LINEAR
+
         W = self.W_param.weight
         D = self.D_param.weight
 
-        # --- LoRA / Hypernetwork Update ---
+        # LoRA updates
         if self.hypnet is not None and cond_encoded is not None:
-            assert (
-                self.config.rank is not None
-            ), f"Can only apply LoRA without specified rank, got {self.config.rank} instead"
-            uv_all = self.hypnet(cond_encoded)
+            assert self.config.rank is not None
 
-            # Split features for W and D
+            uv_all = self.hypnet(cond_encoded)
             uv_w, uv_d = uv_all.chunk(2, dim=1)
 
-            # Apply Low-Rank Updates
             W = self._compute_lora_update(W, uv_w, self.config.rank)
             D = self._compute_lora_update(D, uv_d, self.config.rank)
 
-        # --- Construct Operator ---
-
-        # 1. Skew-Symmetric Part (Advection/Oscillation)
-        # Re(lambda) = 0. Preserves Energy.
-        if W.ndim == 3:  # Batched
-            W_T = W.transpose(1, 2)
-        else:
-            W_T = W.T
+        # Skew part
+        W_T = W.transpose(1, 2) if W.ndim == 3 else W.T
         K_skew = 0.5 * (W - W_T)
 
-        # 2. Symmetric Part (Growth/Decay)
-        # Allows Re(lambda) != 0.
-        if D.ndim == 3:
-            D_T = D.transpose(1, 2)
-        else:
-            D_T = D.T
-
-        # Note: We use (D + D_T) instead of (D^T @ D).
-        # This allows negative eigenvalues (dissipation) AND positive ones (energy injection).
-        # We scale it down significantly so dynamics are dominated by rotation initially.
+        # Symmetric part
+        D_T = D.transpose(1, 2) if D.ndim == 3 else D.T
         K_sym = 0.5 * (D + D_T)
+        # K_sym = -0.1 * torch.matmul(D, D_T)
 
-        # Combine: K = Rotation + Deformation
-        K = K_skew + K_sym
-
-        return K
+        return K_skew + K_sym
 
     def _forward_eigen(
         self, z: Tensor, dt: float, cond_encoded: Optional[Tensor]
@@ -382,27 +367,44 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         return (P.to(torch.complex64) @ z_eig_evolved.T).T.real
 
     def _rk4_step(self, z: Tensor, dt: float, cond_encoded: Optional[Tensor]) -> Tensor:
-        # Define the derivative function based on mode
-        if self.config.mode == KoopmanMode.MLP:
+        K = self._get_effective_linear_map(cond_encoded)
 
-            def f(s: Tensor) -> Tensor:
-                return self._get_derivative(s, cond_encoded)
-
-        else:
-            # For Linear, pre-compute K once for the step if possible,
-            # but K depends on cond, which is constant over the step.
-            K = self._get_effective_linear_map(cond_encoded)
-
-            def f(s):
-                if K.ndim == 3:
-                    return torch.bmm(K, s.unsqueeze(-1)).squeeze(-1)
-                return F.linear(s, K)
+        def f(s: Tensor):
+            if K.ndim == 3:
+                return torch.bmm(K, s.unsqueeze(-1)).squeeze(-1)
+            return F.linear(s, K)
 
         k1 = f(z)
         k2 = f(z + 0.5 * dt * k1)
         k3 = f(z + 0.5 * dt * k2)
         k4 = f(z + dt * k3)
+
         return z + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+
+    def _ode_rhs(self, t, z, cond_encoded):
+        K = self._get_effective_linear_map(cond_encoded)
+
+        if K.ndim == 3:
+            return torch.bmm(K, z.unsqueeze(-1)).squeeze(-1)
+
+        return F.linear(z, K)
+
+    def _integrate(self, z, dt, cond_encoded):
+        t = torch.tensor([0.0, dt], device=z.device)
+
+        def rhs(t_now, state):
+            return self._ode_rhs(t_now, state, cond_encoded)
+
+        out = odeint(
+            rhs,
+            z,
+            t,
+            method=self.config.integrator,
+            rtol=self.config.rtol,
+            atol=self.config.atol,
+        )
+
+        return out[-1]
 
     def forward(self, z: Tensor, cond: Optional[Tensor], dt: Optional[float]) -> Tensor:
         cond_encoded = self._encode_cond(cond)
@@ -412,6 +414,7 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
         else:
             # Both Linear and MLP use RK4 for stability/accuracy
             return self._rk4_step(z, dt, cond_encoded)
+            # return self._integrate(z, dt, cond_encoded)
 
 
 class DiscreteKoopmanOperator(BaseKoopmanOperator):
@@ -443,11 +446,24 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             # Growth/Decay Part
             self.D_param = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
 
+            # Separately-learned BACKWARD operator, same skew/sym parameterisation as
+            # the forward map (Azencot et al. 2020). `backward_step` always applies this
+            # learned operator -- never a pseudo-inverse derived from the forward map --
+            # so the matrix consistency penalty (B K = I, K B = I) has two genuinely
+            # independent matrices to tie together.
+            self.W_back_param = nn.Linear(
+                config.latent_dim, config.latent_dim, bias=False
+            )
+            self.D_back_param = nn.Linear(
+                config.latent_dim, config.latent_dim, bias=False
+            )
+
             if config.rank is not None:
                 output_dim = config.latent_dim * 2 * config.rank * 2
                 self.hypnet = self._build_hypnet(output_dim)
 
             self._init_stable_weights()
+            self._init_backward_weights()
 
         elif config.mode == KoopmanMode.MLP:
             self.K_mlp = nn.Sequential(
@@ -456,6 +472,41 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
                 nn.Linear(config.latent_dim, config.latent_dim, bias=False),
             )
             nn.init.orthogonal_(self.K_mlp[-1].weight, gain=0.1)
+
+    def _init_stable_weights(self):
+        nn.init.orthogonal_(self.W_param.weight, gain=0.01)  # Very small rotation
+        nn.init.constant_(self.D_param.weight, -0.01)  # Slight contraction
+
+    def _init_backward_weights(self):
+        """Initialise the backward operator to pinv(K_fwd^T), mirroring the reference
+        ``dynamics_back`` construction (Azencot et al. 2020).
+
+        ``skew(M) + sym(M) == M`` for any square M, so writing the same matrix into both
+        backward parameters makes the assembled backward map exactly ``I + M``. We
+        therefore store ``M = pinv(K_fwd^T) - I``. From here on the two operators evolve
+        independently and are tied only by the consistency loss.
+        """
+        with torch.no_grad():
+            k_fwd = self._assemble_map(self.W_param.weight, self.D_param.weight)
+            target = torch.linalg.pinv(k_fwd.t())
+            m = target - torch.eye(self.config.latent_dim, device=k_fwd.device)
+            self.W_back_param.weight.data.copy_(m)
+            self.D_back_param.weight.data.copy_(m)
+
+    def _assemble_map(self, W: Tensor, D: Tensor) -> Tensor:
+        """K = I + Skew(W) + Sym(D). Supports batched [B, D, D] inputs from LoRA."""
+        # 1. Skew-Symmetric (Unitary/Rotation)
+        W_T = W.transpose(-1, -2) if W.ndim == 3 else W.T
+        K_skew = 0.5 * (W - W_T)
+
+        # 2. Symmetric (Scaling)
+        D_T = D.transpose(-1, -2) if D.ndim == 3 else D.T
+        K_sym = 0.5 * (D + D_T)
+
+        # Discrete Transition: Identity + (Rotation + Deformation)
+        # This approximates z_next = z + (K_skew + K_sym)z
+        identity = torch.eye(self.config.latent_dim, device=W.device, dtype=W.dtype)
+        return identity + K_skew + K_sym
 
     def _get_effective_linear_map(self, cond_encoded: Optional[Tensor]):
         """
@@ -474,18 +525,28 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             W = self._compute_lora_update(W, uv_w, self.config.rank)
             D = self._compute_lora_update(D, uv_d, self.config.rank)
 
-        # 1. Skew-Symmetric (Unitary/Rotation)
-        W_T = W.transpose(-1, -2) if W.ndim == 3 else W.T
-        K_skew = 0.5 * (W - W_T)
+        return self._assemble_map(W, D)
 
-        # 2. Symmetric (Scaling)
-        D_T = D.transpose(-1, -2) if D.ndim == 3 else D.T
-        K_sym = 0.5 * (D + D_T)
+    def _get_effective_backward_map(self, cond_encoded: Optional[Tensor] = None):
+        """Assembled backward transition matrix B (unconditioned, like Azencot's D).
 
-        # Discrete Transition: Identity + (Rotation + Deformation)
-        # This approximates z_next = z + (K_skew + K_sym)z
-        identity = torch.eye(self.config.latent_dim, device=W.device)
-        return identity + K_skew + K_sym
+        ``cond_encoded`` is accepted for interface symmetry but ignored: the backward
+        operator is a single global matrix, so the consistency penalty always compares
+        the *base* forward map against it.
+        """
+        return self._assemble_map(self.W_back_param.weight, self.D_back_param.weight)
+
+    def backward_step(self, z: Tensor) -> Tensor:
+        """Single backward step z_{t-1} = B z via the separately-learned operator.
+
+        Uses ``F.linear`` (z @ B^T), the same convention as the forward step, so B is the
+        operator inverse of K in the same basis.
+        """
+        if self.config.mode != KoopmanMode.LINEAR:
+            raise RuntimeError(
+                "backward_step is only available for the linear discrete operator."
+            )
+        return F.linear(z, self._get_effective_backward_map())
 
     def _init_linear_weights(self):
         nn.init.eye_(self.K_base.weight)
@@ -541,10 +602,203 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             raise RuntimeError(f"Unsupported Koopman mode: {self.config.mode}")
 
 
+class AzencotKoopmanOperator(BaseKoopmanOperator):
+    """
+    Consistent Koopman Autoencoder operator (Azencot et al. 2020).
+
+    Paper-faithful implementation with TWO separately-learned operators:
+    - Forward dynamics  A (`self.A`):  z_{t+1} = A z
+    - Backward dynamics B (`self.B`):  z_{t-1} = B z   (via ``backward_step``)
+    B is initialised to pinv(A^T) but is a free parameter afterwards; the matrix
+    consistency loss (B A ≈ I, A B ≈ I over sub-blocks) keeps them mutually
+    invertible. Forward conditioning via LoRA hypernetwork is optional.
+
+    Key difference from DiscreteKoopmanOperator: no skew/symmetric decomposition and
+    an explicit, independently-learned backward operator.
+    """
+
+    def __init__(self, config: KoopmanConfig):
+        super().__init__(config)
+        self.hypnet = None
+
+        if config.mode == KoopmanMode.LINEAR:
+            # Paper-faithful Consistent Koopman AE (Azencot et al. 2020): TWO
+            # separately-learned operators -- a forward A and a backward B. B is
+            # *initialised* to pinv(A^T) but is a free parameter afterwards; the
+            # consistency loss (B A ≈ I, A B ≈ I) keeps the two learned matrices
+            # mutually invertible, which is the defining feature of the method.
+            self.A = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+            self.B = nn.Linear(config.latent_dim, config.latent_dim, bias=False)
+
+            # Optional: conditioning of the FORWARD operator via hypernetwork.
+            if config.rank is not None and config.cond_embedding_dim is not None:
+                # Hypernetwork predicts LoRA updates to A
+                output_dim = config.latent_dim * 2 * config.rank
+                self.hypnet = self._build_hypnet(output_dim)
+
+            self._init_consistent_weights()
+
+        elif config.mode == KoopmanMode.EIGEN:
+            # Eigenvalue decomposition: A = P @ Lambda @ P^{-1}
+            self.unconstrained_log_magnitude = nn.Parameter(
+                torch.randn(config.latent_dim)
+            )
+            self.angle = nn.Parameter(torch.randn(config.latent_dim))
+            q, _ = torch.linalg.qr(torch.randn(config.latent_dim, config.latent_dim))
+            self.eigenvectors = nn.Parameter(q)
+
+            if config.rank is not None and config.cond_embedding_dim is not None:
+                self.hypnet = self._build_hypnet(config.latent_dim * 2)
+
+        elif config.mode == KoopmanMode.MLP:
+            # Fully nonlinear dynamics
+            D = config.latent_dim
+            self.A_mlp = nn.Sequential(
+                nn.Linear(D, config.hidden_dim),
+                nn.SiLU(),
+                nn.Linear(config.hidden_dim, config.hidden_dim),
+                nn.SiLU(),
+                nn.Linear(config.hidden_dim, D * D),
+            )
+            nn.init.xavier_normal_(self.A_mlp[-1].weight)
+            nn.init.zeros_(self.A_mlp[-1].bias)
+        else:
+            raise ValueError(f"Unsupported Koopman mode: {config.mode}")
+
+    def _init_consistent_weights(self):
+        """Reference-faithful Azencot initialisation.
+
+        Forward A = (U V) * init_scale where U, V come from the SVD of a Gaussian
+        matrix (a near-orthogonal operator with spectral radius ~init_scale, so
+        rollouts neither vanish nor explode). Backward B = pinv(A^T), matching the
+        reference ``dynamics`` / ``dynamics_back`` construction.
+        """
+        if not hasattr(self, "A"):
+            return
+        D = self.config.latent_dim
+        scale = getattr(self.config, "init_scale", 1.0)
+        with torch.no_grad():
+            omega = torch.randn(D, D) / D
+            U, _, Vh = torch.linalg.svd(omega)
+            self.A.weight.data = (U @ Vh) * scale
+            self.B.weight.data = torch.linalg.pinv(self.A.weight.data.t())
+
+    def _get_dynamics_matrix(self, cond_encoded: Optional[Tensor]) -> Tensor:
+        """
+        Get effective dynamics matrix A, optionally conditioned.
+
+        Returns:
+            A: [D, D] or [B, D, D] if batched
+        """
+        if self.config.mode == KoopmanMode.LINEAR:
+            A = self.A.weight  # [D, D]
+
+            # Apply LoRA updates if conditioned
+            if self.hypnet is not None and cond_encoded is not None:
+                uv_tensor = self.hypnet(cond_encoded)  # [B, 2*rank*D]
+                A_lora = self._compute_lora_update(
+                    A, uv_tensor, self.config.rank
+                )  # [B, D, D]
+                return A_lora  # Batched
+
+            return A
+
+        elif self.config.mode == KoopmanMode.MLP:
+            D = self.config.latent_dim
+            B = cond_encoded.shape[0] if cond_encoded is not None else 1
+            A = self.A_mlp(
+                cond_encoded if cond_encoded is not None else torch.zeros(1, D)
+            )
+            return A.view(B, D, D)
+
+        raise RuntimeError(f"Unsupported mode: {self.config.mode}")
+
+    def backward_step(self, z: Tensor) -> Tensor:
+        """Single backward step z_{t-1} = B z using the learned backward operator.
+
+        Uses F.linear (z @ B^T), the same convention as the forward step (z @ A^T),
+        so B is the operator inverse of A in the same basis. Only defined in LINEAR
+        mode (the paper-faithful consistent formulation).
+        """
+        if self.config.mode != KoopmanMode.LINEAR or not hasattr(self, "B"):
+            raise RuntimeError(
+                "backward_step is only available for the linear Azencot operator."
+            )
+        return F.linear(z, self.B.weight)
+
+    @property
+    def base_eigenvalues(self) -> Optional[Tensor]:
+        """Returns eigenvalues of base operator A (magnitude <= 1 for stability)."""
+        if self.config.mode != KoopmanMode.EIGEN:
+            return None
+        log_mag = -F.softplus(self.unconstrained_log_magnitude)
+        return torch.polar(torch.exp(log_mag), self.angle)
+
+    def forward(
+        self, z: Tensor, cond: Optional[Tensor] = None, dt: Optional[float] = None
+    ) -> Tensor:
+        """
+        Forward dynamics: z_{t+1} = A @ z
+
+        Args:
+            z: [B, D] latent state
+            cond: [B, C] condition (optional, e.g., Reynolds number)
+            dt: Time step (unused for Azencot - included for interface compatibility)
+
+        Returns:
+            z_next: [B, D] next latent state
+        """
+        cond_encoded = self._encode_cond(cond)
+
+        if self.config.mode == KoopmanMode.LINEAR:
+            A = self._get_dynamics_matrix(cond_encoded)
+
+            if A.ndim == 3:  # Batched [B, D, D]
+                return torch.bmm(A, z.unsqueeze(-1)).squeeze(-1)
+            else:  # Single [D, D]
+                return F.linear(z, A)
+
+        elif self.config.mode == KoopmanMode.EIGEN:
+            mag_logits, angle = self.unconstrained_log_magnitude, self.angle
+
+            if self.hypnet is not None and cond_encoded is not None:
+                delta = self.hypnet(cond_encoded)
+                d_mag, d_ang = delta.chunk(2, dim=1)
+                mag_logits = mag_logits.unsqueeze(0) + d_mag
+                angle = angle.unsqueeze(0) + d_ang
+
+            # A = P @ diag(λ) @ P^{-1}
+            lambdas = torch.polar(torch.exp(-F.softplus(mag_logits)), angle)
+            P = self.eigenvectors
+            P_inv = (
+                P.T
+                if self.config.assume_orthogonal_eigenvectors
+                else torch.linalg.pinv(P)
+            )
+
+            z_eig = (P_inv.to(torch.complex64) @ z.to(torch.complex64).T).T
+            z_eig_next = z_eig * lambdas
+            return (P.to(torch.complex64) @ z_eig_next.T).T.real
+
+        elif self.config.mode == KoopmanMode.MLP:
+            A = self._get_dynamics_matrix(cond_encoded)
+            if A.ndim == 3:
+                return torch.bmm(A, z.unsqueeze(-1)).squeeze(-1)
+            return F.linear(z, A)
+
+        else:
+            raise RuntimeError(f"Unsupported Koopman mode: {self.config.mode}")
+
+
 class KoopmanOperator(nn.Module):
     """
     Unified entry point for Koopman Operators.
     Wraps the internal logic but exposes a flat argument structure for initialization.
+
+    Supports three operator types:
+    - "continuous": ODE-based (dz/dt = K·z) - for continuous dynamics
+    - "discrete": Skew/Sym decomposition (z_{t+1} = (I + skew(W) + sym(D))·z)
+    - "azencot": Paper-faithful (z_{t+1} = A·z) - Azencot et al. 2019
     """
 
     def __init__(
@@ -558,6 +812,8 @@ class KoopmanOperator(nn.Module):
         rank: int = 4,
         cond_expansion_type: Optional[str] = None,
         shared_expansion_map: Optional[nn.ModuleDict] = None,
+        operator_type: str = "discrete",  # NEW: "continuous", "discrete", or "azencot"
+        init_scale: float = 1.0,
     ):
         super().__init__()
 
@@ -573,18 +829,40 @@ class KoopmanOperator(nn.Module):
             use_checkpoint=use_checkpoint,
             cond_expansion_type=cond_expansion_type,
             rank=rank,
+            init_scale=init_scale,
         )
 
+        # Back-compat / safety: continuous models are configured via `is_continuous: true`
+        # but the YAMLs do not always set `operator_type`, which defaults to "discrete".
+        # Selecting a DiscreteKoopmanOperator for a continuously-trained generator applies
+        # z_{t+1} = (I + K) z, whose spectral radius is >> 1 (the generator's oscillatory
+        # eigenvalues give |1 + λ| > 1), so long-horizon inference diverges even though the
+        # generator itself is stable (Re(λ) < 0). Promote to the continuous operator here so
+        # the flag cannot silently disagree with the operator type.
+        if is_continuous and operator_type == "discrete":
+            operator_type = "continuous"
+
         self.is_continuous = is_continuous
+        self.operator_type = operator_type
         self.dt_train = 0.1
 
-        if is_continuous:
+        # Select operator based on type
+        if operator_type == "continuous":
             self.dynamics = ContinuousKoopmanOperator(self.config)
-        else:
+            self.is_continuous = True
+        elif operator_type == "azencot":
+            self.dynamics = AzencotKoopmanOperator(self.config)
+            self.is_continuous = False
+        elif operator_type == "discrete":
             self.dynamics = DiscreteKoopmanOperator(self.config)
+            self.is_continuous = False
+        else:
+            raise ValueError(
+                f"Unknown operator_type: {operator_type}. Must be 'continuous', 'discrete', or 'azencot'"
+            )
 
         # Inject the shared physics brain if provided
-        if shared_expansion_map is not None:
+        if shared_expansion_map is not None and hasattr(self.dynamics, "expansion_map"):
             self.dynamics.expansion_map = shared_expansion_map
 
     def forward(

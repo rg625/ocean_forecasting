@@ -221,10 +221,25 @@ class Metric(nn.Module):
                     continue
 
                 if self.mode == "SSIM":
-                    # SSIM is a similarity [0, 1], so 1 - SSIM is a distance
-                    distances[i, j] = 1.0 - sk_metrics.structural_similarity(
-                        r, o, data_range=data_range
-                    )
+                    # --- THE FIX: Squeeze 1D data for SSIM ---
+                    # Remove any dimensions of size 1 (e.g. [64, 1] becomes [64])
+                    r_sq = np.squeeze(r)
+                    o_sq = np.squeeze(o)
+
+                    # Find the smallest remaining dimension
+                    min_dim = min(r_sq.shape) if r_sq.ndim > 0 else 1
+
+                    win_size = min(7, min_dim)
+                    if win_size % 2 == 0:
+                        win_size -= 1  # Must be odd
+
+                    # SSIM requires a window of at least 3 to compute covariance
+                    if win_size < 3:
+                        distances[i, j] = 0.0  # Fallback for tiny data
+                    else:
+                        distances[i, j] = 1.0 - sk_metrics.structural_similarity(
+                            r_sq, o_sq, data_range=data_range, win_size=win_size
+                        )
                 elif self.mode == "PSNR":
                     # PSNR is inverted to act as a distance (lower is better)
                     mse = sk_metrics.mean_squared_error(r, o)

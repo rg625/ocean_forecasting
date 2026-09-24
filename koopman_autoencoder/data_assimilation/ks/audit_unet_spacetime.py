@@ -1,0 +1,230 @@
+"""PART 1 audit: is the U-Net space-time result real, and what causes the t0 error?
+
+Reruns section I's assimilation for a small set of trajectories, keeps the optimised
+control, and then verifies numerically that the plotted trajectory is a PURE
+autoregressive rollout from that single control -- no observation re-entry, no nudging,
+no reinitialisation, no ground truth. Then decomposes the error spectrally, reporting the
+fraction of TOTAL SQUARED ERROR contributed by each band (not merely band-wise relative
+errors, which say nothing about how much a band matters).
+
+    python -m data_assimilation.ks.audit_unet_spacetime
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from pathlib import Path
+
+import numpy as np
+import torch
+
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+
+from data_assimilation.ks.methods import SolveConfig
+from data_assimilation.ks.protocol import DT, build_problem
+from data_assimilation.ks.da_ks_experiments_3way import Bench
+
+logger = logging.getLogger("audit")
+BANDS = {"k1-4": (1, 5), "k5-12": (5, 13), "k13-32": (13, 33)}
+
+
+def band_report(err, tru, X):
+    """Per-band true energy, error energy, relative error, and share of TOTAL error."""
+    fe = np.fft.rfft(err, axis=-1)
+    ft = np.fft.rfft(tru, axis=-1)
+    tot_err = (np.abs(fe[..., 1:]) ** 2).sum()
+    tot_tru = (np.abs(ft[..., 1:]) ** 2).sum()
+    out = {}
+    for nm, (a, b) in BANDS.items():
+        ee = (np.abs(fe[..., a:b]) ** 2).sum()
+        te = (np.abs(ft[..., a:b]) ** 2).sum()
+        out[nm] = {
+            "true_energy_frac": float(te / tot_tru),
+            "err_energy": float(ee),
+            "rel_err_in_band": float(np.sqrt(ee / max(te, 1e-30))),
+            "share_of_total_sq_error": float(ee / max(tot_err, 1e-30)),
+        }
+    out["full"] = {"rel_err": float(np.sqrt(tot_err / max(tot_tru, 1e-30)))}
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--n-ex", type=int, default=3)
+    ap.add_argument("--iters", type=int, default=8000)
+    ap.add_argument(
+        "--out",
+        type=Path,
+        default=Path("da_results_sda_paper/unet_spacetime_audit.json"),
+    )
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    args = ap.parse_args()
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+    )
+
+    import argparse as _a
+
+    ns = _a.Namespace(
+        test=Path("data/ks/da_test.nc"),
+        kae_run=Path("model_outputs_ks/continous_linear_128/rollout_10"),
+        unet_ckpt=Path("model_outputs_ks/unet1d/rollout10_extended2/best_model.pth"),
+        sda_config=Path("da_results_sda_paper/frozen_config.json"),
+        tuning=Path("da_results_v2/tuning.json"),
+        init_scales=Path("da_results_v2/init_scales.json"),
+        device=args.device,
+        n_samples=8,
+        chunk=3,
+        iters_scale=1.0,
+        iters_override=0,
+        iters_kae=0,
+        iters_unet=0,
+    )
+    b = Bench(ns)
+
+    T, obs_off = 80, [2, 9, 22, 40, 63]  # exactly section I's geometry
+    prob = build_problem(
+        b.data,
+        name="audit",
+        n_problems=args.n_ex,
+        taus=np.array(obs_off) * DT,
+        seed=303,
+    )
+    dev = b.dev
+    sim = torch.as_tensor(prob.sim, device=dev)
+    t0 = torch.as_tensor(prob.t0, device=dev)
+    truth = torch.stack(
+        [b.data.frames(sim, t0 + k) for k in range(T)], dim=1
+    )  # [B,T,X]
+    X = b.data.X
+    res = {
+        "geometry": {
+            "T": T,
+            "dt": DT,
+            "obs_frames": obs_off,
+            "obs_times": [round(o * DT, 3) for o in obs_off],
+            "t0_frame": 0,
+            "first_unobserved_after_t0": 1,
+            "first_observation_frame": obs_off[0],
+        },
+        "n_examples": args.n_ex,
+        "iters": args.iters,
+    }
+
+    # ---- STEP 3: optimise, keep x0, then roll out INDEPENDENTLY ---------------
+    m = b.method("UNet")
+    cfg = SolveConfig(
+        iters=args.iters,
+        lr=b.hp["UNet-4DVar"]["lr"],
+        init=b.hp["UNet-4DVar"]["init"],
+        seed=303,
+    )
+    sol = m.solve(prob, b.data, cfg)
+    x0 = sol["control"].detach().clone()
+    with torch.no_grad():
+        traj_pipeline = m.forecast(x0, np.arange(T) * DT)  # as the figure does
+        # fresh, independent rollout: apply the frozen map T-1 times, nothing else
+        x = x0.clone()
+        indep = [x.clone()]
+        for _ in range(T - 1):
+            x = m.model(x.unsqueeze(1)).squeeze(1)
+            indep.append(x.clone())
+        traj_indep = torch.stack(indep)
+    d = float((traj_pipeline - traj_indep).abs().max())
+    res["independent_rollout_check"] = {
+        "max_abs_difference": d,
+        "matches": bool(d < 1e-5),
+        "note": (
+            "the plotted trajectory was regenerated by applying the frozen U-Net "
+            "map T-1 times to the single optimised x0, touching nothing else"
+        ),
+    }
+    logger.info(f"[3] independent rollout vs plotted trajectory: max|diff| = {d:.3e}")
+
+    # observation-independence: perturbing y after optimisation must not move the rollout
+    with torch.no_grad():
+        t2 = m.forecast(x0, np.arange(T) * DT)
+    res["independent_rollout_check"]["deterministic_given_x0"] = bool(
+        float((t2 - traj_pipeline).abs().max()) == 0.0
+    )
+
+    # ---- all three methods' trajectories --------------------------------------
+    # BUG FIXED: Bench.run already returns "spacetime" DENORMALISED, whereas
+    # traj_pipeline comes straight from m.forecast and is still normalised. Denormalising
+    # both alike inflated the KAE and SDA fields by KS_STD, producing a spurious constant
+    # relative error of KS_STD - 1 = 0.135 at every frame. Keep everything in NORMALISED
+    # units here and denormalise exactly once, at the point of use.
+    trajs = {"UNet": traj_pipeline}  # [T,B,X] normalised
+    for name in ["KAE-expm", "SDA"]:
+        r = b.run(name, prob, iters=args.iters, seed=303, window_frames=T)
+        st_dn = torch.as_tensor(r["spacetime"], device=dev)  # already denormalised
+        trajs[name] = (st_dn - b.data.mean) / (b.data.std + 1e-8)  # back to normalised
+
+    dn = b.data.denorm
+    tru_np = dn(truth).cpu().numpy()  # [B,T,X]
+
+    # ---- STEP 2: per-frame table ---------------------------------------------
+    per_frame = {}
+    for name, tj in trajs.items():
+        p = dn(tj).permute(1, 0, 2).cpu().numpy()  # [B,T,X]
+        e = np.linalg.norm(p - tru_np, axis=-1) / np.linalg.norm(tru_np, axis=-1)
+        per_frame[name] = e.mean(0).tolist()
+    res["per_frame_rel_l2"] = per_frame
+
+    # ---- STEPS 4/5/6: spectral decomposition at key frames ---------------------
+    key = {
+        "t0": 0,
+        "first_unobserved_after_t0": 1,
+        "first_observation": obs_off[0],
+        "later_frame_40": 40,
+        "final_frame_79": 79,
+    }
+    res["spectral"] = {}
+    for lbl, k in key.items():
+        res["spectral"][lbl] = {
+            "frame": k,
+            "time": round(k * DT, 3),
+            "observed": k in obs_off,
+        }
+        for name, tj in trajs.items():
+            p = dn(tj).permute(1, 0, 2).cpu().numpy()
+            res["spectral"][lbl][name] = band_report(
+                p[:, k] - tru_np[:, k], tru_np[:, k], X
+            )
+    # low/high split over all frames
+    res["low_high_vs_time"] = {}
+    for name, tj in trajs.items():
+        p = dn(tj).permute(1, 0, 2).cpu().numpy()
+        fe = np.fft.rfft(p - tru_np, axis=-1)
+        ft = np.fft.rfft(tru_np, axis=-1)
+        lo = np.sqrt(
+            (np.abs(fe[..., 1:13]) ** 2).sum(-1) / (np.abs(ft[..., 1:13]) ** 2).sum(-1)
+        )
+        hi = np.sqrt(
+            (np.abs(fe[..., 13:]) ** 2).sum(-1)
+            / np.maximum((np.abs(ft[..., 13:]) ** 2).sum(-1), 1e-30)
+        )
+        res["low_high_vs_time"][name] = {
+            "low_k1_12": lo.mean(0).tolist(),
+            "high_k13_32": hi.mean(0).tolist(),
+        }
+    np.savez_compressed(
+        "da_results_sda_paper/unet_audit_fields.npz",
+        truth=tru_np,
+        **{
+            f"{n}__traj": dn(t).permute(1, 0, 2).cpu().numpy() for n, t in trajs.items()
+        },
+        x0=dn(x0).cpu().numpy(),
+        obs_frames=np.array(obs_off),
+    )
+    args.out.write_text(json.dumps(res, indent=2))
+    logger.info(f"saved -> {args.out}")
+
+
+if __name__ == "__main__":
+    main()

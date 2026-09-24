@@ -183,6 +183,7 @@ def main(cfg: DictConfig):
             cond_grad_enabled=cfg.model.cond_grad_enabled,
             disturb_std=cfg.model.disturb_std,
             is_continuous=cfg.model.is_continuous,
+            operator_type=cfg.model.operator_type,
             rank=cfg.model.rank,
             cond_expansion_type=cfg.data.selection_param,
             use_attention=cfg.model.use_attention,
@@ -198,7 +199,7 @@ def main(cfg: DictConfig):
 
     # --- Optimizer, Loss, Metrics, and Scheduler ---
     model_params = model.module.parameters() if is_ddp else model.parameters()
-    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr, weight_decay=1e-4)
+    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr, weight_decay=1e-3)
     if cfg.loss.get("ssim_weight", None) is not None:
         criterion = KoopmanLoss(to_unit_range=train_dataset.to_unit_range, **cfg.loss)
     else:

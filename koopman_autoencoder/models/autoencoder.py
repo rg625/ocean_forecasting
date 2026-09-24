@@ -6,6 +6,7 @@ from typing import Union, Tuple, Optional, List, Dict, Literal
 from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
+import torch.nn.functional as F
 
 # Assume these are correctly defined elsewhere
 from .utils import cuda_timer, elapsed_time
@@ -43,6 +44,7 @@ class KoopmanOutput:
     disturbed_latents: Optional[Tensor]
     dz_dt: Optional[Tensor] = None
     dz_dt_disturbed: Optional[Tensor] = None
+    kept_indices: Optional[Tensor] = None  # NEW: To align the loss function
 
 
 class KoopmanAutoencoder(nn.Module):
@@ -68,11 +70,13 @@ class KoopmanAutoencoder(nn.Module):
         predict_cond: bool = False,
         cond_grad_enabled: bool = False,
         disturb_std: float = 1e-2,
-        is_continuous: bool = False,
+        is_continuous: bool = True,
         rank: int = 4,
         cond_expansion_type: Optional[str] = None,
         use_attention: bool = True,
         spectral: bool = False,
+        operator_type: str = "continuous",  # NEW: "continuous", "discrete", or "azencot"
+        init_scale: float = 1.0,
         **conv_kwargs,
     ):
         super().__init__()
@@ -95,6 +99,8 @@ class KoopmanAutoencoder(nn.Module):
         self.disturb_std = disturb_std
         self.use_attention = use_attention
         self.timings: Dict = {}
+
+        logger.info(f"Operator Type: {operator_type}")
 
         # 1. Establish the Single Source of Truth for Physics Embeddings
         # Ensure we have a concrete integer for dimensions (default to 64 if None)
@@ -164,6 +170,8 @@ class KoopmanAutoencoder(nn.Module):
             rank=rank,
             cond_expansion_type=cond_expansion_type,
             shared_expansion_map=self.shared_expansion_map,  # Force sync
+            operator_type=operator_type,  # NEW: Select operator type
+            init_scale=init_scale,  # Spectral radius of the Azencot forward operator
         )
         self.re_predictor = (
             Re(latent_dim=latent_dim, use_checkpoint=use_checkpoint)
@@ -278,13 +286,19 @@ class KoopmanAutoencoder(nn.Module):
         """Encodes initial states and creates a perturbed version if needed."""
         z0 = self.encode(x_data, cond_input=cond_input)
         z0_disturbed = None
-        if self.disturb_std is not None:
+        # Only needed by the (train-only) stability penalty; skipping it under eval avoids
+        # a second full rollout + decode per batch.
+        if self.training and self.disturb_std is not None:
             noise = torch.randn_like(z0) * self.disturb_std
             z0_disturbed = z0 + noise
         return z0, z0_disturbed
 
     def _autoregressive_rollout(
-        self, z_init: Tensor, seq_length: int, cond_for_prediction: Optional[Tensor]
+        self,
+        z_init: Tensor,
+        seq_length: int,
+        cond_for_prediction: Optional[Tensor],
+        dt_sequence: Tensor,
     ):
         """Performs autoregressive rollout in the latent space."""
         if seq_length <= 0:
@@ -293,20 +307,54 @@ class KoopmanAutoencoder(nn.Module):
         z_preds_list = []
         z_current = z_init
         for frame in range(seq_length):
-            if self.disturb_std is not None:
+            # Training-time regularisation ONLY. Without the `self.training` guard this
+            # also fires under eval()/no_grad(), making validation metrics stochastic and
+            # pessimistic -- which then corrupts early stopping and best-checkpoint
+            # selection.
+            if self.training and self.disturb_std is not None:
                 z_current = z_current + torch.randn_like(z_current) * self.disturb_std
-            else:
-                pass
             # Use the condition for the *specific* frame
             frame_cond = (
                 cond_for_prediction[:, frame]
                 if cond_for_prediction is not None
                 else None
             )
+            current_dt = dt_sequence[frame].view(1, 1).expand(z_init.size(0), 1)
 
-            z_current = self.koopman_operator(z_current, cond=frame_cond)
+            z_current = self.koopman_operator(z_current, cond=frame_cond, dt=current_dt)
             z_preds_list.append(z_current)
         return torch.stack(z_preds_list, dim=1)
+
+    def backward_rollout(
+        self,
+        z_start: Tensor,
+        seq_length: Union[int, Tensor],
+        obstacle_mask: Optional[Tensor] = None,
+    ):
+        """Roll a latent state backward through the learned backward operator B and decode.
+
+        For the Consistent Koopman AE (Azencot et al. 2020): ``z_start`` is the latent of
+        the last observed state; step k reconstructs the state k frames earlier via
+        z_{t-1} = B z_t. Returns ``(x_back [B, seq_length, ...], z_back [B, seq_length, D])``
+        where x_back[k] is the prediction k+1 steps into the past.
+        """
+        dyn = self.koopman_operator.dynamics
+        if not hasattr(dyn, "backward_step"):
+            raise RuntimeError(
+                f"backward_rollout requires an operator exposing backward_step; "
+                f"{type(dyn).__name__} does not."
+            )
+        if isinstance(seq_length, Tensor):
+            seq_length = int(seq_length.view(-1)[0].item())
+
+        z_list = []
+        z_current = z_start
+        for _ in range(seq_length):
+            z_current = dyn.backward_step(z_current)
+            z_list.append(z_current)
+        z_back = torch.stack(z_list, dim=1)
+        _, x_back = self._decode_outputs(z_start, z_back, seq_length, obstacle_mask)
+        return x_back, z_back
 
     def _decode_outputs(
         self,
@@ -333,6 +381,7 @@ class KoopmanAutoencoder(nn.Module):
         x: TensorDict,
         seq_length: Union[int, Tensor],
         cond_future: Optional[Tensor] = None,  # This arg is specific, let's keep it
+        drop_prob: float = 0.0,  # NEW: Probability to drop a frame
     ) -> KoopmanOutput:
         """Forward pass: Encode, roll out predictions, and decode."""
         total_start, total_end = cuda_timer()
@@ -350,6 +399,36 @@ class KoopmanAutoencoder(nn.Module):
         end.record()
         torch.cuda.synchronize()
         self.timings["encode"] = elapsed_time(start, end)
+
+        # --- NEW: Randomly Drop Frames & Calculate dt ---
+        base_dt = 0.1
+        if self.training and drop_prob > 0.0:
+            print(f"In training and dropping {drop_prob}")
+            # Create a boolean mask of frames to keep
+            keep_mask = torch.rand(seq_length_int, device=z0.device) > drop_prob
+
+            # Fallback: ensure we always keep at least one frame
+            if not keep_mask.any():
+                keep_mask[torch.randint(0, seq_length_int, (1,))] = True
+
+            kept_indices = torch.where(keep_mask)[0]
+
+            # Calculate the jump sizes.
+            # z0 represents index -1 relative to the target sequence [0, 1, ..., N-1]
+            prev_indices = torch.cat(
+                [torch.tensor([-1], device=z0.device), kept_indices[:-1]]
+            )
+            print(f"In training and kept_indices {kept_indices}")
+
+            jumps = kept_indices - prev_indices
+
+            dt_sequence = jumps.float() * base_dt
+            actual_seq_length = len(kept_indices)
+        else:
+            # Standard dense rollout
+            kept_indices = torch.arange(seq_length_int, device=z0.device)
+            dt_sequence = torch.full((seq_length_int,), base_dt, device=z0.device)
+            actual_seq_length = seq_length_int
 
         # 3. Get conditioning tensor for the prediction phase
         # We need to find the *target* condition, not the input one
@@ -371,12 +450,13 @@ class KoopmanAutoencoder(nn.Module):
         # Ensure it's normalized if it exists
         if cond_for_prediction is not None:
             cond_for_prediction = self.re_norm(cond_for_prediction)
+            cond_for_prediction = cond_for_prediction[:, kept_indices]
 
         # 4. Perform autoregressive rollout for the main trajectory
         start, end = cuda_timer()
         start.record()
         z_preds_stacked = self._autoregressive_rollout(
-            z0, seq_length_int, cond_for_prediction
+            z0, actual_seq_length, cond_for_prediction, dt_sequence
         )
         end.record()
         torch.cuda.synchronize()
@@ -387,14 +467,19 @@ class KoopmanAutoencoder(nn.Module):
         dz_dt, dz_dt_disturbed = None, None
         if z0_disturbed is not None:
             disturbed_latents = self._autoregressive_rollout(
-                z0_disturbed, seq_length_int, cond_for_prediction
+                z0_disturbed, actual_seq_length, cond_for_prediction, dt_sequence
             )
             # We detach to ensure this loss only affects the operator, not the encoder
             if self.koopman_operator.is_continuous and hasattr(
                 self.koopman_operator.dynamics, "_get_derivative"
             ):
+                if cond_for_prediction is not None:
+                    cond_to_pass = cond_for_prediction[..., 0]
+                else:
+                    cond_to_pass = None
+
                 cond_encoded = self.koopman_operator.dynamics._encode_cond(
-                    cond=cond_for_prediction[..., 0]
+                    cond=cond_to_pass
                 )
                 dz_dt = self.koopman_operator.dynamics._get_derivative(
                     z0.detach(), cond_encoded=cond_encoded
@@ -411,7 +496,7 @@ class KoopmanAutoencoder(nn.Module):
             z0 = z0 + torch.randn_like(z0) * 0.01
 
         x_recon, x_preds = self._decode_outputs(
-            z0, z_preds_stacked, seq_length_int, obstacle_mask
+            z0, z_preds_stacked, actual_seq_length, obstacle_mask
         )
         end.record()
         torch.cuda.synchronize()
@@ -438,6 +523,7 @@ class KoopmanAutoencoder(nn.Module):
             disturbed_latents=disturbed_latents,
             dz_dt=dz_dt,
             dz_dt_disturbed=dz_dt_disturbed,
+            kept_indices=kept_indices,  # Return indices for the loss function
         )
 
     def compute_theoretical_evolution(
@@ -707,4 +793,103 @@ class KoopmanAutoencoder(nn.Module):
             disturbed_latents=None,
             dz_dt=None,
             dz_dt_disturbed=None,
+        )
+
+    def assimilate(
+        self,
+        initial_x: TensorDict,
+        target_x: TensorDict,
+        dt: float = 0.1,
+        steps: int = 10,
+        lr: float = 1e-2,
+        num_iterations: int = 500,
+        reg_weight: float = 0.1,
+        sparsity_rate: float = 0.1,
+    ):
+        """
+        Data assimilation in latent space using stochastic sparse masking.
+
+        Args:
+            sparsity_rate: Float (0, 1] probability of sampling a pixel for loss.
+        """
+        self.eval()
+
+        # 1. Prepare inputs and conditioning
+        obstacle_mask, cond_norm, _, _ = self._prepare_inputs(initial_x, 1)
+
+        # 2. Correctly stack input variables to ensure [B, C, H, W]
+        input_list = []
+        for var in self.data_variables:
+            var_data = initial_x[var]
+            # Handle [B, T, C, H, W] -> [B, C, H, W]
+            if var_data.ndim == 5:
+                var_data = var_data[:, -1]
+            # Handle [B, H, W] -> [B, 1, H, W]
+            elif var_data.ndim == 3:
+                var_data = var_data.unsqueeze(1)
+            input_list.append(var_data)
+
+        stacked_input = torch.cat(input_list, dim=1)
+
+        # 3. Get the prior z0
+        with torch.no_grad():
+            cond_input_for_enc = cond_norm[..., -1:] if cond_norm is not None else None
+            z0_prior = self.encoder(stacked_input, cond=cond_input_for_enc)
+
+        # 4. Optimize z0
+        z0 = z0_prior.clone().detach().requires_grad_(True)
+        optimizer = torch.optim.Adam([z0], lr=lr)
+
+        # Prepare conditioning for integration
+        cond_encoded = None
+        if hasattr(self.koopman_operator, "dynamics") and hasattr(
+            self.koopman_operator.dynamics, "_encode_cond"
+        ):
+            c = cond_norm[:, -1] if cond_norm is not None else None
+            cond_encoded = self.koopman_operator.dynamics._encode_cond(c)
+
+        # 5. Optimization Loop
+        loss_history = []
+        for i in range(num_iterations):
+            optimizer.zero_grad()
+
+            # Perform integration
+            z_final = self.koopman_operator.dynamics._integrate(
+                z0, dt=float(dt * steps), cond_encoded=cond_encoded
+            )
+
+            # Decode
+            x_pred_raw = self.decode(z_final, obstacle_mask=obstacle_mask)
+
+            # Target/Prediction extraction
+            u_target = target_x.get("u", list(target_x.values())[0])
+            u_pred = x_pred_raw.get("u", list(x_pred_raw.values())[0])
+
+            # Apply Stochastic Sparse Masking
+            # Generates a mask where only `sparsity_rate` fraction of pixels are 1
+            mask = (torch.rand_like(u_target) < sparsity_rate).float()
+
+            # Loss: MSE only on sampled indices
+            loss = F.mse_loss(u_pred * mask, u_target * mask)
+            reg = F.mse_loss(z0, z0_prior)
+
+            total_loss = loss + reg_weight * reg
+            total_loss.backward()
+
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_([z0], 1.0)
+            optimizer.step()
+
+            loss_history.append(total_loss.item())
+
+        # Final prediction (unmasked)
+        z_optimized = z0.detach()
+        z_final = self.koopman_operator.dynamics._integrate(
+            z_optimized, dt=float(dt * steps), cond_encoded=cond_encoded
+        )
+
+        return (
+            self.decode(z_final, obstacle_mask=obstacle_mask),
+            z_optimized,
+            loss_history,
         )

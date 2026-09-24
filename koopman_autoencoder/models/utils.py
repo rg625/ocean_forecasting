@@ -249,7 +249,7 @@ def load_checkpoint(
     model: nn.Module,
     optimizer: Optimizer,
     strict: Optional[bool] = True,
-    reset_optimizer: Optional[bool] = True,
+    reset_optimizer: Optional[bool] = False,
 ) -> Tuple[nn.Module, Optimizer, Dict[str, Any], int]:
     """
     Loads a model, optimizer, history, and start epoch from a checkpoint.
@@ -439,7 +439,7 @@ def cuda_timer():
 
 
 def elapsed_time(start, end):
-    return start.elapsed_time(end) / 1000.0  # ms → seconds
+    return start.elapsed_time(end)  # / 1000.0  # ms → seconds
 
 
 def surgically_transfer_checkpoint(

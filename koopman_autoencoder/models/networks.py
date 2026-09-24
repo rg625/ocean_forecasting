@@ -103,6 +103,7 @@ class PreActResBlock(nn.Module):
         self.conv1 = sn_conv2d(
             in_ch, out_ch, kernel_size=3, stride=stride, padding=1, spectral=spectral
         )
+        self.dropout = nn.Dropout2d(p=0.1)
         self.bn2 = nn.GroupNorm(8, out_ch)
         self.conv2 = sn_conv2d(
             out_ch, out_ch, kernel_size=3, stride=1, padding=1, spectral=spectral
@@ -123,6 +124,7 @@ class PreActResBlock(nn.Module):
         x_norm = F.silu(self.bn1(x))
         residual = self.shortcut(x)  # Note: He et al. apply shortcut to x, not x_norm
         out = self.conv1(x_norm)
+        out = self.dropout(out)  # APPLY IT HERE
         out = self.conv2(F.silu(self.bn2(out)))
         return out + residual
 
@@ -136,7 +138,7 @@ class ConditionedResBlock(nn.Module):
         self.conv1 = sn_conv2d(
             in_ch, out_ch, kernel_size=3, padding=1, spectral=spectral
         )
-
+        # self.dropout = nn.Dropout2d(p=0.1)
         self.gn2 = nn.GroupNorm(8, out_ch)
         self.conv2 = sn_conv2d(
             out_ch, out_ch, kernel_size=3, padding=1, spectral=spectral
@@ -151,9 +153,54 @@ class ConditionedResBlock(nn.Module):
     def forward(self, x):
         out = F.silu(self.gn1(x))
         out = self.conv1(out)
+        # out = self.dropout(out) # APPLY IT HERE
         out = F.silu(self.gn2(out))
         out = self.conv2(out)
         return out + self.shortcut(x)
+
+
+class SpatialAttentionPooling(nn.Module):
+    def __init__(self, in_channels: int, latent_dim: int):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        # This is your "blank" Koopman state that learns how to query the fluid
+        self.latent_query = nn.Parameter(torch.randn(1, 1, latent_dim))
+
+        # Standard projections for Cross-Attention
+        self.to_q = nn.Linear(latent_dim, latent_dim)
+        self.to_kv = nn.Conv2d(in_channels, latent_dim * 2, kernel_size=1)
+
+        self.norm_q = nn.LayerNorm(latent_dim)
+        self.norm_kv = nn.GroupNorm(8, in_channels)
+
+    def forward(self, x: Tensor) -> Tensor:
+        B, C, H, W = x.shape
+
+        # 1. Prepare Key and Value from the 2D fluid features
+        x_norm = self.norm_kv(x)
+        kv = self.to_kv(x_norm)  # [B, latent_dim * 2, H, W]
+        k, v = kv.chunk(2, dim=1)  # Each is [B, latent_dim, H, W]
+
+        # Flatten spatial dims for attention: [B, latent_dim, H*W] -> [B, H*W, latent_dim]
+        k = k.view(B, self.latent_dim, -1).transpose(1, 2)
+        v = v.view(B, self.latent_dim, -1).transpose(1, 2)
+
+        # 2. Prepare the Latent Query
+        q = self.latent_query.expand(B, -1, -1)  # [B, 1, latent_dim]
+        q = self.norm_q(q)
+        q = self.to_q(q)
+
+        # 3. Cross Attention: Query the fluid space
+        # scale = 1 / sqrt(latent_dim)
+        scale = self.latent_dim**-0.5
+        dots = torch.bmm(q, k.transpose(1, 2)) * scale  # [B, 1, H*W]
+        attn = torch.softmax(dots, dim=-1)
+
+        # 4. Extract the 1D Vector
+        z = torch.bmm(attn, v)  # [B, 1, latent_dim]
+
+        return z.squeeze(1)  # Return pure 1D vector: [B, latent_dim]
 
 
 # ==========================================
@@ -204,15 +251,27 @@ class ConvEncoder(nn.Module):
         else:
             self.expansion_map = None
         # 1. Coordinate Injection Setup
-        input_channels = C + 2
-        yy, xx = torch.meshgrid(
-            torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+        # A width-1 grid (KS is 64 x 1) has only one coordinate to inject: the second
+        # channel of a meshgrid would be constant, so the 1-D case carries a single
+        # coordinate, stored already batched as [1, 1, H, 1].  2-D grids are unchanged.
+        if W == 1:
+            self.register_buffer("grid", torch.linspace(-1, 1, H).view(1, 1, H, 1))
+        else:
+            yy, xx = torch.meshgrid(
+                torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+            )
+            self.register_buffer("grid", torch.stack([xx, yy], dim=0))
+        input_channels = C + (
+            self.grid.shape[-3] if self.grid.dim() == 4 else self.grid.shape[0]
         )
-        self.register_buffer("grid", torch.stack([xx, yy], dim=0))
 
         # 2. Backbone
         self.init_conv = sn_conv2d(
-            input_channels, hiddens[0], kernel_size=3, padding=1, spectral=spectral
+            input_channels,
+            hiddens[0],
+            kernel_size=(3, 1),
+            padding=(1, 0),
+            spectral=spectral,
         )
 
         layers = []
@@ -235,12 +294,16 @@ class ConvEncoder(nn.Module):
         if self.cond_type == "late_fusion":
             flat_features += dim_to_use
 
-        self.to_latent = nn.Sequential(
-            nn.Flatten(),
-            nn.SiLU(),
-            # sn_linear(flat_features, latent_dim),
-            nn.Linear(flat_features, latent_dim),
-            nn.LayerNorm(latent_dim),
+        # self.to_latent = nn.Sequential(
+        #     nn.Flatten(),
+        #     nn.SiLU(),
+        #     # sn_linear(flat_features, latent_dim),
+        #     nn.Linear(flat_features, latent_dim),
+        #     nn.LayerNorm(latent_dim),
+        # )
+        # Remove the old self.to_latent that used Flatten()
+        self.to_latent = SpatialAttentionPooling(
+            in_channels=in_c, latent_dim=latent_dim
         )
         self.latent_dim = latent_dim
 
@@ -254,9 +317,8 @@ class ConvEncoder(nn.Module):
         return cond
 
     def forward(self, x: Tensor, cond: Optional[Tensor] = None):
-        # Coordinate Injection
-        grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
-        x = torch.cat([x, grid], dim=1)
+        grid = self.grid if self.grid.dim() == 4 else self.grid.unsqueeze(0)
+        x = torch.cat([x, grid.expand(x.shape[0], -1, -1, -1)], dim=1)
 
         cond_emb = None
         if self.cond_type is not None and cond is not None:
@@ -265,15 +327,17 @@ class ConvEncoder(nn.Module):
         x = self.init_conv(x)
         x = self.backbone(x)
 
-        # Apply Attention at low-res (if enabled)
         if self.use_attention:
             x = self.attention(x)
 
-        flat = x.flatten(1)
-        if self.cond_type == "late_fusion" and cond_emb is not None:
-            flat = torch.cat([flat, cond_emb], dim=1)
+        # DO NOT flatten. Pass the spatial 4D grid to Attention Pooling.
+        z = self.to_latent(x)
 
-        return self.to_latent(flat)
+        if self.cond_type == "late_fusion" and cond_emb is not None:
+            z = torch.cat([z, cond_emb], dim=1)
+            # Note: ensure you project z back to latent_dim here if you concatenate
+
+        return z
 
 
 # ==========================================
@@ -311,8 +375,13 @@ class ConvDecoder(nn.Module):
         self.register_buffer("grid", torch.stack([xx, yy], dim=0))  # [2, H, W]
 
         scale_factor = 2 ** len(hiddens)
-        self.H_start = H // scale_factor
-        self.W_start = W // scale_factor
+        # A degenerate axis (KS is 64 x 1) must not be divided away: the encoder's
+        # stride-2 convolutions already leave a length-1 axis at 1, so the decoder has to
+        # start it at 1 and never upsample it.  Both are no-ops on any axis long enough to
+        # halve len(hiddens) times, so 2-D runs are unaffected.
+        self.H_start = max(1, H // scale_factor)
+        self.W_start = max(1, W // scale_factor)
+        up = (2 if H > self.H_start else 1, 2 if W > self.W_start else 1)
 
         # 1. Expand Latent
         self.flat_features = hiddens[0] * self.H_start * self.W_start
@@ -331,7 +400,7 @@ class ConvDecoder(nn.Module):
             # Step 2: PixelShuffle(2) folds channels into H and W
             self.layers.append(
                 nn.Sequential(
-                    nn.Upsample(scale_factor=2, mode="nearest"),
+                    nn.Upsample(scale_factor=up, mode="nearest"),
                     sn_conv2d(
                         curr_c, out_c, kernel_size=3, padding=1, spectral=spectral
                     ),
@@ -342,8 +411,11 @@ class ConvDecoder(nn.Module):
 
         # 4. Final Projection: (Features 64 + Grid 2) -> Output Channels (C)
         # curr_c is hiddens[-1] (usually 64)
+        # self.final_conv = sn_conv2d(
+        #     curr_c + 2, C, kernel_size=3, padding=1, spectral=spectral
+        # )
         self.final_conv = sn_conv2d(
-            curr_c + 2, C, kernel_size=3, padding=1, spectral=spectral
+            curr_c, C, kernel_size=3, padding=1, spectral=spectral
         )
 
     def forward(self, z: Tensor, cond: Optional[Tensor] = None):
@@ -367,10 +439,14 @@ class ConvDecoder(nn.Module):
 
         # 3. Coordinate Injection (The "Crisp Detail" Engine)
         # self.grid is [2, H, W], we expand it to [B, 2, H, W]
-        grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        # grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        # Apply dropout to the grid during training so the network can't rely on it 100%
+        if self.training:
+            # Drop the FLUID features, not the coordinates
+            x = F.dropout2d(x, p=0.15)
 
         # 4. Concatenate: [B, C_final, H, W] + [B, 2, H, W] -> [B, C_final + 2, H, W]
-        x = torch.cat([x, grid], dim=1)
+        # x = torch.cat([x, grid], dim=1)
 
         # 5. Final projection to physical space (e.g., 66 in -> 4 out)
         return self.final_conv(x)

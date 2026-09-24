@@ -1,3 +1,4 @@
+# ruff: noqa: F841
 import torch_qg.model as torch_model
 import torch_qg.parameterizations as torch_param
 from tqdm import tqdm
@@ -5,9 +6,18 @@ import xarray as xr
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import glob
+import random
+import torch
 
 
-def run_test_sim(steps, hr_model=None, lr_model=None, sampling_freq=10, jet=False):
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+def run_test_sim(steps, hr_model=None, lr_model=None, sampling_freq=5, jet=False):
     """Run a qg simulation trajectory. We simulate in high res, and downsample to low res. We return
     downsampled fields, sampled at `sampling_freq` intervals in numerical timestep (because we generally
     emulate in different timesteps to numerical.
@@ -53,8 +63,10 @@ def run_single_sim(sim_id, snapshots_per_sim):
     """
     Runs a single simulation and saves the output to a NetCDF file.
     """
-    ds = run_test_sim(steps=snapshots_per_sim, sampling_freq=1, jet=False)
-    save_file = f"/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/sims/sim_{sim_id:04d}.nc"
+    seed = 10_000 + sim_id
+    set_seed(seed)
+    ds = run_test_sim(steps=snapshots_per_sim)
+    save_file = f"/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/sims/long_sim_{sim_id:04d}.nc"
     ds.to_netcdf(save_file)
     return sim_id
 
@@ -68,6 +80,8 @@ def convert_qg_to_cfd(ds_qg, sim_id=0):
     q1 = ds_qg["q"][:, 0, :, :].values  # shape (time, y, x)
     q2 = ds_qg["q"][:, 1, :, :].values
 
+    psi1 = ds_qg["S"][:, 0, :, :].values  # shape (time, y, x)
+    psi2 = ds_qg["S"][:, 1, :, :].values
     # Time dimension
     t = np.arange(q1.shape[0])
 
@@ -80,6 +94,8 @@ def convert_qg_to_cfd(ds_qg, sim_id=0):
         {
             "q_1": (("sim", "t", "x", "y"), q1[np.newaxis, ...].astype(np.float32)),
             "q_2": (("sim", "t", "x", "y"), q2[np.newaxis, ...].astype(np.float32)),
+            # "psi_1": (("sim", "t", "x", "y"), psi1[np.newaxis, ...].astype(np.float32)),
+            # "psi_2": (("sim", "t", "x", "y"), psi2[np.newaxis, ...].astype(np.float32)),
         },
         coords={"sim": np.array([sim_id]), "t": t, "x": x, "y": y},
     )
@@ -89,9 +105,9 @@ def convert_qg_to_cfd(ds_qg, sim_id=0):
 
 # ----------------- Main Parallel Execution -----------------
 if __name__ == "__main__":
-    n_sims = 1000  # Total simulations
-    snapshots_per_sim = 500  # Snapshots per simulation
-    parallel_sims = 4  # Number of simulations to run in parallel
+    n_sims = 10  # Total simulations
+    snapshots_per_sim = 5 * 10000  # Snapshots per simulation
+    parallel_sims = 1  # Number of simulations to run in parallel
 
     sim_ids = list(range(n_sims))
 
@@ -108,21 +124,30 @@ if __name__ == "__main__":
 
     files = sorted(
         glob.glob(
-            "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/sims/sim_*.nc"
+            "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/sims/long_sim_*.nc"
         )
     )
-
+    # files = files[-100:]
     all_sims = []
 
     for i, f in enumerate(files):
+        print(f)
         ds_qg = xr.open_dataset(f)
         ds_cfd = convert_qg_to_cfd(ds_qg, sim_id=i)
         all_sims.append(ds_cfd)
 
     # Concatenate along sim dimension
     final_ds = xr.concat(all_sims, dim="sim")
+    dt = 0.05
+    final_ds = final_ds.assign_coords(t=final_ds.coords["t"] * dt)
 
     # Save final dataset
+    # n_sim = final_ds.sizes["sim"]
+    # n_train = int(0.9 * n_sim)
+    # ds_train = final_ds.isel(sim=slice(0, n_train))
+    # ds_test  = final_ds.isel(sim=slice(n_train, n_sim))
+    # ds_train.to_netcdf("/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_train.nc")
+    # ds_test.to_netcdf("/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_val.nc")
     final_ds.to_netcdf(
-        "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/sims/qg_dataset.nc"
+        "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_test.nc"
     )

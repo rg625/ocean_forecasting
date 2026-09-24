@@ -98,7 +98,8 @@ class EvalConfig:
             / self.experiment_name
             # / "run-20260129_110558/checkpoints"
             # / "run-20260131_160228/checkpoints"
-            / "run-20260201_123906/checkpoints"
+            # / "run-20260724_163900/checkpoints"
+            / "run-20260821_031121/checkpoints"
             / f"epoch_{self.ckpt_index}.pth"
         )
 
@@ -147,8 +148,8 @@ def tensordict_to_eval_array_with_cond(
 
     # Concatenate last 2 input frames with predicted sequence (excluding last 2 of pred)
     # This matches the notebook's temporal stitching logic
-    last_input_frame = input_arr[:, -2:, :, :, :]
-    predicted_arr_sliced = predicted_arr[:, :-2, :, :, :]
+    last_input_frame = input_arr[:, -1:, :, :, :]
+    predicted_arr_sliced = predicted_arr[:, :-1, :, :, :]
 
     full_seq = np.concatenate([last_input_frame, predicted_arr_sliced], axis=1)
 
@@ -201,6 +202,7 @@ class KoopmanEvaluator:
         # rollout steps
         self.cfg.rollout_steps = case_cfg["rollout_steps"]
         self.exp_cfg.data.max_sequence_length = self.cfg.rollout_steps - 2
+        self.exp_cfg.data.subsample = 1
 
         logger.info(
             f"Using data files:\n"
@@ -239,7 +241,9 @@ class KoopmanEvaluator:
             cond_grad_enabled=self.exp_cfg.model.cond_grad_enabled,
             disturb_std=None,
             is_continuous=self.exp_cfg.model.is_continuous,
+            operator_type=self.exp_cfg.model.operator_type,
             rank=self.exp_cfg.model.rank,
+            spectral=self.exp_cfg.model.spectral,
             cond_expansion_type=self.exp_cfg.data.selection_param,
             use_attention=self.exp_cfg.model.use_attention,
             **self.exp_cfg.model.conv_kwargs,

@@ -1,3 +1,4 @@
+# ruff: noqa: F841
 # models/utils.py
 
 import numpy as np
@@ -533,6 +534,146 @@ def plot_rollout(gt_dict, pred_dict, variable_name, frame_stride=5):
 
     fig.suptitle(f"Koopman AE Rollout for Variable: {variable_name}", fontsize=16)
     plt.tight_layout(rect=[0, 0.4, 0.98, 0.95])
+    plt.show()
+
+
+def plot_ks_rollout(gt_dict, pred_dict, variable_name="u", L=64.0):
+    """
+    Plots a simplified KS rollout comparison:
+    - Row 0: GT and Prediction heatmaps
+    - Row 1: Overlayed snapshots (GT vs Pred)
+
+    Focus: clean visual comparison instead of redundancy.
+    """
+
+    # ─── 1. Extract and Squeeze Data ────────────────────────────────────────────
+    if gt_dict.batch_dims == 1 and gt_dict.batch_size[0] == 1:
+        gt_dict = gt_dict.squeeze(0)
+    if pred_dict.batch_dims == 1 and pred_dict.batch_size[0] == 1:
+        pred_dict = pred_dict.squeeze(0)
+
+    gt = np.squeeze(gt_dict[variable_name].cpu().numpy())
+    pred = np.squeeze(pred_dict[variable_name].cpu().numpy())
+
+    # ─── 2. Match Lengths ───────────────────────────────────────────────────────
+    min_len = min(gt.shape[0], pred.shape[0])
+    gt = gt[:min_len]
+    pred = pred[:min_len]
+
+    print(f"Stats for {variable_name} (Length: {min_len}):")
+    print(
+        f"GT   | Min: {gt.min():.4f}, Max: {gt.max():.4f}, Mean: {gt.mean():.4f}, Std: {gt.std():.4f}"
+    )
+    print(
+        f"Pred | Min: {pred.min():.4f}, Max: {pred.max():.4f}, Mean: {pred.mean():.4f}, Std: {pred.std():.4f}"
+    )
+
+    err = np.abs(gt - pred)
+
+    # ─── 3. Setup Variables ─────────────────────────────────────────────────────
+    T, n_x = gt.shape
+    x_space = np.linspace(0, L, n_x, endpoint=False)
+    t_space = np.arange(T)
+
+    vmax = np.percentile(np.abs(gt), 99)
+    snaps = [0.0, 0.25, 0.5, 0.75, 1.0]
+    snap_idx = [int(f * (T - 1)) for f in snaps]
+
+    # Dynamic sizing
+    time_to_space_ratio = T / n_x
+    plot_width = max(4.0, min(25.0, time_to_space_ratio * 4.0))
+
+    fig_width = (plot_width * 2) + 1.5
+    fig_height = 8.0
+
+    # ─── 4. GridSpec Layout ─────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    gs = fig.add_gridspec(2, 2, height_ratios=[3, 1.5], hspace=0.4, wspace=0.3)
+
+    # ─── Row 0: Heatmaps ────────────────────────────────────────────────────────
+    titles = ["Ground Truth", "Prediction"]
+    data_arrays = [gt, pred]
+
+    for i, (data, title) in enumerate(zip(data_arrays, titles)):
+        ax = fig.add_subplot(gs[0, i])
+
+        im = ax.imshow(
+            data.T,
+            aspect="auto",
+            origin="lower",
+            extent=[t_space[0], t_space[-1], 0, L],
+            cmap="RdBu_r",
+            vmin=-vmax,
+            vmax=vmax,
+        )
+
+        fig.colorbar(im, ax=ax, shrink=0.8)
+        ax.set_xlabel("t")
+        ax.set_ylabel("x")
+        ax.set_title(title)
+
+    # ─── Row 1: Overlayed Snapshots ─────────────────────────────────────────────
+    ax_snap = fig.add_subplot(gs[1, :])
+    colors = plt.cm.viridis(np.linspace(0, 1, len(snap_idx)))
+
+    for si, color in zip(snap_idx, colors):
+        # Ground Truth (solid)
+        ax_snap.plot(
+            x_space, gt[si], lw=1.5, color=color, label=f"GT t={t_space[si]:.1f}"
+        )
+
+        # Prediction (dashed)
+        ax_snap.plot(
+            x_space,
+            pred[si],
+            lw=1.5,
+            ls="--",
+            color=color,
+            label=f"Pred t={t_space[si]:.1f}",
+        )
+
+        # Optional: faint error curve
+        ax_snap.plot(x_space, gt[si] - pred[si], lw=1.0, color=color, alpha=0.25)
+
+    ax_snap.set_xlabel("x")
+    ax_snap.set_ylabel("u(x,t)")
+    ax_snap.set_title("GT vs Prediction Snapshots")
+
+    ax_snap.legend(fontsize=7, ncol=2)
+
+    # ─── Final Layout ───────────────────────────────────────────────────────────
+    plt.suptitle(
+        f"1D Kuramoto-Sivashinsky Rollout (Variable: {variable_name})", fontsize=16
+    )
+
+    plt.show()
+
+
+def plot_assimilation_comparison(gt, standard_pred, assimilated_pred):
+    plt.figure(figsize=(12, 4))
+
+    # Assuming 'u' is 64 spatial points
+    x_axis = np.arange(64)
+
+    plt.plot(
+        x_axis, gt.cpu().numpy().flatten(), "k-", label="Ground Truth", linewidth=2
+    )
+    plt.plot(
+        x_axis,
+        standard_pred.cpu().numpy().flatten(),
+        "r--",
+        label="Standard Prediction",
+    )
+    plt.plot(
+        x_axis,
+        assimilated_pred.cpu().numpy().flatten(),
+        "g--",
+        label="Assimilated Prediction",
+    )
+
+    plt.title("Data Assimilation Comparison")
+    plt.legend()
+    plt.grid(True)
     plt.show()
 
 

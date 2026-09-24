@@ -51,6 +51,14 @@ TRA_STD = {
     "Ma": 0.118322,
 }
 
+KS_MEAN: Dict = {
+    "u": 3.3472804389367283e-11,
+}
+
+KS_STD: Dict = {
+    "u": 1.134909987449646,
+}
+
 
 class DatasetConfigurationError(Exception):
     """Custom exception for dataset configuration errors."""
@@ -104,6 +112,9 @@ class MeanStdNormalizer(AbstractNormalizer):
         elif "rho" in self.normalized_vars:
             means = TRA_MEAN
             stds = TRA_STD
+        elif "u" in self.normalized_vars:
+            means = KS_MEAN
+            stds = KS_STD
         else:
             means = INC_MEAN
             stds = INC_STD

@@ -74,6 +74,11 @@ class Trainer:
             num_visual_batches,
         )
 
+        # AzencotDiscreteLoss has no latent-space term, and the backward chain now starts
+        # from `_encode_last_target_window`, so encoding every ground-truth target frame
+        # would be a wasted encoder pass over B x N frames on every step.
+        self._needs_true_latents = hasattr(criterion, "latent_loss")
+
         self.best_val_loss = float("inf")
         self.patience_counter = 0
         self.start_epoch = start_epoch
@@ -95,6 +100,9 @@ class Trainer:
                 # GradScaler is not required for bfloat16
                 logger.info("Using bfloat16 mixed precision.")
             else:
+                # Without this assignment the attribute is never set and every later
+                # reference to self.autocast_dtype raises AttributeError.
+                self.autocast_dtype = torch.float32
                 logger.warning(
                     "bfloat16 not supported on this device, falling back to float32."
                 )
@@ -138,6 +146,75 @@ class Trainer:
         dist.all_reduce(metric_tensor, op=dist.ReduceOp.AVG)
 
         return {key: val.item() for key, val in zip(metrics.keys(), metric_tensor)}
+
+    @staticmethod
+    def _encode_last_target_window(model_module, input_td, target_td):
+        """Encode the LAST target frame with the SAME map the forward rollout uses.
+
+        The paper has a single encoder chi_e, so the backward chain must start from the
+        same latent chart the forward operator acts on. With ``input_frames > 1`` the
+        forward pass uses ``encode()`` = (history + present) / 2, whereas
+        ``present_encoding()`` sees one frame only -- a materially different map. Taking
+        ``true_latents[:, -1]`` would therefore train B on a chart A never sees, and the
+        consistency penalty (B A = I) would be tying together two different bases.
+
+        Builds the ``input_frames``-long window ending at the last target frame by
+        concatenating the input and target sequences along time, so it stays correct even
+        when the target sequence is shorter than the input window.
+        """
+        n_frames = model_module.input_frames
+        var_keys = list(model_module.data_variables.keys())
+
+        window = {
+            k: torch.cat([input_td[k], target_td[k]], dim=1)[:, -n_frames:]
+            for k in var_keys
+        }
+        window_td = TensorDict(window, batch_size=[target_td.batch_size[0], n_frames])
+
+        window_cond = None
+        if "cond_input" in input_td and "cond_target" in target_td:
+            window_cond = torch.cat(
+                [input_td["cond_input"], target_td["cond_target"]], dim=1
+            )[:, -n_frames:]
+
+        return model_module.encode(window_td, cond_input=window_cond)
+
+    def _azencot_backward_rollout(
+        self, model_module, z_start, target_td, x_true_recon, obstacle_mask=None
+    ):
+        """Backward rollout for the Consistent Koopman AE (Azencot et al. 2020).
+
+        Starts from ``z_start`` (the latent of the LAST target frame, encoded with the
+        forward encoder -- see ``_encode_last_target_window``), propagates backward
+        through the separately-learned operator B, decodes, and returns the predictions
+        together with the time-reversed ground truth they should match. Mirroring the
+        reference (``data_list[::-1][k+1]``), the chain runs all the way back to the
+        *input* frame, so with targets x_1..x_N the N steps are matched against
+        ``[x_{N-1}, ..., x_1, x_0]`` where x_0 is the last input frame.
+
+        Returns (None, None) if the sequence is too short.
+        """
+        N = target_td.batch_size[1]
+        if N < 2:
+            return None, None
+
+        # N steps: N-1 land inside the target window, the last one lands on the input.
+        x_back, _ = model_module.backward_rollout(
+            z_start, N, obstacle_mask=obstacle_mask
+        )
+
+        var_keys = list(model_module.data_variables.keys())
+        rev_idx = torch.arange(N - 2, -1, -1, device=target_td.device)
+        reversed_targets = target_td.select(*var_keys)[:, rev_idx]
+
+        x_back_future = TensorDict(
+            {
+                k: torch.cat([reversed_targets[k], x_true_recon[k].unsqueeze(1)], dim=1)
+                for k in var_keys
+            },
+            batch_size=[target_td.batch_size[0], N],
+        )
+        return x_back, x_back_future
 
     def true_latent_encoding(self, target_td: TensorDict, model_module):
 
@@ -203,8 +280,14 @@ class Trainer:
             # --- 2. INPUT CLAMPING (CRITICAL) ---
             # Even normalized data shouldn't exceed +/- 5 sigma.
             # Noise can sometimes push outlier pixels to +/- 20, which kills RBFs/SiLU.
-            noisy_input_td = noisy_input_td.apply(lambda t: torch.clamp(t, -5.0, 5.0))
+            noisy_input_td = noisy_input_td.apply(
+                lambda t: torch.nan_to_num(t, nan=0.0, posinf=5.0, neginf=-5.0).clamp(
+                    -5.0, 5.0
+                )
+            )
 
+            # current_drop_prob = 0.9 if self.current_epoch > 5 else 0.0
+            current_drop_prob = 0.0 if self.current_epoch > 5 else 0.0
             with autocast(
                 device_type=str(self.device),
                 dtype=self.autocast_dtype,
@@ -212,29 +295,68 @@ class Trainer:
             ):
 
                 # Forward Pass
-                out = self.model(noisy_input_td, target_td["seq_length"])
+                out = self.model(
+                    noisy_input_td, target_td["seq_length"], drop_prob=current_drop_prob
+                )
                 # out = self.model(input_td, target_td["seq_length"])
+                # --- TARGET SLICING ---
+                # Align the ground truth sequence with the frames the model actually predicted
+                if hasattr(out, "kept_indices") and out.kept_indices is not None:
+                    # TensorDict natively supports slicing along the time dimension [Batch, Time, ...]
+                    sliced_target_td = target_td[:, out.kept_indices]
+                else:
+                    sliced_target_td = target_td
 
                 x_true_recon = TensorDict(
                     {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
                     batch_size=input_td.batch_size[0],
                 )
 
-                loss = self.criterion(
-                    model_module.koopman_operator,
-                    out.x_recon,
-                    out.x_preds,
-                    out.z_preds,
-                    x_true_recon,  # Compare against CLEAN input
-                    target_td,  # Compare against CLEAN target
+                true_latents = (
                     self.true_latent_encoding(
-                        target_td=target_td, model_module=model_module
-                    ),
-                    out.reynolds,
-                    out.disturbed_latents,
-                    out.dz_dt,
-                    out.dz_dt_disturbed,
+                        target_td=sliced_target_td,
+                        model_module=model_module,  # Encode SLICED target
+                    )
+                    if self._needs_true_latents
+                    else None
                 )
+
+                criterion_kwargs = dict(
+                    koopman_operator=model_module.koopman_operator,
+                    x_recon=out.x_recon,
+                    x_preds=out.x_preds,
+                    latent_pred=out.z_preds,
+                    x_true=x_true_recon,  # Compare against CLEAN input
+                    x_future=sliced_target_td,  # Compare against SLICED target
+                    true_latents=true_latents,
+                    reynolds=out.reynolds,
+                    disturbed_latents=out.disturbed_latents,
+                    dz_dt=out.dz_dt,
+                    dz_dt_disturbed=out.dz_dt_disturbed,
+                )
+
+                # Consistent (Azencot) operator: add the genuine backward-rollout loss.
+                crit_cfg = getattr(self.criterion, "cfg", None)
+                if (
+                    crit_cfg is not None
+                    and getattr(crit_cfg, "use_backward", False)
+                    and hasattr(model_module.koopman_operator.dynamics, "backward_step")
+                ):
+                    z_start = self._encode_last_target_window(
+                        model_module, input_td, sliced_target_td
+                    )
+                    x_back, x_back_future = self._azencot_backward_rollout(
+                        model_module,
+                        z_start,
+                        sliced_target_td,
+                        x_true_recon,
+                        obstacle_mask=input_td.get("obstacle_mask"),
+                    )
+                    if x_back is not None:
+                        criterion_kwargs["x_back"] = x_back
+                        criterion_kwargs["x_back_future"] = x_back_future
+
+                loss = self.criterion(**criterion_kwargs)
                 loss_dict = loss.metrics
 
             # --- 3. LOSS SPIKE GUARD ---
@@ -262,7 +384,7 @@ class Trainer:
                 self.scaler.unscale_(self.optimizer)
 
                 # Gradient Clipping is essential for SiLU/Koopman
-                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
@@ -309,24 +431,49 @@ class Trainer:
                     {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
                     batch_size=input_td.batch_size[0],
                 )
-                loss_dict = self.criterion(
+                true_latents = (
+                    self.true_latent_encoding(
+                        target_td=target_td, model_module=model_module
+                    )
+                    if self._needs_true_latents
+                    else None
+                )
+                eval_criterion_kwargs = dict(
                     koopman_operator=model_module.koopman_operator,
                     x_recon=out.x_recon,
                     x_preds=out.x_preds,
                     latent_pred=out.z_preds,
                     x_true=x_true_recon,
                     x_future=target_td,
-                    true_latents=self.true_latent_encoding(
-                        target_td=target_td, model_module=model_module
-                    ),
+                    true_latents=true_latents,
                     reynolds=out.reynolds,
                     disturbed_latents=out.disturbed_latents,
                     dz_dt=out.dz_dt,
                     dz_dt_disturbed=out.dz_dt_disturbed,
-                ).metrics
-                # detached_losses = {
-                #     k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
-                # }
+                )
+
+                # Consistent (Azencot) operator: add the genuine backward-rollout loss.
+                crit_cfg = getattr(self.criterion, "cfg", None)
+                if (
+                    crit_cfg is not None
+                    and getattr(crit_cfg, "use_backward", False)
+                    and hasattr(model_module.koopman_operator.dynamics, "backward_step")
+                ):
+                    z_start = self._encode_last_target_window(
+                        model_module, input_td, target_td
+                    )
+                    x_back, x_back_future = self._azencot_backward_rollout(
+                        model_module,
+                        z_start,
+                        target_td,
+                        x_true_recon,
+                        obstacle_mask=input_td.get("obstacle_mask"),
+                    )
+                    if x_back is not None:
+                        eval_criterion_kwargs["x_back"] = x_back
+                        eval_criterion_kwargs["x_back_future"] = x_back_future
+
+                loss_dict = self.criterion(**eval_criterion_kwargs).metrics
                 total_losses = accumulate_losses(total_losses, loss_dict)
 
                 if self.eval_metrics and not out.x_preds.is_empty():
@@ -414,6 +561,24 @@ class Trainer:
         logger.info(
             f"Starting training from epoch {self.start_epoch}/{self.num_epochs}"
         )
+
+        # --- THE NaN SNIPER ---
+        def nan_hook(module, inputs, outputs):
+            if isinstance(outputs, torch.Tensor) and torch.isnan(outputs).any():
+                raise RuntimeError(
+                    f"🚨 NaN originated exactly here: {module.__class__.__name__}"
+                )
+            elif isinstance(outputs, tuple):
+                for i, out in enumerate(outputs):
+                    if isinstance(out, torch.Tensor) and torch.isnan(out).any():
+                        raise RuntimeError(
+                            f"🚨 NaN originated exactly here: {module.__class__.__name__} (Output index {i})"
+                        )
+
+        # Register the hook on every single sub-module
+        for name, module in self.model.named_modules():
+            module.register_forward_hook(nan_hook)
+        # ----------------------
 
         for epoch in (
             pbar := tqdm(range(self.start_epoch, self.num_epochs), desc="Epochs")
@@ -530,12 +695,6 @@ class Trainer:
                 axis.set_title(title)
                 axis.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
                 axis.grid(True, alpha=0.3)
-                if (
-                    self.cfg
-                    and hasattr(self.cfg, "log_scale_plots")
-                    and self.cfg.log_scale_plots
-                ):
-                    axis.set_yscale("log")
 
         # --- Plotting ---
         current_ax_idx = 0

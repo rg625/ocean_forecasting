@@ -66,6 +66,10 @@ class ModelConfig:
     rank: Optional[int] = None
     use_attention: Optional[bool] = False
     spectral: bool = MISSING
+    freeze_base: Optional[bool] = True
+    operator_type: str = "discrete"  # NEW: "discrete", "continuous", or "azencot"
+    # Spectral radius of the Azencot forward operator at init (reference default: 0.99).
+    init_scale: float = 1.0
 
 
 @dataclass
@@ -83,18 +87,23 @@ class TrainingConfig:
 
 @dataclass
 class LossConfig:
-    alpha: float = MISSING
-    beta: float = MISSING
-    loss_type: str = MISSING
+    alpha: float = 1.0  # Forward loss weight (continuous & discrete)
+    beta: float = 1.0  # Latent consistency weight (continuous)
+    loss_type: str = "l2"
     ssim_weight: Optional[float] = None
     re_weight: Optional[float] = None
     stability_weight: Optional[float] = None
-    weighting_type: str = MISSING
+    weighting_type: str = "uniform"
     sigma_blur: Optional[float] = None
     physics_weight: Optional[float] = None
     gamma_time: Optional[float] = None
     gamma_space: Optional[float] = None
     gamma_spectral: Optional[float] = None
+    # Discrete/Azencot loss parameters (NEW)
+    # lamb: Optional[float] = None  # Identity loss weight (discrete)
+    # nu: Optional[float] = None  # Backward loss weight (discrete)
+    # eta: Optional[float] = None  # Consistency weight (discrete)
+    # use_backward: Optional[bool] = False  # Enable backward loss (discrete)
 
 
 @dataclass
