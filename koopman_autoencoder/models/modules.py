@@ -229,6 +229,7 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
 
         # --- Eigen Mode ---
         if config.mode == KoopmanMode.EIGEN:
+            self._eigen_unsupported()
             # Base parameters (unconstrained)
             self.unconstrained_real_parts = nn.Parameter(torch.randn(config.latent_dim))
             self.imaginary_parts = nn.Parameter(torch.randn(config.latent_dim))
@@ -284,6 +285,17 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
 
             nn.init.zeros_(self.K_mlp[-1].weight)
             nn.init.zeros_(self.K_mlp[-1].bias)
+
+    @staticmethod
+    def _eigen_unsupported() -> None:
+        # _forward_eigen calls _get_effective_linear_map, which only supports
+        # linear/mlp, so this mode always failed with an AssertionError at the first
+        # forward; it also pairs complex eigenvalues with real, unconstrained
+        # "orthogonal" eigenvectors. Fail loudly at construction instead.
+        raise NotImplementedError(
+            "operator_mode='eigen' is not implemented for the continuous operator; "
+            "use mode='linear' or the structured generator in models/ct_kae.py."
+        )
 
     def _init_stable_weights(self):
         # 1. Initialize W as Orthogonal (Pure Rotation, Energy Conserved)
