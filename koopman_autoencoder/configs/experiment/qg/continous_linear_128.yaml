@@ -8,6 +8,6 @@ defaults:
   - /lr_scheduler: linear_decay
 
 # Top-level run configuration
-output_dir: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/models_output_qg"
-ckpt: null # "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/models_output_qg/run-20260201_194724/checkpoints/epoch_30.pth"
+output_dir: "model_outputs_qg/continous_linear_128"
+ckpt: null # "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs_qg/continous_linear_128/run-20260208_151808/checkpoints/epoch_30.pth"
 log_epoch: 10

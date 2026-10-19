@@ -26,7 +26,7 @@ quantile_range: [2.5, 97.5]
 control_parameters: ["Ma"]
 selection_param: "Ma"
 
-train_select_cond: null
+train_select_cond: null # [0.60, 0.65]
 val_select_cond: null
 test_select_cond: null
 

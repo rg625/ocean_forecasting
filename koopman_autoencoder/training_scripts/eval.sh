@@ -53,10 +53,11 @@ python evaluate.py \
   --type continous \
   --arch linear \
   --regime tra \
-  --ckpt 100 \
+  --ckpt 199 \
   --gpu 0 \
   --out_dir "$BASE_OUT_DIR" \
   --eval_cases interp extrap longer
+#   --eval_cases highRey lowRey
 
 python ../autoreg_pde_diffusion/src/plot_loss_all.py
 # python ../autoreg_pde_diffusion/src/plot_data_custom.py

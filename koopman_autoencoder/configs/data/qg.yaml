@@ -3,24 +3,23 @@
 # data:
 dataset_type: "QGDatasetMultiSim" # "QGDatasetMultiSim" # "SingleSimOverfit"
 data_dir: "./data"
-train_file: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/data/qg/train_sim.nc"
-val_file: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/data/qg/test_sim.nc"
-test_file: "/home/rg625/rds/hpc-work/ocean_forecasting/koopman_autoencoder/data/qg/test_sim.nc"
-input_sequence_length: 2
-max_sequence_length: 8
-subsample: 2
+train_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_train.nc"
+val_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_test.nc"
+# test_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_test_short.nc"
+test_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_test.nc"
+input_sequence_length: 4
+max_sequence_length: 6
+subsample: 1
+exhaustive: false
 variables:
-  q1: 1
-  q2: 1
+  q_1: 1
+  q_2: 1
 # static_variables:
 #   obstacle_mask: 0
 normalization:
   type: "MeanStdNormalizer"
   sim: 0
 quantile_range: [2.5, 97.5]
-
-control_parameters: ["forcing"]
-selection_param: "forcing"
 
 train_select_cond: null
 val_select_cond: null
