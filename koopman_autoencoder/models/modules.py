@@ -128,6 +128,24 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
             self.config.cond_embedding_dim, output_dim, self.config.hidden_dim
         )
 
+    def _build_lora_hypnet(self, n_maps: int) -> KoopmanHypnet:
+        """Hypernetwork emitting, for each of ``n_maps`` matrices, LoRA factors [U, V]
+        (each ``rank x latent_dim``), laid out as ``_compute_lora_update`` reads them.
+
+        Standard LoRA initialisation: U random, V zero, so U V^T = 0 (the operator starts
+        at its base dynamics) but dL/dV = (dL/dUV^T) U != 0. Zero-initialising both
+        factors, as ``KoopmanHypnet.reset_parameters`` does, is a saddle point: each
+        factor's gradient is the other factor, so the conditioning path never trains.
+        """
+        assert self.config.rank is not None and self.config.rank > 0
+        factor = self.config.rank * self.config.latent_dim
+        hypnet = self._build_hypnet(n_maps * 2 * factor)
+        assert hypnet is not None
+        with torch.no_grad():
+            w = hypnet.net[-1].weight.view(n_maps, 2, factor, -1)
+            w[:, 0].normal_(0.0, self.config.hidden_dim**-0.5)
+        return hypnet
+
     def _encode_cond(self, cond: Optional[Tensor]) -> Optional[Tensor]:
         if cond is None:
             assert (
@@ -235,11 +253,11 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
             if config.rank is not None:
                 # 3. Hypernetworks
                 # Output dim accommodates updates for both W and D
-                output_dim = config.latent_dim * config.latent_dim * 2
                 if config.rank > 0:
-                    output_dim = config.latent_dim * 2 * config.rank * 2
-
-                self.hypnet = self._build_hypnet(output_dim)
+                    self.hypnet = self._build_lora_hypnet(n_maps=2)  # W and D
+                else:
+                    output_dim = config.latent_dim * config.latent_dim * 2
+                    self.hypnet = self._build_hypnet(output_dim)
 
             self._init_stable_weights()
 
@@ -459,8 +477,7 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             )
 
             if config.rank is not None:
-                output_dim = config.latent_dim * 2 * config.rank * 2
-                self.hypnet = self._build_hypnet(output_dim)
+                self.hypnet = self._build_lora_hypnet(n_maps=2)  # W and D
 
             self._init_stable_weights()
             self._init_backward_weights()
@@ -633,8 +650,7 @@ class AzencotKoopmanOperator(BaseKoopmanOperator):
             # Optional: conditioning of the FORWARD operator via hypernetwork.
             if config.rank is not None and config.cond_embedding_dim is not None:
                 # Hypernetwork predicts LoRA updates to A
-                output_dim = config.latent_dim * 2 * config.rank
-                self.hypnet = self._build_hypnet(output_dim)
+                self.hypnet = self._build_lora_hypnet(n_maps=1)
 
             self._init_consistent_weights()
 
