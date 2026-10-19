@@ -1,0 +1,20 @@
+# configs/loss/ks.yaml
+
+alpha: 10.0          # Increase prediction weight to prioritize rollout accuracy
+beta: 1.0
+loss_type: "l2"      # L2 is good for KS
+
+# --- TURN PHYSICS BACK ON ---
+physics_weight: 0.0
+
+gamma_time: 0.0      # Keep velocity penalty light
+gamma_space: 0.0     # CRITICAL for KS: It relies heavily on spatial gradients!
+gamma_spectral: 0.0  # CRITICAL for KS: Forces the model to learn the wave frequencies
+
+ssim_weight: null
+re_weight: null
+stability_weight: 0.0
+
+# --- USE COSINE WEIGHTING ---
+weighting_type: "uniform"
+sigma_blur: null

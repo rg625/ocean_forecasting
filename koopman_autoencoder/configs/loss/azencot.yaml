@@ -1,0 +1,17 @@
+# configs/loss/tra.yaml
+
+alpha: 1.0
+beta: 1.0
+loss_type: "l1"
+physics_weight: 1.0
+
+gamma_time: 1.0
+gamma_space: 1.0
+gamma_spectral: 1.0
+
+ssim_weight: null
+
+re_weight: null
+stability_weight: 0.0 # try 1e-5 but uses a lot more memory
+weighting_type: "uniform"
+sigma_blur: null

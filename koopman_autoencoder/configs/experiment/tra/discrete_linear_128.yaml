@@ -1,0 +1,15 @@
+defaults:
+  - _self_
+  - /data: tra
+  - /model: discrete_linear_128_tra
+  - /metric: base
+  - /training: tra
+  - /loss: azencot_discrete
+  - /lr_scheduler: linear_decay_tra
+
+# Top-level run configuration
+# NOTE: this used to point at model_outputs_tra/continous_linear_128, which would have
+# written this run's checkpoints on top of the continuous model's.
+output_dir: "model_outputs_tra/discrete_azencot_linear_128"
+ckpt: null
+log_epoch: 10

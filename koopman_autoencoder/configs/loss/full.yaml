@@ -1,0 +1,17 @@
+# configs/loss/full.yaml
+
+alpha: 2.0
+beta: 1.0
+loss_type: "l2"
+physics_weight: 1.0
+
+gamma_time: 1.0
+gamma_space: 2.0
+gamma_spectral: 0.1
+
+ssim_weight: null
+
+re_weight: null
+stability_weight: 0.0
+weighting_type: "uniform"
+sigma_blur: null
