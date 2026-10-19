@@ -718,3 +718,47 @@ hypothesis does not hold for this flow at useful horizons. Two options remain:
 5. E4–E7.
 6. External baselines.
 7. Then, and only then, architectural expansion.
+
+---
+
+## Addendum (2026-10-19, branch `impl/ct-kae`): corrections and phase-2 fixes
+
+**Correction: the KAE baseline numbers above are not reproducible (REPRO-04).**
+- §1, §8 and §16 quote KAE MSE 6.37 / 1.59 / 16.91 (interp / extrap / longer). Those figures
+  were computed from the saved prediction files written on 24 August.
+- Re-running the same checkpoint (`run-20260821_031121/epoch_199`, identical to
+  `final_model.pth`, same config) with the repository code gives **11.43 / 2.12 / 18.62**
+  under the same scorer.
+- The first predicted frame already differs from the saved file by 0.07, in fp32 and TF32
+  alike. No other TRA checkpoint on disk reproduces the files.
+- The model code was rewritten in `a5f4796` (24 September), after that evaluation.
+- The audit's horizon diagnostics (ACC < 0.6 at lead 27–29, energy ratio 0.25 at 240) were
+  computed with the current code, so they are consistent with the reproducible numbers. The
+  MSE table was not.
+- Conclusions that change:
+  - The legacy KAE is **not** competitive on `extrap` (2.12 vs U-Net_tn 1.42 and ACDM
+    ≈ 2.0–2.2).
+  - Its `interp` gap to ACDM is about 4×, not about 2×.
+- See `EXPERIMENT_RESULTS.md` §2.
+
+**Also found in phase 2:**
+
+| ID | Finding | Resolution |
+|---|---|---|
+| REPRO-05 | The repository `.gitignore` (`*.json`, `*.txt`, `*.sh`) had silently excluded `issues.json` and the raw results from the audit commits | Force-added in `b5e5876` |
+| PROV-01 | ACDM provenance verified: official checkpoints; Tra_int matches the paper after the frame-convention conversion | The paper has no Tra_long numbers. U-Net_tn and U-Net_ut, not ACDM, are the strongest TRA baselines |
+
+**Fixed in phase 2** (tests in `tests/test_phase1_fixes.py`, 9/9 fail on the previous code):
+
+| Issue | Fix | Commit |
+|---|---|---|
+| REPRO-03 | CPU-safe timings | `0505f1f` |
+| CLAIM-01 | Configurable `dt` and `drop_prob` | `0505f1f`, `7013450` |
+| DEAD-01 | Fail-fast continuous eigen mode | `0505f1f` |
+| LOSS-01 | Explicit `pred_loss_type` | `73a2d81` |
+| REPRO-02 | Run metadata in checkpoints | `7013450` |
+| EVAL-04 | Fatal missing checkpoints / evaluation errors | `7013450` |
+| ENC-01 | Consistent latent targets (opt-in) | `7013450` |
+| EVAL-03 | Parameter-separated TRA validation split | `34870f7` |
+
+The evaluated legacy checkpoint still loads strictly with bit-identical outputs.
