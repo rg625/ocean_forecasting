@@ -59,6 +59,9 @@ class Trainer:
         eval_metrics: Optional[Metric] = None,
         precision: Optional[str] = "bfloat16",
         debug_nan_checks: bool = False,
+        drop_prob: float = 0.0,
+        run_metadata: Optional[Dict] = None,
+        consistent_latent_targets: bool = False,
     ):
         self.model = model
         self.train_loader, self.val_loader = train_loader, val_loader
@@ -79,6 +82,14 @@ class Trainer:
         # non-finite-loss guard in _run_one_epoch already skips bad batches.
         self.debug_nan_checks = debug_nan_checks
         self._nan_hook_handles: List = []
+        # Frame-dropping (irregular dt) training was hard-wired off; now configurable.
+        self.drop_prob = drop_prob
+        # Resolved config + git state saved into every checkpoint (reproducibility).
+        self.run_metadata = run_metadata or {}
+        # ENC-01: the rollout starts from encode() (history + present) but latent
+        # targets used present_encoding() only -- two different charts. True encodes
+        # each target with the same input_frames-long window map. Default keeps legacy.
+        self.consistent_latent_targets = consistent_latent_targets
 
         # AzencotDiscreteLoss has no latent-space term, and the backward chain now starts
         # from `_encode_last_target_window`, so encoding every ground-truth target frame
@@ -247,6 +258,32 @@ class Trainer:
         )
         return rearrange(true_latents_flat, "(b t) d -> b t d", b=B)
 
+    @staticmethod
+    def window_latent_encoding(input_td, target_td, model_module):
+        """Encode every target frame with the same window map as the rollout start:
+        target j uses frames [j - input_frames + 1, j] of the concatenated sequence."""
+        n = model_module.input_frames
+        keys = list(model_module.data_variables.keys())
+        B, T = target_td.batch_size
+        windows = {}
+        for k in keys:
+            full = torch.cat([input_td[k], target_td[k]], dim=1)  # [B, Tin+T, ...]
+            w = full.unfold(1, n, 1)[:, -T:]  # [B, T, ..., n]
+            w = w.movedim(-1, 2)  # [B, T, n, ...]
+            windows[k] = w.reshape(B * T, n, *w.shape[3:])
+        win_td = TensorDict(windows, batch_size=[B * T, n])
+        cond = None
+        if "cond_input" in input_td and "cond_target" in target_td:
+            c = torch.cat([input_td["cond_input"], target_td["cond_target"]], dim=1)
+            cond = c.unfold(1, n, 1)[:, -T:].reshape(B * T, n)
+        z = model_module.encode(win_td, cond_input=cond)
+        return rearrange(z, "(b t) d -> b t d", b=B)
+
+    def _latent_targets(self, input_td, target_td, model_module):
+        if self.consistent_latent_targets:
+            return self.window_latent_encoding(input_td, target_td, model_module)
+        return self.true_latent_encoding(target_td=target_td, model_module=model_module)
+
     def _run_one_epoch(self) -> Dict[str, float]:
         """Runs a single training epoch with Crash Protection."""
         self.model.train()
@@ -292,8 +329,7 @@ class Trainer:
                 )
             )
 
-            # current_drop_prob = 0.9 if self.current_epoch > 5 else 0.0
-            current_drop_prob = 0.0 if self.current_epoch > 5 else 0.0
+            current_drop_prob = self.drop_prob
             with autocast(
                 device_type=str(self.device),
                 dtype=self.autocast_dtype,
@@ -319,10 +355,7 @@ class Trainer:
                 )
 
                 true_latents = (
-                    self.true_latent_encoding(
-                        target_td=sliced_target_td,
-                        model_module=model_module,  # Encode SLICED target
-                    )
+                    self._latent_targets(input_td, sliced_target_td, model_module)
                     if self._needs_true_latents
                     else None
                 )
@@ -438,9 +471,7 @@ class Trainer:
                     batch_size=input_td.batch_size[0],
                 )
                 true_latents = (
-                    self.true_latent_encoding(
-                        target_td=target_td, model_module=model_module
-                    )
+                    self._latent_targets(input_td, target_td, model_module)
                     if self._needs_true_latents
                     else None
                 )
@@ -554,6 +585,7 @@ class Trainer:
             "history": self.history,
             "model_state_dict": model_to_save.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "run_metadata": self.run_metadata,
         }
 
         cp_dir = self.output_dir / "checkpoints"

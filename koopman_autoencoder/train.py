@@ -25,6 +25,7 @@ from models.dataloader import (
 from models.trainer import Trainer
 from models.metrics import Metric
 from models.utils import (
+    git_state,
     load_checkpoint,
     load_datasets,
 )
@@ -189,6 +190,7 @@ def main(cfg: DictConfig):
             use_attention=cfg.model.use_attention,
             spectral=cfg.model.spectral,
             honor_conv_kwargs=cfg.model.honor_conv_kwargs,
+            dt=cfg.model.dt,
             **cfg.model.conv_kwargs,
         ).to(device)
         # model = torch.compile(model)
@@ -290,6 +292,12 @@ def main(cfg: DictConfig):
             num_visual_batches=cfg.training.num_visual_batches,
             precision=cfg.training.precision,
             debug_nan_checks=cfg.training.debug_nan_checks,
+            drop_prob=cfg.training.drop_prob,
+            consistent_latent_targets=cfg.training.consistent_latent_targets,
+            run_metadata={
+                "config": OmegaConf.to_container(cfg, resolve=True),
+                "git": git_state(Path(__file__).parent),
+            },
         )
         logger.info("Trainer initialized.")
     except Exception as e:

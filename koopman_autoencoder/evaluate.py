@@ -373,6 +373,11 @@ def main():
         "--regime", type=str, default="tra", help="Regime (stable/full)"
     )
     parser.add_argument("--ckpt", type=int, default=199, help="Checkpoint index")
+    parser.add_argument(
+        "--keep_going",
+        action="store_true",
+        help="Log and skip a failing eval case instead of aborting",
+    )
     parser.add_argument("--gpu", type=int, default=0, help="GPU ID")
     parser.add_argument(
         "--base_dir",
@@ -426,6 +431,8 @@ def main():
             evaluator.save_results(results)
         except Exception:
             logger.exception(f"Evaluation failed for case {case}")
+            if not args.keep_going:
+                raise  # a stale npz from an earlier run must not survive silently
             continue
 
 
