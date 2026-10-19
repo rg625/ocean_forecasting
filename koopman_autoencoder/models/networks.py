@@ -21,15 +21,24 @@ except ImportError:
 
 
 def sn_conv2d(
-    in_channels, out_channels, kernel_size, stride=1, padding=0, spectral=True
+    in_channels,
+    out_channels,
+    kernel_size,
+    stride=1,
+    padding=0,
+    spectral=True,
+    padding_mode="zeros",
 ):
     """Spectral Normalized Conv2d. Stabilizes Koopman operator gradients."""
-    if spectral:
-        return nn_utils.spectral_norm(
-            nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-        )
-    else:
-        return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+    conv = nn.Conv2d(
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        padding,
+        padding_mode=padding_mode,
+    )
+    return nn_utils.spectral_norm(conv) if spectral else conv
 
 
 def sn_linear(in_features, out_features, spectral=True):
@@ -97,16 +106,28 @@ class CBAM(nn.Module):
 class PreActResBlock(nn.Module):
     """Standard Pre-activation ResBlock for Encoder."""
 
-    def __init__(self, in_ch, out_ch, stride=1, spectral=True):
+    def __init__(self, in_ch, out_ch, stride=1, spectral=True, padding_mode="zeros"):
         super().__init__()
         self.bn1 = nn.GroupNorm(8, in_ch)
         self.conv1 = sn_conv2d(
-            in_ch, out_ch, kernel_size=3, stride=stride, padding=1, spectral=spectral
+            in_ch,
+            out_ch,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
         )
         self.dropout = nn.Dropout2d(p=0.1)
         self.bn2 = nn.GroupNorm(8, out_ch)
         self.conv2 = sn_conv2d(
-            out_ch, out_ch, kernel_size=3, stride=1, padding=1, spectral=spectral
+            out_ch,
+            out_ch,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
         )
 
         self.shortcut = nn.Identity()
@@ -132,16 +153,26 @@ class PreActResBlock(nn.Module):
 class ConditionedResBlock(nn.Module):
     """Decoder ResBlock with Physics Injection (GroupNorm)."""
 
-    def __init__(self, in_ch, out_ch, spectral=True):
+    def __init__(self, in_ch, out_ch, spectral=True, padding_mode="zeros"):
         super().__init__()
         self.gn1 = nn.GroupNorm(8, in_ch)
         self.conv1 = sn_conv2d(
-            in_ch, out_ch, kernel_size=3, padding=1, spectral=spectral
+            in_ch,
+            out_ch,
+            kernel_size=3,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
         )
         # self.dropout = nn.Dropout2d(p=0.1)
         self.gn2 = nn.GroupNorm(8, out_ch)
         self.conv2 = sn_conv2d(
-            out_ch, out_ch, kernel_size=3, padding=1, spectral=spectral
+            out_ch,
+            out_ch,
+            kernel_size=3,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
         )
 
         self.shortcut = nn.Identity()
@@ -222,9 +253,17 @@ class ConvEncoder(nn.Module):
         shared_expansion_map: Optional[nn.ModuleDict] = None,
         use_attention: bool = True,  # Default to False for cleaner dynamics
         spectral: bool = False,
+        honor_conv_kwargs: bool = False,
         **kwargs
     ):
         super().__init__()
+        # Legacy behaviour (honor_conv_kwargs=False): res blocks are always
+        # spectral-normed and every conv zero-pads, whatever `spectral` and
+        # conv_kwargs["padding_mode"] say. Kept as default so existing checkpoints load.
+        block_spectral = spectral if honor_conv_kwargs else True
+        padding_mode = (
+            kwargs.get("padding_mode", "zeros") if honor_conv_kwargs else "zeros"
+        )
         self.cond_type = cond_type
         self.use_attention = use_attention
         self.cond_expansion_type = cond_expansion_type
@@ -272,13 +311,17 @@ class ConvEncoder(nn.Module):
             kernel_size=(3, 1),
             padding=(1, 0),
             spectral=spectral,
+            padding_mode=padding_mode,
         )
 
         layers = []
         in_c = hiddens[0]
+        block_kw = dict(spectral=block_spectral, padding_mode=padding_mode)
         for out_c in hiddens:
-            layers.append(PreActResBlock(in_c, out_c, stride=2))  # Downsample
-            layers.append(PreActResBlock(out_c, out_c, stride=1))  # Refine
+            layers.append(
+                PreActResBlock(in_c, out_c, stride=2, **block_kw)
+            )  # Downsample
+            layers.append(PreActResBlock(out_c, out_c, stride=1, **block_kw))  # Refine
             in_c = out_c
         self.backbone = nn.Sequential(*layers)
 
@@ -354,9 +397,15 @@ class ConvDecoder(nn.Module):
         latent_dim: int,
         hiddens: List[int] = [64, 128, 256],
         spectral: bool = False,
+        honor_conv_kwargs: bool = False,
         **kwargs
     ):
         super().__init__()
+        # See ConvEncoder: legacy default ignores `spectral` in res blocks and padding_mode.
+        block_spectral = spectral if honor_conv_kwargs else True
+        padding_mode = (
+            kwargs.get("padding_mode", "zeros") if honor_conv_kwargs else "zeros"
+        )
         # Decoder goes from small to large: [256, 128, 64]
         hiddens = hiddens[::-1]
 
@@ -393,7 +442,11 @@ class ConvDecoder(nn.Module):
 
         for out_c in hiddens:
             # A. Refinement Block
-            self.layers.append(ConditionedResBlock(curr_c, curr_c))
+            self.layers.append(
+                ConditionedResBlock(
+                    curr_c, curr_c, spectral=block_spectral, padding_mode=padding_mode
+                )
+            )
 
             # B. PixelShuffle Upsample
             # Step 1: Conv to (out_c * 4) channels
@@ -402,7 +455,12 @@ class ConvDecoder(nn.Module):
                 nn.Sequential(
                     nn.Upsample(scale_factor=up, mode="nearest"),
                     sn_conv2d(
-                        curr_c, out_c, kernel_size=3, padding=1, spectral=spectral
+                        curr_c,
+                        out_c,
+                        kernel_size=3,
+                        padding=1,
+                        spectral=spectral,
+                        padding_mode=padding_mode,
                     ),
                     nn.SiLU(),
                 )
@@ -415,7 +473,12 @@ class ConvDecoder(nn.Module):
         #     curr_c + 2, C, kernel_size=3, padding=1, spectral=spectral
         # )
         self.final_conv = sn_conv2d(
-            curr_c, C, kernel_size=3, padding=1, spectral=spectral
+            curr_c,
+            C,
+            kernel_size=3,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
         )
 
     def forward(self, z: Tensor, cond: Optional[Tensor] = None):

@@ -6,6 +6,7 @@ from typing import Union, Tuple, Optional, List, Dict, Literal
 from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
+import warnings
 import torch.nn.functional as F
 
 # Assume these are correctly defined elsewhere
@@ -77,6 +78,7 @@ class KoopmanAutoencoder(nn.Module):
         spectral: bool = False,
         operator_type: str = "continuous",  # NEW: "continuous", "discrete", or "azencot"
         init_scale: float = 1.0,
+        honor_conv_kwargs: bool = False,
         **conv_kwargs,
     ):
         super().__init__()
@@ -129,8 +131,19 @@ class KoopmanAutoencoder(nn.Module):
             "kernel_size": kernel_size,
             "use_checkpoint": use_checkpoint,
             "spectral": spectral,
+            "honor_conv_kwargs": honor_conv_kwargs,
             **conv_kwargs,
         }
+        if not honor_conv_kwargs and (
+            conv_kwargs.get("padding_mode", "zeros") != "zeros" or not spectral
+        ):
+            warnings.warn(
+                f"conv_kwargs padding_mode={conv_kwargs.get('padding_mode')!r} and "
+                f"spectral={spectral} are ignored by the encoder/decoder res blocks "
+                "(zero padding + spectral norm are always used). Set "
+                "honor_conv_kwargs=True to apply them (changes the architecture).",
+                stacklevel=2,
+            )
 
         self.encoder = ConvEncoder(
             C=self.total_input_channels,
