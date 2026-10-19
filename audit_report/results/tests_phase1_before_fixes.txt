@@ -1,0 +1,9 @@
+FAILED test_repro03_forward_runs_on_cpu
+FAILED test_claim01_rollout_uses_configured_dt
+FAILED test_eval04_missing_checkpoint_raises
+FAILED test_repro02_checkpoint_has_metadata_and_round_trips
+FAILED test_loss01_prediction_distance[None-4.0]
+FAILED test_loss01_prediction_distance[l2-4.0]
+FAILED test_loss01_prediction_distance[l1-2.0]
+FAILED test_dead01_continuous_eigen_mode_raises
+FAILED test_enc01_window_latent_targets_match_encode

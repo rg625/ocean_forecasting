@@ -1,0 +1,34 @@
+# TRA with a parameter-separated validation split (audit EVAL-03).
+# The original data/tra.yaml validates on val.nc (Ma 0.66-0.68), which is also the
+# reported "interp" test case. Here Ma 0.60 and 0.75 are removed from training and
+# used for validation / checkpoint selection; val.nc and test.nc are test-only.
+# Intervals are used because a 2-element list is read as [min, max].
+dataset_type: "QGDatasetMultiSim"
+data_dir: "./data"
+train_file: "acdm/128_tra/train.nc"
+val_file: "acdm/128_tra/train.nc"
+test_file: "acdm/128_tra/test.nc"
+input_sequence_length: 2
+max_sequence_length: 8
+subsample: 2
+exhaustive: true
+variables:
+  v_x: 1
+  v_y: 1
+  p: 1
+  rho: 1
+static_variables:
+  obstacle_mask: 1
+normalization:
+  type: "MeanStdNormalizer"
+  sim: 0
+quantile_range: [2.5, 97.5]
+
+control_parameters: ["Ma"]
+selection_param: "Ma"
+
+train_select_cond: [[0.525, 0.595], [0.605, 0.745], [0.755, 0.905]]
+val_select_cond: [[0.595, 0.605], [0.745, 0.755]]
+test_select_cond: null
+
+num_workers: 8
