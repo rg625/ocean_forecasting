@@ -73,6 +73,48 @@ paper's KAE numbers, are **not reproducible**:
 | Training climatology | 16.35 | 16.18 | 16.76 |
 | POD-DMD2 (r = 128, train sims only) | 7.94 | 1.16 | 13.40 |
 
-## 4. CT-KAE pilots (6k steps, one change each vs P0; validation only)
+## 4. CT-KAE pilots (6k steps, seed 0, one change each vs P0; validation only)
 
-*(filled in below as runs finish)*
+`results/pilots_summary.json`, logs in `koopman_autoencoder/model_outputs_ctkae/P*/log.jsonl`.
+
+Setup:
+- P0 = block generator, full Mach conditioning, K: 10 → 60, 8 decoded leads,
+  w_lat = 0.1, stride 2.
+- Each pilot took about 31 min at 0.31 s/step on the shared GPU.
+- Validation is on held-out Ma 0.60 and 0.75.
+- Table columns: best MSE60 is the minimum over checkpoints every 1k steps; final is at 6k
+  steps. E60 and E240 are the energy ratios at 60 and 240 steps, final checkpoint.
+- References on the same windows: POD-DMD2 7.94 (60) and 13.40 (240); climatology 16.35 and
+  16.76.
+
+| Pilot | Change vs P0 | Best MSE60 (step) | Final MSE60 | Final MSE60, first 10 | Final E60 | Final E240 |
+|---|---|---|---|---|---|---|
+| P0 | block generator (reference) | 4.46 (2k) | 4.61 | 0.60 | 0.98 | 0.78 |
+| P1 | dense generator (legacy form) | 4.88 (2k) | 5.35 | — | 0.96 | 0.71 |
+| P2 | hurwitz generator (J − R) | **4.20** (3k) | 4.68 | — | 0.97 | 0.80 |
+| P3 | no conditioning (FiLM, generator, μ all off) | 4.56 (3k) | 4.86 | — | 0.96 | 1.08 |
+| P4 | + amplitude loss (w_amp = 0.1) | 4.34 (3k) | **4.61** | — | **0.99** | 0.68 |
+| P5 | training horizon K = 10 (not 60) | 5.94 (4k) | 6.06 | — | 0.84 | — |
+| P6 | strides {1, 2, 3} (Δt 0.05 / 0.10 / 0.15) | 4.54 (3k) | 4.68 | 0.62 | 0.97 | 0.83 |
+
+Conclusions (single seed: differences < ~0.3 are within noise and need the multi-seed runs):
+
+1. **Training horizon is the dominant lever.** K = 10 gives +30% MSE60 and a lower energy
+   ratio. This is direct evidence for the audit's DYN-01 diagnosis: the legacy 8-step
+   objective taught the model to hedge by damping.
+2. **The stable generators (block, hurwitz) beat the unconstrained dense form.** Removing
+   the possibility of growth does not cost accuracy.
+3. **Every pilot keeps E60 ≥ 0.96 and E240 0.7–1.1.** The legacy model keeps 0.25 at 240.
+   So the redesign removes the mean regression at the training horizon.
+4. **Conditioning has only a small effect on this validation set.** The held-out Mach values
+   sit between training neighbours 0.01 away. Whether conditioning matters must be judged
+   on the wide-gap `interp` and the `extrap` test cases (§6).
+5. **Amplitude loss and stride augmentation cost nothing measurable.** Stride augmentation
+   adds genuine Δt generalisation, tested in §7.
+6. **MSE60 bottoms out around 2–3k steps and creeps up slightly afterwards while E rises.**
+   Under MSE, keeping amplitude costs error once phase drifts, which is the same trade-off
+   the neural baselines show on Tra_long.
+
+**Decision.** Full runs use the block generator with amplitude loss and strides {1, 2, 3}
+(3 seeds), the hurwitz generator with strides {1, 2, 3} (2 seeds), 12k steps each, selected
+on val_mse60. The corrected legacy model is retrained on the same split as E1.

@@ -14,6 +14,9 @@ ap.add_argument(
     default="/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ctkae",
 )
 ap.add_argument("--json", default=None)
+ap.add_argument(
+    "--select", default="val_mse60", help="val key used to pick each run's best entry"
+)
 args = ap.parse_args()
 rows = []
 for log in sorted(Path(args.root).glob("*/log.jsonl")):
@@ -24,7 +27,7 @@ for log in sorted(Path(args.root).glob("*/log.jsonl")):
     ]
     if not vals:
         continue
-    best = min(vals, key=lambda v: v["score"])
+    best = min(vals, key=lambda v: v[args.select])
     last = vals[-1]
     done = (log.parent / "DONE").exists()
     rows.append(
