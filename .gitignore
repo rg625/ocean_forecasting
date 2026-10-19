@@ -52,3 +52,6 @@ wget-log
 **/koopman_autoencoder/model_outputs_old/
 **/autoreg-pde-diffusin/
 **/wandb/
+
+# CT-KAE run outputs (checkpoints, logs)
+koopman_autoencoder/model_outputs_ctkae/
