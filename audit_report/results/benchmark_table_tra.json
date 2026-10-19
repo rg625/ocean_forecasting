@@ -1,0 +1,47 @@
+{
+ "interp": {
+  "persistence": 23.437264968474853,
+  "train_climatology": 16.762788315862622,
+  "continous_linear_128_tra.npz (realigned)": 6.366278997944522,
+  "continous_linear_128_tra.npz (as_scored)": 7.615506736671806,
+  "azencot_linear_128_tra.npz (realigned)": 8.086586214149408,
+  "azencot_linear_128_tra.npz (as_scored)": 8.027077752178451,
+  "continous_linear_128_rk4.npz": 6.711174089359182,
+  "continous_linear_128_exp.npz": 6.712724951891167,
+  "acdm-r20.npz": 2.8091453584270036,
+  "acdm-r20_ncn.npz": 2.8189506438723275,
+  "uncond-ddpm.npz (skipped)": 120.0,
+  "pod_dmd_r128": 8.602771996619467,
+  "pod_dmd2_r128": 6.060486415183317
+ },
+ "extrap": {
+  "persistence": 17.64196028905248,
+  "train_climatology": 17.38907265949552,
+  "continous_linear_128_tra.npz (realigned)": 1.5896493920830466,
+  "continous_linear_128_tra.npz (as_scored)": 1.816566694849582,
+  "azencot_linear_128_tra.npz (realigned)": 5.97511384498783,
+  "azencot_linear_128_tra.npz (as_scored)": 6.440813987277551,
+  "continous_linear_128_rk4.npz": 2.6040702783904868,
+  "continous_linear_128_exp.npz": 2.60326676878849,
+  "acdm-r20.npz": 1.9863694409333468,
+  "acdm-r20_ncn.npz": 4.191041674207306,
+  "uncond-ddpm.npz (skipped)": 120.0,
+  "pod_dmd_r128": 6.040899651243192,
+  "pod_dmd2_r128": 3.8579239605593574
+ },
+ "longer": {
+  "persistence": 28.784242161653744,
+  "train_climatology": 15.834735582714192,
+  "continous_linear_128_tra.npz (realigned)": 16.90838070826978,
+  "continous_linear_128_tra.npz (as_scored)": 16.970174566134975,
+  "azencot_linear_128_tra.npz (realigned)": 24.36606735456995,
+  "azencot_linear_128_tra.npz (as_scored)": 24.366537387264685,
+  "continous_linear_128_rk4.npz": 23.01246814471582,
+  "continous_linear_128_exp.npz": 23.012177211755404,
+  "acdm-r20.npz": 22.51204937609844,
+  "acdm-r20_ncn.npz": 22.34621686183349,
+  "uncond-ddpm.npz (skipped)": 480.0,
+  "pod_dmd_r128": 15.158305571946107,
+  "pod_dmd2_r128": 13.405850335977473
+ }
+}
