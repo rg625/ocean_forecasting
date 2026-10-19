@@ -560,7 +560,10 @@ class KoopmanLoss(nn.Module):
             deriv_diff = F.mse_loss(dz_dt, dz_dt_disturbed)
 
             l_stab = (state_diff + deriv_diff) * self.cfg.stability_weight
-            total_loss = total_loss + l_stab.detach()  # Detach to act as regularizer
+            # Must stay attached: a detached term adds a constant and has no effect on
+            # training (dz_dt / dz_dt_disturbed are already computed from detached z0,
+            # so the derivative part only reaches the operator).
+            total_loss = total_loss + l_stab
             loss_dict["stability"] = l_stab.detach().item()
 
         # Final key for trainer compatibility
