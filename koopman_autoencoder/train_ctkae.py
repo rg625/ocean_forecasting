@@ -5,7 +5,7 @@
 Objective (all distances channel-weighted, see ct_data.channel_weights):
     L = w_rec  * |D(E(x_t)) - x_t|^2
       + w_pred * mean_{k in S} |D(z_k) - x_{t+k}|^2          z_k exact: mu + e^{tau_k A}(z_0 - mu)
-      + w_lat  * mean_{k in S} |z_k - sg(E(x_{t+k-n+1..t+k}))|^2 / var(sg(E))
+      + w_lat  * mean_{k in S} |z_k - sg(E(x_{t+k-n+1..t+k}))|^2 / E|sg(E)|^2
       + w_amp  * mean_{k in S} (|y_k|_block - |sg(y_k^enc)|_block)^2   (block generator only)
 S: random subset of leads (always containing 1 and K); K grows from k_start to k_max.
 Strides are drawn from ``strides`` (raw frames 0.05 apart), so the generator is trained
@@ -197,7 +197,10 @@ def main():
                         .float()
                         .view(B, nd, -1)
                     )
-                l_lat = ((zs - zt) ** 2).mean() / (zt.var(dim=(0, 1)).mean() + 1e-6)
+                # normalise by the second moment E|z|^2 (scale-invariant); the variance
+                # across samples can be tiny when latents share a common component, which
+                # made this term explode (~1e3) and dominate the clipped gradient
+                l_lat = ((zs - zt) ** 2).mean() / (zt.pow(2).mean() + 1e-6)
                 if tc.w_amp > 0 and model.cfg.generator == "block":
                     mu = model.fixed_point(model.embed_cond(ma), B)[:, None]
                     l_amp = amp_loss(zs - mu, (zt - mu).detach())
