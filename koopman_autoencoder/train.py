@@ -188,6 +188,7 @@ def main(cfg: DictConfig):
             cond_expansion_type=cfg.data.selection_param,
             use_attention=cfg.model.use_attention,
             spectral=cfg.model.spectral,
+            honor_conv_kwargs=cfg.model.honor_conv_kwargs,
             **cfg.model.conv_kwargs,
         ).to(device)
         # model = torch.compile(model)
@@ -288,6 +289,7 @@ def main(cfg: DictConfig):
             save_latest_every=cfg.training.save_latest_every,
             num_visual_batches=cfg.training.num_visual_batches,
             precision=cfg.training.precision,
+            debug_nan_checks=cfg.training.debug_nan_checks,
         )
         logger.info("Trainer initialized.")
     except Exception as e:

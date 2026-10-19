@@ -70,6 +70,9 @@ class ModelConfig:
     operator_type: str = "discrete"  # NEW: "discrete", "continuous", or "azencot"
     # Spectral radius of the Azencot forward operator at init (reference default: 0.99).
     init_scale: float = 1.0
+    # Apply conv_kwargs["padding_mode"] and `spectral` to every encoder/decoder conv.
+    # False keeps the legacy architecture (needed to load existing checkpoints).
+    honor_conv_kwargs: bool = False
 
 
 @dataclass
@@ -82,6 +85,7 @@ class TrainingConfig:
     save_latest_every: int = 1
     num_visual_batches: int = 1
     precision: str = "bfloat16"
+    debug_nan_checks: bool = False  # autograd anomaly mode + per-module NaN hooks
     # curriculum_epochs: int = 15
 
 

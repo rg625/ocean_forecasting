@@ -58,6 +58,7 @@ class Trainer:
         num_visual_batches: int = 1,
         eval_metrics: Optional[Metric] = None,
         precision: Optional[str] = "bfloat16",
+        debug_nan_checks: bool = False,
     ):
         self.model = model
         self.train_loader, self.val_loader = train_loader, val_loader
@@ -70,9 +71,14 @@ class Trainer:
         self.device = device
         self.num_epochs, self.patience, self.log_epoch = num_epochs, patience, log_epoch
         self.save_latest_every, self.num_visual_batches = (
-            num_visual_batches,
+            save_latest_every,
             num_visual_batches,
         )
+        # Autograd anomaly mode + a NaN hook on every module make a TRA step ~16x
+        # slower (4.6 s -> 0.28 s, audit_report/results/smoke_profile_*.json); the
+        # non-finite-loss guard in _run_one_epoch already skips bad batches.
+        self.debug_nan_checks = debug_nan_checks
+        self._nan_hook_handles: List = []
 
         # AzencotDiscreteLoss has no latent-space term, and the backward chain now starts
         # from `_encode_last_target_window`, so encoding every ground-truth target frame
@@ -557,10 +563,15 @@ class Trainer:
         if self.save_latest_every > 0 and epoch % self.save_latest_every == 0:
             torch.save(state, cp_dir / f"epoch_{epoch}.pth")
 
-    def run(self) -> Dict:
-        logger.info(
-            f"Starting training from epoch {self.start_epoch}/{self.num_epochs}"
-        )
+    def _setup_debug_instrumentation(self):
+        """Enable autograd anomaly mode and the per-module NaN hooks only when
+        ``debug_nan_checks`` is set (each hook forces a host sync per module)."""
+        for handle in self._nan_hook_handles:
+            handle.remove()
+        self._nan_hook_handles = []
+        torch.autograd.set_detect_anomaly(self.debug_nan_checks)
+        if not self.debug_nan_checks:
+            return
 
         # --- THE NaN SNIPER ---
         def nan_hook(module, inputs, outputs):
@@ -577,13 +588,18 @@ class Trainer:
 
         # Register the hook on every single sub-module
         for name, module in self.model.named_modules():
-            module.register_forward_hook(nan_hook)
+            self._nan_hook_handles.append(module.register_forward_hook(nan_hook))
         # ----------------------
+
+    def run(self) -> Dict:
+        logger.info(
+            f"Starting training from epoch {self.start_epoch}/{self.num_epochs}"
+        )
+        self._setup_debug_instrumentation()
 
         for epoch in (
             pbar := tqdm(range(self.start_epoch, self.num_epochs), desc="Epochs")
         ):
-            torch.autograd.set_detect_anomaly(True)
             self.current_epoch = epoch
 
             train_metrics = self._run_one_epoch()
