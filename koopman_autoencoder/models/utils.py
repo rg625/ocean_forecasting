@@ -214,7 +214,9 @@ def load_datasets(
         )
         val_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.val_file,
-            normalizer=get_normalizer(cfg),
+            # Share the train-fitted normalizer: held-out splits must not be
+            # normalised with their own statistics.
+            normalizer=train_dataset.normalizer,
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
@@ -225,7 +227,7 @@ def load_datasets(
         )
         test_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.test_file,
-            normalizer=get_normalizer(cfg),
+            normalizer=train_dataset.normalizer,
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
