@@ -195,7 +195,7 @@ def test_bug05_normalizer_handles_unknown_vars_and_is_not_refit():
             {"rho": torch.randn(2, 3, 3), "v_x": torch.randn(2, 3, 3)}, batch_size=[2]
         )
     )
-    assert float(n2.means["rho"]) == TRA_MEAN["rho"]
+    assert float(n2.means["rho"]) == pytest.approx(TRA_MEAN["rho"], rel=1e-6)
 
 
 # --------------------------------------------------------------------------- #
