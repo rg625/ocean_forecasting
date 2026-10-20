@@ -1,0 +1,495 @@
+\documentclass[10.5pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\setlist{itemsep=2pt,topsep=3pt}
+\newcommand{\good}[1]{\textbf{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\definecolor{note}{HTML}{F2F1EC}
+\newcommand{\callout}[1]{\par\smallskip\noindent\colorbox{note}{\parbox{\dimexpr\linewidth-2\fboxsep}{\small #1}}\par\smallskip}
+
+\title{\textbf{Continuous-time Koopman autoencoder for transonic flow}\\[2pt]
+\large Audit, fixes, redesign and benchmark against ACDM}
+\author{Prepared for R.~Grozavescu}
+\date{20 October 2026}
+
+\begin{document}
+\maketitle
+
+\section*{The short version}
+
+\textbf{Question.} Can the continuous-time, Mach-conditioned Koopman autoencoder (KAE) in
+\texttt{ocean\_forecasting} be made to beat ACDM on the transonic cylinder benchmark (TRA)
+while keeping its continuous-time dynamics and zero-shot conditioning?
+
+\textbf{What I did.}
+\begin{enumerate}
+\item \textbf{Audited} the original code, data and evaluation. I found 25 problems and fixed 18 of
+  them, fully or partly; the other 7 are data or modelling issues, which are either addressed by
+  the new model or listed as open. Several of them changed reported numbers (\S\ref{sec:audit}--\ref{sec:fixes}).
+\item \textbf{Re-scored every baseline} with one verified scorer. This covers ACDM and all 13
+  official checkpoints from the ACDM paper (\S\ref{sec:baselines}).
+\item \textbf{Built a redesigned model} (CT-KAE) in a separate file and \textbf{tested it in
+  17 training runs}: 7 pilots, 5 final runs, a retrained legacy model and 4 representation
+  tests (\S\ref{sec:model}--\ref{sec:repr}).
+\end{enumerate}
+
+\textbf{Main result} (test set, MSE $\times10^{-3}$, lower is better; ``energy'' is the share of
+the true fluctuation energy the forecast keeps, where 1 is ideal):
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+ & Interpolation & Extrapolation & Long rollout & Energy at & Correlation at\\
+ & 60 steps & 60 steps & 240 steps & step 58 (interp) & step 58 (interp)\\
+\midrule
+Original KAE (reproducible)      & 11.43 & 2.12 & 18.6 & 1.26 & 0.28\\
+\textbf{New CT-KAE} (3 seeds)    & \textbf{4.07} $\pm$ 0.29 & \textbf{2.18} $\pm$ 0.14 & \textbf{16.5} $\pm$ 2.0 & 0.77 & 0.62\\
+ACDM (official)                  & 2.81--3.02 & 1.99--2.22 & 22.5--22.8 & 1.10 & 0.73\\
+U-Net (official, best variant)   & 1.53 & 1.42 & 22.4 & 1.08 & 0.85\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Bottom line.}
+\begin{itemize}
+\item The new model is \good{2.8$\times$ more accurate than the original} on interpolation. Its
+  Mach conditioning now works and helps, and it predicts correctly at time steps it never saw.
+\item It does \textbf{not} beat ACDM on interpolation. It is \textbf{level} with ACDM on
+  extrapolation.
+\item It has lower error than ACDM on the 240-step rollout, but partly because it damps the
+  oscillations. A constant mean field scores 15.8 on that case, so 240-step MSE is not good
+  evidence of skill.
+\item The official U-Nets from the ACDM paper beat both models on the two 60-step cases.
+\item The remaining gap is located: it is the \textbf{autoencoder's reconstruction error} (20--30$\times$
+  ACDM's at the first step), not the continuous-time dynamics. At long lead times the dynamics
+  match ACDM on interpolation and beat it on extrapolation (Fig.~\ref{fig:lead}).
+\end{itemize}
+
+\callout{\textbf{Correction to earlier figures.} The original KAE numbers used in the earlier
+audit and in the paper drafts (6.37 / 1.59 / 16.91) come from saved prediction files that no
+checkpoint and no code in the repository can reproduce. Run with the repository code, the same
+checkpoint gives 11.43 / 2.12 / 18.62. Only reproducible numbers are used in this document.}
+
+\tableofcontents
+\newpage
+
+%==========================================================================================
+\section{Setting}\label{sec:setting}
+
+\textbf{Data.} The ACDM ``Tra'' benchmark: transonic flow past a cylinder on a
+$128\times64$ grid. There are four fields (velocity $v_x, v_y$, pressure $p$, density $\rho$),
+and the Mach number $Ma$ varies between simulations. Frames are 0.1 time units apart, and one
+vortex-shedding period is about 25 frames.
+
+\textbf{Test cases} (all from Mach numbers never seen in training, i.e.\ zero-shot in $Ma$):
+\begin{itemize}
+\item \emph{Interpolation}: $Ma = 0.66$--$0.68$, inside a 0.06-wide gap in the training
+  range. 6 sequences of 60 frames.
+\item \emph{Extrapolation}: $Ma = 0.50$--$0.52$, below the training range ($\ge 0.53$).
+  6 sequences of 60 frames.
+\item \emph{Long rollout}: $Ma = 0.64$--$0.65$. 4 sequences of 240 frames.
+\end{itemize}
+Every model receives the first two frames and predicts the rest.
+
+\textbf{Metrics.}
+\begin{itemize}
+\item \emph{MSE}: mean squared error in physical units, averaged over the four fields, the
+  grid and the predicted frames, $\times10^{-3}$. The obstacle is zeroed in both prediction
+  and truth. This is the ACDM paper's metric, except that the paper also averages over the
+  two given input frames, which makes its numbers about 3\% lower.
+\item \emph{Correlation} (ACC): how well the predicted pattern of deviations from the mean
+  flow lines up with the true one. 1 is perfect; below about 0.6 the forecast is no longer
+  useful.
+\item \emph{Energy ratio}: predicted fluctuation energy divided by true fluctuation energy.
+  Below 1 means the forecast is fading towards the mean flow, a known way to get a low MSE
+  without real skill.
+\end{itemize}
+
+\textbf{Compute.} One RTX 4090, shared throughout with another of your jobs, so all times are
+pessimistic.
+
+%==========================================================================================
+\section{What was wrong with the original code}\label{sec:audit}
+
+The most consequential problems, in plain terms. The full list, with file and line numbers, is in
+\texttt{audit\_report/\allowbreak issues.json}.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright}p{2.2cm}Y@{}}
+\toprule
+ID & Severity & Problem and consequence\\
+\midrule
+BUG-01 & critical & The evaluation script compared each prediction with the \emph{previous}
+  true frame. Every recent KAE score was computed against the wrong frame.\\
+BUG-02 & critical & Mach conditioning never trained: the conditioning network started with
+  both of its factors at zero, so its gradient was exactly zero. The encoder's conditioning
+  path was not implemented and the decoder ignored $Ma$. Measured effect of changing $Ma$ on
+  the output: exactly 0.\\
+DATA-01 & critical & The QG test trajectories \emph{are} the training trajectories for their
+  first 500 steps, up to a rescaling (residual $6\times10^{-8}$). The QG configuration also
+  validated on the test file.\\
+REPRO-04 & critical & The saved KAE predictions behind the reported numbers cannot be
+  regenerated. Re-running the checkpoint gives 11.43 / 2.12 / 18.62, not 6.37 / 1.59 / 16.91.\\
+STAB-01 & high & The latent dynamics were not constrained to be stable. The QG model has 63 of
+  128 growing modes; the KS model has 7 growing modes and 80$\times$ transient
+  amplification.\\
+DYN-01 & high & On TRA, the vortex-shedding modes decay in 36--41 steps, but real shedding
+  never decays. Long forecasts faded to the mean: 27\% of the true energy after 240 steps.\\
+PERF-01 & high & Debugging hooks were always on, making training 16.5$\times$ slower
+  (4.62\,s $\to$ 0.28\,s per step once removed).\\
+REPRO-01/05 & high & The \texttt{.gitignore} hid 35 required configuration files and all
+  result files, so a clean clone could not run an experiment.\\
+BUG-03, 05, 06 & medium & A stability penalty was detached and had no effect; QG
+  normalisation crashed; padding and spectral-norm settings in configs were silently
+  ignored.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{One thing that was \emph{not} a problem.} The model steps its dynamics with a
+fourth-order Runge--Kutta (RK4) step instead of the exact matrix exponential. At the trained
+step the two agree to $1.6\times10^{-4}$, so this is not a source of error.
+
+%==========================================================================================
+\section{What was fixed}\label{sec:fixes}
+
+All fixes are on branch \texttt{impl/ct-kae}, built on \texttt{audit/kae-research-audit}; the
+original branch was not touched. Each fix is its own commit with a regression test. Every test
+fails on the original code and passes now (39 tests in total).
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lY@{}}
+\toprule
+Fix & What changed\\
+\midrule
+Evaluation alignment & Predictions are stitched after \emph{all} input frames, so frame $k$
+  is compared with true frame $k$.\\
+Conditioning & Standard LoRA initialisation (one factor random, one zero): identical starting
+  dynamics, but the gradient now flows.\\
+Data splits & QG validates on an independent file. TRA has a new validation split
+  ($Ma = 0.60$ and $0.75$ held out of training) so that no test case is used for model
+  selection. Normalisation statistics come from training data only.\\
+Speed & Debugging hooks are opt-in (\texttt{training.debug\_nan\_checks=true}). Timings no
+  longer force GPU synchronisation, and the model runs on CPU.\\
+Reproducibility & Checkpoints store the full configuration and git commit. Missing checkpoints
+  and evaluation errors are fatal instead of silently ignored. All configs and results are
+  tracked.\\
+Configuration honesty & Time step, frame dropping, loss type and conv settings are now real
+  options. Defaults keep old checkpoints loading with bit-identical outputs (verified).\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+%==========================================================================================
+\section{Verified baselines}\label{sec:baselines}
+
+All 13 baseline models from the ACDM paper exist locally as the official pretrained checkpoints
+(3 seeds each). I re-scored all of them with the same code. My ACDM interpolation score (2.81)
+matches the paper's 2.7 once the frame-averaging difference is accounted for. The paper reports
+\emph{no} numbers for the long rollout, so all 240-step values are re-evaluations.
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+Model (official checkpoints) & Interp. & Extrap. & Long & Energy at 238 (long)\\
+\midrule
+U-Net, unrolled training (``U-Net\_ut'')     & \textbf{1.53} & 1.66 & 22.4 & 1.17\\
+U-Net, noise training (``U-Net\_tn'')        & 1.83 & \textbf{1.42} & 22.6 & 1.18\\
+ACDM (two independent sampling runs)         & 2.81--3.02 & 1.99--2.22 & 22.5--22.8 & 1.11\\
+FNO                                          & 5.72 & 4.98 & 21.0 & 0.97\\
+Linear POD + linear dynamics (no neural net) & 6.06 & 3.86 & 13.4 & 0.05\\
+Constant training-mean field                 & 16.76 & 17.39 & \textbf{15.8} & 0.17\\
+Persistence (repeat last frame)              & 23.44 & 17.64 & 28.8 & 1.07\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The last three rows matter for interpretation. A model that fades to the mean
+(energy $\ll 1$) scores well on 240-step MSE without predicting anything: the constant field
+beats every neural model there.
+
+%==========================================================================================
+\section{The new model (CT-KAE)}\label{sec:model}
+
+The new model keeps the framework (encoder, linear continuous-time latent dynamics,
+decoder, conditioning on $Ma$) and redesigns its components. It lives in its own file,
+\texttt{models/ct\_kae.py}; the old model is untouched.
+\begin{align*}
+z_0 &= E\big(x_{t-1}, x_t;\, Ma\big) && \text{encode the last two frames}\\
+z(t+\tau) &= \mu(Ma) + e^{\tau A(Ma)}\big(z_0 - \mu(Ma)\big) && \text{exact, for any } \tau\\
+\hat x(t+\tau) &= D\big(z(t+\tau);\, Ma\big) && \text{decode}
+\end{align*}
+
+\begin{itemize}
+\item \textbf{Generator $A(Ma)$.} A set of $2\times2$ oscillator blocks, each with a damping
+  rate $\gamma_j \ge 0$ and a frequency $\omega_j$. Both shift with $Ma$ through a small
+  network. Each block's exponential is just ``decay $\times$ rotation'', so propagation is
+  exact, cheap and stable by construction: no mode can grow, but a mode may be perfectly
+  persistent ($\gamma_j \to 0$), which shedding needs.
+\item \textbf{Fixed point $\mu(Ma)$.} The mean flow changes smoothly with Mach number (mean
+  $v_x$ rises from 0.44 to 0.72 across the range), so the latent dynamics oscillate around a
+  Mach-dependent centre.
+\item \textbf{Conditioning} enters the encoder and decoder (feature-wise scaling, ``FiLM''),
+  the generator and the fixed point. Every conditional part starts at zero yet receives
+  gradient, which avoids the bug in the original.
+\item \textbf{Encoder and decoder.} Convolutional, flattening to a 256-number latent. Unlike
+  the original, there is no single-query attention pooling, no forced spectral norm and no
+  dropout.
+\item \textbf{Training objective.} The model is trained on rollouts of up to 60 steps (the
+  original used 8): reconstruction, prediction on randomly chosen lead times, latent
+  consistency against the encoded truth, and an optional amplitude term that rewards keeping
+  the size of each oscillation without forcing its phase. Training at several time steps
+  (0.05, 0.1, 0.15) makes the dynamics genuinely continuous-time.
+\item \textbf{Two alternative generators} were also tested: a dense ``Hurwitz''
+  generator $A = J - R$ (stable, with mode coupling), and the original unconstrained form.
+\end{itemize}
+
+\noindent All new code is covered by 20 tests, including: exact propagation equals the matrix
+exponential to $10^{-9}$; stepping $t_1$ then $t_2$ equals stepping $t_1{+}t_2$; the stable
+generators never grow; conditioning receives gradients and changes the output; and data
+windows are time-aligned.
+
+%==========================================================================================
+\section{Experiments}\label{sec:exp}
+
+All model choices were made on the \emph{validation} split (held-out $Ma = 0.60, 0.75$). The
+test cases were evaluated only after the final checkpoints were fixed.
+
+\subsection{Pilot runs: which ingredients matter?}
+
+Seven short runs (about 31 minutes each). Each changes one thing relative to the reference P0.
+\begin{figure}[h]
+\centering\includegraphics[width=\linewidth]{fig_pilots.pdf}
+\caption{Best validation error of each pilot (single seed). Dashed line: linear POD baseline on the same windows.}
+\label{fig:pilots}
+\end{figure}
+
+\begin{itemize}
+\item \textbf{Training horizon is the biggest lever.} Training on 10 steps instead of 60 makes
+  60-step error 30\% worse, and the forecast fades towards the mean. This confirms that the
+  original's 8-step objective caused its damping.
+\item \textbf{Stable generators beat the unconstrained one.} Ruling out growth costs no
+  accuracy.
+\item The amplitude term and multiple time steps cost nothing measurable.
+\item Removing Mach conditioning barely matters \emph{on validation}, because the validation
+  Mach numbers sit 0.01 from training ones. It does matter on the wider test gaps
+  (\S\ref{sec:ablate}).
+\end{itemize}
+
+\subsection{Final runs and selection}
+
+Five longer runs (12k steps, about 1 hour each), selected by validation error over 60 steps:
+
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+Configuration & Seeds & Val.\ error (60 steps) & First 10 steps\\
+\midrule
+\textbf{Block + amplitude term + multiple time steps} & 3 & \textbf{4.04 / 4.33 / 4.09} & 0.66--0.72\\
+Hurwitz generator + multiple time steps & 2 & 4.37 / 4.50 & 0.85--0.91\\
+Linear POD baseline (same windows) & -- & 7.94 & 1.16\\
+\bottomrule
+\end{tabular}
+\end{center}
+All three block seeds beat both Hurwitz seeds, so the block generator is the selected model.
+
+\subsection{Test results}
+
+\begin{center}\footnotesize
+\begin{tabular}{lccccc}
+\toprule
+Model & Interp. & Extrap. & Long & \multicolumn{2}{c}{Energy at step 58}\\
+ & & & & interp & long\\
+\midrule
+\textbf{CT-KAE, selected checkpoints} (3 seeds) & \textbf{4.07} $\pm$ 0.29 & \textbf{2.18} $\pm$ 0.14 & 16.5 $\pm$ 2.0 & 0.77 & 0.57\\
+CT-KAE, final checkpoints (no early stop) & 5.59 $\pm$ 0.29 & 2.56 $\pm$ 0.23 & 18.1 $\pm$ 0.5 & 1.11 & 0.88\\
+CT-KAE, Hurwitz generator (2 seeds)        & 4.65 & 2.23 & 13.9 & -- & --\\
+Original model retrained with all fixes    & 8.18 & 3.83 & 22.8 & 0.93 & 0.84\\
+Original checkpoint (reproducible)         & 11.43 & 2.12 & 18.6 & 1.26 & 0.85\\
+ACDM                                       & 2.81--3.02 & 1.99--2.22 & 22.5--22.8 & 1.10 & 1.01\\
+U-Net (best official variant)              & 1.53 & 1.42 & 22.4 & 1.08 & 1.05\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Reading the table.}
+\begin{itemize}
+\item \textbf{Against the original:} the redesign is 2.8$\times$ better on interpolation, and
+  much better at tracking the true flow. Correlation at step 58 is 0.62 vs 0.28 on
+  interpolation and 0.46 vs 0.18 on the long case.
+\item \textbf{Against ACDM:}
+  \begin{itemize}
+  \item worse on interpolation (4.07 vs about 2.9);
+  \item level on extrapolation, within the spread of ACDM's two sampling runs;
+  \item lower MSE on the long case. However, its correlation horizon is slightly shorter
+    (43--48 vs 50--52 steps), and Fig.~\ref{fig:energy} shows it loses about half its energy
+    between steps 60 and 150. That is not a win on long-horizon dynamics.
+  \end{itemize}
+\item \textbf{Damping is reduced, not removed.} The checkpoints chosen by MSE keep 57--77\% of
+  the energy at step 58. The final checkpoints keep about 100\% but have higher MSE. This is
+  the price MSE puts on keeping amplitude once the phase drifts. ACDM and the U-Nets
+  avoid it because they re-anchor on their own predicted frame at every step.
+\end{itemize}
+
+\begin{figure}[h]
+\centering\includegraphics[width=\linewidth]{fig_error_vs_lead.pdf}
+\caption{Error at each forecast step (log scale). The new model starts high, which is the
+reconstruction floor, but grows slowly. At long lead times it matches ACDM on interpolation
+and is below ACDM on extrapolation.}
+\label{fig:lead}
+\end{figure}
+
+\begin{figure}[h]
+\centering\includegraphics[width=\linewidth]{fig_energy_longer.pdf}
+\caption{Share of true fluctuation energy kept during the 240-step rollout. ACDM and U-Net stay
+near 1. The new model (bold: mean of 3 seeds; thin: individual seeds) dips to about 0.45
+mid-rollout. The original fades steadily to 0.27.}
+\label{fig:energy}
+\end{figure}
+
+\subsection{What helps on the test cases (single-seed analysis)}\label{sec:ablate}
+
+These runs were scored on test \emph{after} selection, only to understand the mechanisms.
+
+\begin{center}\small
+\begin{tabular}{lccc l}
+\toprule
+Run (6k steps) & Interp. & Extrap. & Long & Reading\\
+\midrule
+P0: block generator, single time step & 4.40 & 1.71 & 15.6 & reference\\
+P3: P0 without Mach conditioning      & 5.43 & 2.04 & 18.9 & conditioning helps: $-19\%$, $-16\%$\\
+P5: P0 trained on 10-step horizon     & 5.18 & 2.44 & 15.9 & long-horizon training helps\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Zero-shot generalisation}
+
+\textbf{Unseen Mach numbers.} All three test cases use Mach numbers absent from training, so
+the table above \emph{is} the zero-shot result. Fig.~\ref{fig:mach} shows that the forecast
+responds smoothly and monotonically when the Mach number given to the model is varied. Without
+conditioning the response is exactly zero.
+
+\textbf{Unseen time steps.} P0 was trained only at $\Delta t = 0.1$. Asked for forecasts every
+$0.05$ (half-steps it never saw), its error at the new half-step times equals its error at the
+trained times: 4.408 vs 4.400 on interpolation and 1.720 vs 1.707 on extrapolation. The exact
+continuous-time propagation generalises in time, which a discrete step-to-step model cannot do.
+
+\begin{figure}[h]
+\centering\includegraphics[width=0.55\linewidth]{fig_mach.pdf}
+\caption{How much the forecast of an interpolation trajectory (true $Ma = 0.66$) changes when the model is told a different Mach number.}
+\label{fig:mach}
+\end{figure}
+
+\subsection{Where the remaining gap comes from}\label{sec:gap}
+
+Fig.~\ref{fig:lead} locates it. At the first step the new model's error is 0.66 (interpolation),
+against 0.03 for ACDM and 0.02 for the U-Net, and it stays nearly flat for five steps. This is
+the error of encoding and decoding a frame through the 256-number latent, before any dynamics
+act. At late lead times the curves meet or cross. A linear POD with 128 modes reconstructs
+\emph{better} (floor about 0.46) than this nonlinear autoencoder.
+
+\subsection{Representation experiments}\label{sec:repr}
+\input{repr_section.tex}
+
+%==========================================================================================
+\section{Answers to the project's questions}\label{sec:answers}
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{What was wrong?} Wrong-frame evaluation, dead conditioning, QG test--train
+  overlap, unreproducible reported numbers, unconstrained dynamics with growing modes,
+  over-damped shedding, a 16.5$\times$ training slowdown, and ignored settings (\S\ref{sec:audit}).
+\item \textbf{Which affected reported performance?} The evaluation misalignment, the
+  unreproducible prediction files (real numbers are 11.43 / 2.12 / 18.62), and the QG leakage.
+  Dead conditioning means no reported result used $Ma$.
+\item \textbf{What measurably improved things?}
+  \begin{itemize}
+  \item 60-step training horizon instead of about 10: $-25\%$ on validation, $-15\%$ on
+    interpolation test.
+  \item Working Mach conditioning: $-19\%$ interpolation, $-16\%$ extrapolation.
+  \item Stable generator: better than unconstrained.
+  \item The full redesign: 2.8$\times$ better than the reproducible original on interpolation,
+    and 2.0$\times$ better than the original architecture retrained with all fixes on the
+    same split.
+  \end{itemize}
+\item \textbf{Best formulation?} $2\times2$ oscillator blocks with Mach-dependent damping and
+  frequency, a Mach-dependent fixed point, and exact propagation.
+\item \textbf{Did it beat ACDM?} \textbf{No} on interpolation; \textbf{level} on
+  extrapolation; lower 240-step MSE, but not better long-horizon dynamics.
+\item \textbf{By how much?} Interpolation $+40\%$ worse than ACDM (4.07 vs about 2.9);
+  extrapolation within noise (2.18 vs 1.99--2.22).
+\item \textbf{Zero-shot?} Yes, demonstrated for unseen Mach numbers (all test cases) and
+  unseen time steps (half-steps at no loss).
+\item \textbf{Physically meaningful long-horizon behaviour?} Partly. It tracks the true flow
+  much longer than the original, but the MSE-selected model still damps oscillations
+  mid-rollout (Fig.~\ref{fig:energy}).
+\item \textbf{Cost?} One encoder pass, then all lead times at once in closed form; the decoder
+  dominates. Training is about 0.31\,s per step, 12.5\,GB, about 1 hour per model. ACDM needs
+  20 denoising passes per step.
+\item \textbf{Limitations.}
+  \begin{itemize}
+  \item Single GPU shared with other work; 2--3 seeds.
+  \item No retraining of ACDM or the U-Nets on my split. They saw two more training Mach
+    numbers, a small advantage for them.
+  \item QG and KS were not re-benchmarked, because the QG test set must be regenerated first.
+  \end{itemize}
+\item \textbf{Strongest next step:} see \S\ref{sec:next}.
+\end{enumerate}
+
+\section{What I would do next}\label{sec:next}
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Close the reconstruction gap}, since it dominates the remaining error:
+  \begin{itemize}
+  \item a larger or multiscale latent (\S\ref{sec:repr});
+  \item a decoder that adds back fine detail;
+  \item pre-training the autoencoder before dynamics training.
+  \end{itemize}
+  \emph{Test:} first-step error below about 0.1, with long-lead error unchanged.
+\item \textbf{Remove the mid-rollout damping without paying MSE.} Select checkpoints on a
+  combined score of correlation and energy, and train the amplitude term in the latent
+  coordinates that carry shedding.
+\item \textbf{Report fairly.} Always show error-vs-lead, energy and correlation curves together
+  with MSE, and include the U-Nets, not only ACDM.
+\item \textbf{QG:} regenerate an independent test set before any QG claim.
+\end{enumerate}
+
+\appendix
+\section{Where everything is}
+\begin{itemize}
+\item \textbf{Branches.}
+  \begin{itemize}
+  \item \texttt{audit/kae-research-audit}: the audit, worktree
+    \texttt{/home/rg625/mnt/ocean\_forecasting\_audit}.
+  \item \texttt{impl/ct-kae}: fixes and the new model, worktree
+    \texttt{/home/rg625/mnt/ocean\_forecasting\_impl}.
+  \item The original \texttt{rares/updated\_model} checkout was not modified.
+  \end{itemize}
+\item \textbf{New model:} \texttt{koopman\_autoencoder/models/ct\_kae.py}, with data handling in
+  \texttt{models/ct\_data.py}.
+\item \textbf{Training and evaluation scripts:} \texttt{train\_ctkae.py},
+  \texttt{eval\_ctkae.py}.
+\item \textbf{Detailed write-ups} in \texttt{audit\_report/}: \texttt{FINAL\_AUDIT.md},
+  \texttt{ARCHITECTURE.md}, \texttt{EXPERIMENT\_RESULTS.md},
+  \texttt{LITERATURE\_REVIEW\_V2.md}, \texttt{issues.json}, \texttt{experiments.yaml}.
+\item \textbf{Checkpoints and logs:} \texttt{koopman\_autoencoder/model\_outputs\_ctkae/}.
+\end{itemize}
+
+\section{How to reproduce}
+\begin{verbatim}
+cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
+python -m pytest ../audit_report/tests -q                      # 39 tests
+python train_ctkae.py --config=configs/ctkae/base.yaml \
+   train.steps=12000 train.select=val_mse60 train.strides=[1,2,3] \
+   model.generator=block train.w_amp=0.1 seed=0                # final model
+python eval_ctkae.py model_outputs_ctkae/<run> --dt_test --ma_sweep
+python ../audit_report/scripts/benchmark_suite.py              # all baselines
+\end{verbatim}
+
+\end{document}
