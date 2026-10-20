@@ -60,6 +60,7 @@ DEFAULTS = OmegaConf.create(
             "k_start": 10,
             "k_max": 60,
             "curriculum_frac": 0.5,
+            "k_hold_frac": 0.0,
             "n_dec": 8,
             "strides": [2],
             "amp": True,
@@ -78,6 +79,15 @@ DEFAULTS = OmegaConf.create(
 
 def build_model(mcfg) -> CTKAE:
     return CTKAE(CTKAEConfig(**OmegaConf.to_container(mcfg, resolve=True)))
+
+
+def horizon_at(step: int, tc) -> int:
+    """Training horizon K at a given step: held at k_start for the first k_hold_frac of
+    training (e.g. one-step pre-training of a sharp autoencoder), then ramped linearly to
+    k_max over the next curriculum_frac of training."""
+    hold = tc.get("k_hold_frac", 0.0) * tc.steps
+    frac = min(1.0, max(0.0, step - hold) / max(1.0, tc.curriculum_frac * tc.steps))
+    return int(round(tc.k_start + (tc.k_max - tc.k_start) * frac))
 
 
 def weighted_mse(a, b, w):
@@ -177,8 +187,7 @@ def main():
     best, t_start = float("inf"), time.time()
     acc: dict = {}
     for step in range(1, tc.steps + 1):
-        frac = min(1.0, step / max(1, tc.curriculum_frac * tc.steps))
-        K = int(round(tc.k_start + (tc.k_max - tc.k_start) * frac))
+        K = horizon_at(step, tc)
         win, tgt, taus, ma, s = train.sample(tc.batch, n_frames, K, list(tc.strides), g)
         n_dec = min(tc.n_dec, K)
         rest = (

@@ -284,3 +284,28 @@ def test_augmented_generator_reproduces_affine_rollout(gen):
             out = torch.linalg.matrix_exp(Aug[b] * taus[b, k]) @ z_aug[b]
             torch.testing.assert_close(out[:-1], zs[b, k], rtol=1e-9, atol=1e-9)
             torch.testing.assert_close(out[-1], torch.tensor(1.0, dtype=torch.float64))
+
+
+def test_horizon_schedule_hold_then_ramp():
+    from omegaconf import OmegaConf
+    import train_ctkae
+
+    tc = OmegaConf.create(
+        {
+            "steps": 1000,
+            "k_start": 1,
+            "k_max": 61,
+            "curriculum_frac": 0.5,
+            "k_hold_frac": 0.2,
+        }
+    )
+    assert train_ctkae.horizon_at(1, tc) == 1
+    assert train_ctkae.horizon_at(200, tc) == 1  # still holding
+    assert train_ctkae.horizon_at(450, tc) == 31  # half-way up the ramp
+    assert (
+        train_ctkae.horizon_at(700, tc) == 61 and train_ctkae.horizon_at(1000, tc) == 61
+    )
+    tc0 = OmegaConf.create(
+        {"steps": 1000, "k_start": 10, "k_max": 60, "curriculum_frac": 0.5}
+    )
+    assert train_ctkae.horizon_at(250, tc0) == 35  # legacy schedule unchanged
