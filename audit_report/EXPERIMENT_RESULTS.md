@@ -228,3 +228,19 @@ trajectory):
 
 The response is smooth and monotonic in |ΔMa|. The no-conditioning model (P3) is exactly 0
 everywhere, as expected.
+
+## 10. Representation pilots (6k steps, seed 0, validation only)
+
+`results/repr_summary.json`. Base configuration: block generator, w_amp = 0.1, strides {1,2,3}.
+
+| Run | Change | Best val MSE60 (step) | First-10 at end | Final E60 | Final MSE240 | Peak mem |
+|---|---|---|---|---|---|---|
+| R0 | latent 256 (reference) | 4.48 (2k) | 0.58 | 0.97 | 16.92 | 12.5 GB |
+| R1 | latent 512 | 4.12 (2k) | 0.56 | 0.99 | 16.55 | 12.8 GB |
+| R2 | latent 1024 | 4.50 (2k) | **0.49** | 0.97 | 16.51 | 13.4 GB |
+| R3 | w_rec = 5 | 4.40 (6k) | 0.53 | 0.95 | 16.89 | 12.5 GB |
+
+**Neither a larger latent nor a heavier reconstruction weight closes the floor.** At most
+they lower the early-lead error by about 15%, and the change in MSE60 is within single-seed
+noise. The first-step gap to ACDM is 20–30×. The bottleneck is therefore the encoder/decoder
+design and the joint training, not the latent width.

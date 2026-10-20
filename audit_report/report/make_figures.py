@@ -207,7 +207,7 @@ if rep:
     for ax, j, t in zip(
         axes,
         [1, 2],
-        ["best val MSE over 60 steps", "first 10 steps (reconstruction floor)"],
+        ["best validation MSE over 60 steps", "first-10-step error at end of training"],
     ):
         ax.barh(range(len(rr)), [r[j] for r in rr], color=C["ctkae"], height=0.6)
         for i, r in enumerate(rr):

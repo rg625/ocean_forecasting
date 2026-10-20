@@ -1,2 +1,37 @@
-\textit{In progress at the time of writing: four runs testing a larger latent (512, 1024) and a
-heavier reconstruction weight. This section is filled in when they finish.}
+Since the gap is a reconstruction floor, I tested the two most direct remedies on the selected
+configuration: a larger latent and a heavier reconstruction weight. These are four short runs
+(6k steps, one seed each), compared on validation only.
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+Run & Latent size & Best val.\ error (60 steps) & First-10-step error (end) & Energy kept (60)\\
+\midrule
+R0 reference              & 256  & 4.48 & 0.58 & 0.97\\
+R1 larger latent          & 512  & 4.12 & 0.56 & 0.99\\
+R2 much larger latent     & 1024 & 4.50 & \textbf{0.49} & 0.97\\
+R3 reconstruction $\times5$ & 256 & 4.40 & 0.53 & 0.95\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[h]
+\centering\includegraphics[width=\linewidth]{fig_repr.pdf}
+\caption{Representation tests (single seed). Neither a 4$\times$ larger latent nor a 5$\times$
+reconstruction weight changes the 60-step error beyond noise.}
+\label{fig:repr}
+\end{figure}
+
+\textbf{Result: neither remedy closes the gap.}
+\begin{itemize}
+\item Quadrupling the latent lowers the early-step error by only about 15\% (0.58 $\to$ 0.49).
+  The overall 60-step error does not move beyond single-seed noise.
+\item Weighting reconstruction 5$\times$ helps by a similar small amount.
+\item The first-step gap to ACDM is 20--30$\times$, so latent size is not the bottleneck.
+\item The likely causes are the encoder and decoder architecture themselves (they compress a
+  $4\times64\times128$ field through one fully connected layer), and the joint training. The
+  dynamics loss pulls the latent towards coordinates that are easy to propagate rather than
+  easy to reconstruct.
+\item The next things to test are a multiscale (U-Net-style) decoder and pre-training the
+  autoencoder alone before adding the dynamics.
+\end{itemize}
