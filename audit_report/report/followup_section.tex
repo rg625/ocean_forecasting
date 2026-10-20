@@ -1,0 +1,176 @@
+%==========================================================================================
+\section{Follow-up (20 October): ACDM's training setting, $\mu$, curriculum and data assimilation}\label{sec:followup}
+
+This section answers the three questions raised after the first version of the report.
+All runs use the same code, scorer and test cases as before.
+
+\subsection{Training exactly as ACDM does}\label{sec:acdmsetting}
+
+ACDM's training script (\texttt{training\_diffusion\_tra.py}) uses \texttt{sequenceLength=[3, 2]}:
+2 conditioning frames and \textbf{1} predicted frame at stride 2. I reproduced that setting
+exactly:
+\begin{itemize}
+\item the same 33 training simulations, adding simulation 40 (Ma 0.90), which was missing
+  from \texttt{train.nc}, from the raw ACDM files;
+\item all 1{,}000 frames with random offsets;
+\item batch 64;
+\item no validation split, and the final checkpoint is used.
+\end{itemize}
+The only unmatched quantity is the epoch count, which is undocumented for the released ACDM
+models. Ours is 12k steps, about 140 epochs.
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+Test set, MSE $\times10^{-3}$ & interp & extrap & long & error at lead 1 & error at lead 10\\
+\midrule
+CT-KAE, ACDM setting (2 $\to$ 1)       & 10.67 & 7.28 & 27.6 & \textbf{0.08} & 3.08\\
+CT-KAE, 60-step training (2 $\to$ 60)  & \textbf{3.84} & 2.23 & 15.0 & 0.66 & \textbf{1.00}\\
+ACDM                                   & 2.81--3.02 & 1.99--2.22 & 22.5--22.8 & 0.03 & 0.29\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent \textbf{Result: the ACDM setting makes this model much worse} (single seed;
+seeds 1--2 were dropped once this was clear).
+\begin{itemize}
+\item \textbf{Why.} ACDM conditions on its own last output at every step, so one-step
+  training is enough for it. A Koopman model propagates the latent state forward in one go.
+  Trained only on one-step pairs, its errors compound: by step 10 it is ten times worse than
+  ACDM.
+\item \textbf{What it reveals.} With one-step training the reconstruction floor falls 8$\times$
+  (0.66 $\to$ 0.08, close to ACDM's 0.03). So the floor in the 60-step model comes from the
+  multi-step objective \emph{competing} with reconstruction. It does not come from latent
+  size (\S\ref{sec:repr}).
+\end{itemize}
+
+\subsection{Does the fixed point $\mu(Ma)$ matter?}\label{sec:mu}
+
+$\mu$ does not make the model nonlinear. The dynamics are exactly linear in $z-\mu$, and in
+the augmented state $[z;1]$:
+\[
+\tfrac{d}{dt}[z;1] = \begin{bmatrix}A & -A\mu\\ 0 & 0\end{bmatrix}[z;1]
+\]
+Both forms are tested to $10^{-9}$. Removing $\mu$ entirely gives plain $e^{\tau A}z$, which is
+also tested.
+
+Measured effect (test, single seed per row):
+\begin{center}\small
+\begin{tabular}{llcccc}
+\toprule
+Setting & Variant & interp & extrap & long & energy at step 58 (interp)\\
+\midrule
+2 $\to$ 60 & with $\mu$    & 3.84 & 2.23 & 14.96 & 0.74\\
+2 $\to$ 60 & without $\mu$ & 3.86 & 1.90 & 15.25 & 0.75\\
+ACDM setting & with $\mu$    & 10.67 & 7.28 & 27.6 & 0.59\\
+ACDM setting & without $\mu$ & 12.30 & 6.06 & 24.8 & 1.69\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent \textbf{Result: no measurable difference.} In the 60-step setting, both variants fall
+within the spread of the three $\mu$ seeds (interp 3.84--4.40, extrap 2.02--2.30). The model
+can therefore be used without $\mu$, with purely linear latent dynamics $dz/dt = A(Ma)\,z$, at
+no cost.
+
+\subsection{Curriculum: one-step first, then 60 steps}\label{sec:curr}
+
+The model trains one step at a time for the first 30\% of steps (to learn sharp
+reconstructions), then ramps to 60-step rollouts.
+
+\begin{center}\small
+\begin{tabular}{lccccc}
+\toprule
+Test, single seed & interp & extrap & long & error at lead 1 & val.\ error (60 steps)\\
+\midrule
+2 $\to$ 60 & \textbf{3.84} & 2.23 & 14.96 & 0.66 & 4.04\\
+Curriculum & 4.45 & \textbf{1.81} & \textbf{14.50} & 0.49 & \textbf{3.77}\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The curriculum keeps only part of the sharp reconstruction: the lead-1 error falls
+from 0.66 to 0.49, but not to 0.08. Extrapolation improves (1.81, slightly better than ACDM's
+1.99--2.22, but still behind U-Net\_tn's 1.42). Interpolation is a little worse. One seed, so
+this is suggestive.
+
+\subsection{Data assimilation: new model vs original}\label{sec:da}
+
+\textbf{Setup.}
+\begin{itemize}
+\item The new model enters your existing 4D-Var code through an adapter. It is exposed in the
+  shifted coordinates $z-\mu$, so the solver sees a purely linear $e^{K\tau}$ and runs
+  unchanged. The adapter reproduces the model's own forecast to $1.5\times10^{-4}$.
+\item Both models run on the same DA code, and each learning rate is tuned the same way on
+  \texttt{gt\_extrap}.
+\item The original was re-run rather than reusing its saved numbers, which came from code
+  that has since changed.
+\item The original DA checkpoint was selected on the regime DA is tested on, a small
+  advantage for it.
+\end{itemize}
+
+Mean relative error of the analysis over each sweep's points (lower is better; 8 problems per
+point):
+
+\begin{center}\footnotesize
+\begin{tabular}{lcccc}
+\toprule
+Sweep & Original & \multicolumn{3}{c}{CT-KAE}\\
+ & KAE & curriculum & 2 $\to$ 60 & ACDM setting\\
+\midrule
+\multicolumn{5}{l}{\emph{df = 9 (first observation 9 frames after the analysis time)}}\\
+window length $\delta_l$ & \textbf{0.085} & 0.094 & 0.130 & 0.224\\
+noise                    & \textbf{0.078} & 0.094 & 0.129 & 0.215\\
+sparsity                 & \textbf{0.086} & 0.100 & 0.108 & 0.306\\
+misspecified noise       & \textbf{0.078} & 0.099 & 0.132 & 0.216\\
+number of observations   & \textbf{0.079} & 0.095 & 0.126 & 0.216\\
+joint sparsity           & \textbf{0.078}$^\ast$ & 0.100 & 0.110 & 0.276\\
+\midrule
+\multicolumn{5}{l}{\emph{df = 1 (canonical schedule)}}\\
+first-observation lead $\delta_f$ & \textbf{0.070} & 0.074 & 0.094 & 0.194\\
+single observation       & \textbf{0.089} & 0.091 & 0.105 & 0.190\\
+window length $\delta_l$ & 0.027 & \textbf{0.027} & 0.032 & 0.145\\
+noise                    & \textbf{0.028} & 0.028 & 0.033 & 0.147\\
+sparsity                 & \textbf{0.031} & 0.037 & 0.042 & 0.272\\
+misspecified noise       & \textbf{0.028} & 0.029 & 0.034 & 0.147\\
+number of observations   & \textbf{0.026} & 0.027 & 0.031 & 0.147\\
+joint sparsity           & \textbf{0.027} & 0.028 & 0.034 & 0.227\\
+\midrule
+\multicolumn{5}{l}{\emph{Representation check (df = 9 default problem)}}\\
+decoder floor: decode(encode(truth)) & 0.041 & 0.032 & 0.041 & \textbf{0.014}\\
+4D-Var started from the true state   & \textbf{0.074} & 0.096 & 0.131 & 0.208\\
+tuned learning rate                  & 0.3 & 1.0$^\dagger$ & 1.0$^\dagger$ & 1.0$^\dagger$\\
+\bottomrule
+\end{tabular}
+\end{center}
+{\footnotesize $^\ast$ 3 of 5 points; the other two ran out of GPU memory.
+$^\dagger$ Top of the search grid, so these models may still be slightly under-tuned.
+For context, your September runs give U-Net / FNO / ACDM about 0.27 / 0.29 / 0.25 at df = 9.}
+
+\textbf{Result.}
+\begin{itemize}
+\item \textbf{Your original model is still the best data-assimilation model.}
+  \begin{itemize}
+  \item df = 1: the curriculum CT-KAE essentially ties it (within 0.001 on most sweeps).
+  \item df = 9: the curriculum CT-KAE is 15--25\% behind.
+  \item Every KAE beats U-Net, FNO and ACDM by a wide margin at df = 9, except the
+    ACDM-setting model.
+  \end{itemize}
+\item \textbf{The gap is not representation.} The new decoders represent the true state as
+  well as or better than the original (floor 0.032--0.041 vs 0.041). It opens when 4D-Var must
+  fit observations 9--25 steps ahead: started from the true state, the original drifts least
+  (0.074 vs 0.096--0.131). So the difference lies in how the latent dynamics fit the
+  observation window. Forecast accuracy and DA accuracy are not the same thing here.
+\item \textbf{Forecast training horizon drives DA quality.} Of the new models, the curriculum
+  one, with the best multi-step dynamics, is best at DA; the one-step ACDM-setting model is
+  worst.
+\end{itemize}
+
+\textbf{Corrections made along the way.}
+\begin{itemize}
+\item \textbf{Mislabelled schedule.} A first DA pass labelled some sweeps as df = 1 that were
+  really df = 9: \texttt{exp\_tra.py} defaults \texttt{--pin-delta-f} to 9. All numbers above
+  set the schedule explicitly.
+\item \textbf{Out-of-memory crashes.} Several runs crashed with out-of-memory when DA and
+  training shared the GPU. They were re-run alone; the gaps are marked.
+\end{itemize}

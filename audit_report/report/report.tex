@@ -72,6 +72,18 @@ U-Net (official, best variant)   & 1.53 & 1.42 & 22.4 & 1.08 & 0.85\\
   match ACDM on interpolation and beat it on extrapolation (Fig.~\ref{fig:lead}).
 \end{itemize}
 
+\callout{\textbf{Update, 20 October} (details in \S\ref{sec:followup}).
+\begin{itemize}
+\item \textbf{Training exactly as ACDM does} (2 frames $\to$ 1 predicted frame) makes this
+  model much \emph{worse}: interp 10.67, extrap 7.28, long 27.6. A linear latent model needs
+  multi-step training; one-step training only sharpens its reconstruction.
+\item \textbf{The fixed point $\mu$ makes no measurable difference} and can be dropped. The
+  model is then exactly $dz/dt = A(Ma)\,z$.
+\item \textbf{Data assimilation: your original model is still the best.} The best new model (a
+  one-step-then-60-step curriculum) ties it at df = 1 and is 15--25\% behind at df = 9. Both
+  beat U-Net, FNO and ACDM by a wide margin at df = 9.
+\end{itemize}}
+
 \callout{\textbf{Correction to earlier figures.} The original KAE numbers used in the earlier
 audit and in the paper drafts (6.37 / 1.59 / 16.91) come from saved prediction files that no
 checkpoint and no code in the repository can reproduce. Run with the repository code, the same
@@ -400,6 +412,9 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
 \input{repr_section.tex}
 
 %==========================================================================================
+\input{followup_section.tex}
+
+%==========================================================================================
 \section{Answers to the project's questions}\label{sec:answers}
 
 \begin{enumerate}[leftmargin=*]
@@ -420,13 +435,23 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
     same split.
   \end{itemize}
 \item \textbf{Best formulation?} $2\times2$ oscillator blocks with Mach-dependent damping and
-  frequency, a Mach-dependent fixed point, and exact propagation.
+  frequency, exact propagation, and training on 60-step rollouts.
+  \begin{itemize}
+  \item The fixed point $\mu$ can be dropped at no cost (\S\ref{sec:mu}), giving purely linear
+    latent dynamics.
+  \item ACDM's one-step training setting is unsuitable for this model class
+    (\S\ref{sec:acdmsetting}).
+  \end{itemize}
 \item \textbf{Did it beat ACDM?} \textbf{No} on interpolation; \textbf{level} on
   extrapolation; lower 240-step MSE, but not better long-horizon dynamics.
 \item \textbf{By how much?} Interpolation $+40\%$ worse than ACDM (4.07 vs about 2.9);
   extrapolation within noise (2.18 vs 1.99--2.22).
 \item \textbf{Zero-shot?} Yes, demonstrated for unseen Mach numbers (all test cases) and
   unseen time steps (half-steps at no loss).
+\item \textbf{Better or worse for data assimilation?} Not better. Your original model remains the
+  best DA model. The best new model (curriculum) ties it at df = 1 and is 15--25\% behind at
+  df = 9. All of them except the ACDM-setting model beat U-Net, FNO and ACDM at df = 9
+  (\S\ref{sec:da}).
 \item \textbf{Physically meaningful long-horizon behaviour?} Partly. It tracks the true flow
   much longer than the original, but the MSE-selected model still damps oscillations
   mid-rollout (Fig.~\ref{fig:energy}).
@@ -445,13 +470,23 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
 
 \section{What I would do next}\label{sec:next}
 \begin{enumerate}[leftmargin=*]
-\item \textbf{Close the reconstruction gap}, since it dominates the remaining error:
+\item \textbf{Close the reconstruction gap}, since it dominates the remaining forecast error.
   \begin{itemize}
-  \item a larger or multiscale latent (\S\ref{sec:repr});
-  \item a decoder that adds back fine detail;
-  \item pre-training the autoencoder before dynamics training.
+  \item A larger latent did not help (\S\ref{sec:repr}).
+  \item One-step training gives a sharp autoencoder, but poor dynamics
+    (\S\ref{sec:acdmsetting}).
+  \item A one-step-then-60-step curriculum kept only part of it (\S\ref{sec:curr}).
+  \item Next to try: freeze or slow down the autoencoder after the one-step phase, and a
+    multiscale decoder that adds back fine detail.
   \end{itemize}
   \emph{Test:} first-step error below about 0.1, with long-lead error unchanged.
+\item \textbf{For data assimilation, train for it.} The DA gap comes from fitting
+  observations 9--25 steps ahead, not from representation (\S\ref{sec:da}). Two options:
+  \begin{itemize}
+  \item weight the training loss on those leads;
+  \item add a 4D-Var-style objective that recovers $z_0$ from sparse future observations.
+  \end{itemize}
+  Also widen the DA learning-rate grid beyond 1.0 for the new models.
 \item \textbf{Remove the mid-rollout damping without paying MSE.} Select checkpoints on a
   combined score of correlation and energy, and train the amplitude term in the latent
   coordinates that carry shedding.

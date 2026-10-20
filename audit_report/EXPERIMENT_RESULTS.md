@@ -244,3 +244,46 @@ everywhere, as expected.
 they lower the early-lead error by about 15%, and the change in MSE60 is within single-seed
 noise. The first-step gap to ACDM is 20–30×. The bottleneck is therefore the encoder/decoder
 design and the joint training, not the latent width.
+
+## 11. Follow-up (20 Oct): ACDM training setting, mu ablation, curriculum, data assimilation
+
+Test MSE x1e-3. Single seed per row unless stated. Evaluations are in
+`koopman_autoencoder/model_outputs_ctkae/<run>/eval/`.
+
+| Model | interp | extrap | longer | Lead-1 interp | Energy at 58 (interp) |
+|---|---|---|---|---|---|
+| ACDM setting (2->1, 33 sims, batch 64), with mu (`A_mu_s0`, last) | 10.67 | 7.28 | 27.58 | 0.08 | 0.59 |
+| ACDM setting, without mu (`A_nomu_s0`, last) | 12.30 | 6.06 | 24.83 | 0.08 | 1.69 |
+| 2->60, with mu (`F_block_s0`, best) | 3.84 | 2.23 | 14.96 | 0.66 | 0.74 |
+| 2->60, without mu (`N_nomu_s0_20261020_181054`, best) | 3.86 | 1.90 | 15.25 | 0.67 | 0.75 |
+| Curriculum 1-step -> 60 (`C_curr_s0`, best) | 4.45 | 1.81 | 14.50 | 0.49 | 0.68 |
+
+- **ACDM's 2->1 setting is unsuitable for a linear latent model.** Lead-10 error is 3.08
+  against 1.00 for 2->60 and 0.29 for ACDM. It does show that the reconstruction floor
+  comes from the multi-step objective competing with reconstruction.
+- **mu has no measurable effect** in the 2->60 setting; the results are within the spread of
+  the 3 mu seeds. It can be dropped.
+- **The curriculum** gives better extrapolation and lead-1 error, slightly worse
+  interpolation (single seed).
+- **Aborted or crashed runs**, marked with ABORTED files: `A_mu_s1` was dropped by decision;
+  `N_nomu_s0_20261020_162641`, `N_nomu_s1` and `C_curr_s1` crashed with out-of-memory while
+  sharing the GPU with DA.
+
+**Data assimilation v2** (`results/da_v2_summary.json`; `scripts/run_da_v2.sh`; KAE slot only,
+same DA code for every model; learning rate tuned on gt_extrap over 0.03-1.0). Mean relative
+error over each sweep's points:
+
+| Sweep | Original KAE | CT-KAE curriculum | CT-KAE 2->60 | CT-KAE ACDM setting |
+|---|---|---|---|---|
+| df9 delta_l / noise / sparsity / misspec / n_obs | 0.085 / 0.078 / 0.086 / 0.078 / 0.079 | 0.094 / 0.094 / 0.100 / 0.099 / 0.095 | 0.130 / 0.129 / 0.108 / 0.132 / 0.126 | 0.22-0.31 |
+| df1 delta_l / noise / sparsity / misspec / n_obs | 0.027 / 0.028 / 0.031 / 0.028 / 0.026 | 0.027 / 0.028 / 0.037 / 0.029 / 0.027 | 0.032 / 0.033 / 0.042 / 0.034 / 0.031 | 0.15-0.27 |
+| delta_f sweep / single obs (canonical) | 0.070 / 0.089 | 0.074 / 0.091 | 0.094 / 0.105 | 0.19 / 0.19 |
+| Decoder floor / encode-init / climatology-init | 0.041 / 0.074 / 0.079 | 0.032 / 0.096 / 0.102 | 0.041 / 0.131 / 0.130 | 0.014 / 0.208 / 0.221 |
+| Tuned learning rate | 0.3 | 1.0 (grid top) | 1.0 (grid top) | 1.0 (grid top) |
+
+**The original KAE remains the best DA model.** The curriculum CT-KAE ties it at df1 and is
+15-25% behind at df9. The gap is in fitting observations 9-25 steps ahead, not in
+representation.
+
+Superseded: `model_outputs_ctkae/da/` (v1). Its "canonical" sweeps actually ran at df9,
+because `--pin-delta-f` defaults to 9, and its learning-rate grid was too narrow.
