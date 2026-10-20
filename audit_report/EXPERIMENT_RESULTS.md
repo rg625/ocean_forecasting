@@ -118,3 +118,113 @@ Conclusions (single seed: differences < ~0.3 are within noise and need the multi
 **Decision.** Full runs use the block generator with amplitude loss and strides {1, 2, 3}
 (3 seeds), the hurwitz generator with strides {1, 2, 3} (2 seeds), 12k steps each, selected
 on val_mse60. The corrected legacy model is retrained on the same split as E1.
+
+## 5. Full runs: validation (12k steps, strides {1,2,3}, selection on val_mse60)
+
+`results/full_runs_val_summary.json`.
+
+| Config | Seeds | Best val MSE60 (step) | Val MSE60, first 10 | E60 at best |
+|---|---|---|---|---|
+| block + w_amp 0.1 | 0 / 1 / 2 | 4.04 (3k) / 4.33 (4k) / 4.09 (4k); **mean 4.15** | 0.72 / 0.66 / 0.68 | 0.82 / 0.91 / 0.85 |
+| hurwitz | 0 / 1 | 4.37 (3k) / 4.50 (4k); mean 4.43 | 0.91 / 0.85 | 0.82 / 0.89 |
+
+All three block seeds beat both hurwitz seeds on validation, so **block is the selected
+formulation**. In every run the best val MSE60 occurs at 3–4k steps. Later checkpoints keep
+more energy (final E60 0.97–0.99) at slightly higher MSE.
+
+## 6. Test benchmark (pre-registered checkpoint: best.pth by val_mse60)
+
+Sources: `koopman_autoencoder/model_outputs_ctkae/*/eval/{best,last}.json` (scored with
+`benchmark_suite.score`, ground truth asserted equal to the ACDM dicts),
+`results/E1_legacy_heldout_best.json` and `results/benchmark_suite_baselines.json`.
+MSE ×10⁻³, mean ± std over seeds.
+
+| Model | interp | extrap | longer | longer E@238 | longer: first lead ACC < 0.6 |
+|---|---|---|---|---|---|
+| **CT-KAE block** (3 seeds) | 4.07 ± 0.29 | 2.18 ± 0.14 | 16.5 ± 2.0 | 0.81 / 0.78 / 1.73 | 43 / 48 / 46 |
+| CT-KAE hurwitz (2 seeds) | 4.65 | 2.23 | 13.9 | 0.24 / 0.36 | 48 / 43 |
+| CT-KAE block, last.pth (no early stopping, 3 seeds) | 5.59 ± 0.29 | 2.56 ± 0.23 | 18.1 ± 0.5 | 0.62 / 0.60 / 0.53 | 45 / 48 / 44 |
+| E1: corrected legacy KAE, same split, ~2 h | 8.18 | 3.83 | 22.77 | 0.66 | 31 |
+| E0: legacy checkpoint, reproducible | 11.43 | 2.12 | 18.62 | 0.27 | 28 |
+| ACDM (official, 3 seeds × 5 samples; two sampling runs) | 2.81–3.02 | 1.99–2.22 | 22.5–22.8 | 1.11–1.12 | 50–52 |
+| U-Net_ut (official) | **1.53** | 1.66 | 22.37 | 1.17 | 54 |
+| U-Net_tn (official) | 1.83 | **1.42** | 22.56 | 1.18 | 56 |
+| Training climatology | 16.76 | 17.39 | 15.83 | 0.17 | 1 |
+| POD-DMD2 (r = 128) | 6.06 | 3.86 | 13.41 | ≈ 0.05 | 27 |
+
+**Verdict against ACDM**, a fair comparison on identical cases with an identical scorer:
+
+- **interp:** the CT-KAE does **not** beat ACDM (4.07 ± 0.29 vs 2.81–3.02).
+- **extrap:** it is **on par** (2.18 ± 0.14 vs 1.99–2.22, within the spread of two ACDM
+  sampling runs).
+- **longer:** it has **lower MSE than ACDM** (16.5 vs 22.5), but part of that is
+  amplitude hedging. E@238 is about 0.8 for two seeds, and the correlation horizon is
+  shorter than ACDM's (43–48 vs 50–52 steps). This is not a demonstration of better
+  long-horizon dynamics.
+- The official U-Net_ut and U-Net_tn baselines beat both ACDM and the CT-KAE on interp and
+  extrap.
+
+**Disclosed differences:**
+- The CT-KAE trains on 30 Mach values; Ma 0.60 and 0.75 are held out for validation.
+  ACDM and the U-Nets train on 32 or 33.
+- The CT-KAE is deterministic; ACDM is scored per sample.
+
+**Improvement over the legacy model:** interp 11.43 → 4.07 (2.8×), longer 18.6 → 16.5, with
+the energy ratio at 238 steps going from 0.27 to about 0.8. Against E1 (the legacy
+architecture retrained on the same split with all fixes): 8.18 → 4.07 on interp and
+3.83 → 2.18 on extrap.
+
+## 7. Diagnosis of the remaining gap: a reconstruction floor, not the dynamics
+
+MSE ×10⁻³ per lead (test; CT-KAE block seed 0, best.pth):
+
+| Lead | 1 | 5 | 10 | 20 | 30 | 40 | 58 |
+|---|---|---|---|---|---|---|---|
+| ACDM, interp | 0.03 | 0.12 | 0.29 | 0.90 | 2.35 | 4.42 | 8.46 |
+| U-Net_ut, interp | 0.02 | 0.06 | 0.11 | 0.31 | 1.12 | 2.20 | 4.90 |
+| CT-KAE, interp | **0.66** | 0.75 | 1.00 | 2.34 | 3.48 | 4.59 | 8.71 |
+| ACDM, extrap | 0.02 | 0.09 | 0.24 | 0.78 | 1.57 | 3.03 | 6.51 |
+| CT-KAE, extrap | **0.31** | 0.33 | 0.51 | 0.91 | 1.80 | 2.90 | **5.43** |
+
+The CT-KAE error is almost flat over leads 1–5 and 20–30× above ACDM at lead 1. This is
+the signature of an autoencoder reconstruction floor. At long leads it matches ACDM on interp
+and beats it on extrap, so the continuous-time dynamics are competitive. The latent
+bottleneck (d = 256) reconstructs worse than a 128-mode linear POD (projection floor
+≈ 0.46·10⁻³ in these units).
+
+**Next experiment:** representation pilots R0–R3, run in a queue:
+- latent dimension 512 and 1024;
+- reconstruction weight ×5;
+- all on the selected configuration, compared on validation only.
+
+## 8. Ablations on test (single seed, analysis only, not used for selection)
+
+| Pilot (6k steps) | interp | extrap | longer | Reading |
+|---|---|---|---|---|
+| P0: block, Δt 0.1 only | 4.40 | **1.71** | 15.58 | — |
+| P3: P0 without any Mach conditioning | 5.43 | 2.04 | 18.94 | Conditioning helps on the wide-gap / extrapolation cases (−19% interp, −16% extrap) even though validation barely showed it |
+| P5: P0 with a 10-step horizon | 5.18 | 2.44 | 15.93 | Long-horizon training helps on test too |
+
+## 9. Zero-shot generalisation
+
+**Temporal resolution.** P0 was trained only at Δt = 0.1. Queried at Δt = 0.05 on
+`gt_*_subsample_1` (0.05-spaced truth; the input window keeps 0.1 spacing):
+
+| Case | Half-step leads (times never trained on) | Whole-step leads |
+|---|---|---|
+| interp | 4.408 | 4.400 |
+| extrap | 1.720 | 1.707 |
+
+Exact propagation generalises to unseen time offsets at no loss.
+
+**Mach number.** The test cases themselves are zero-shot in Mach: interp 0.66–0.68 lies in a
+training gap 0.06 wide, and extrap 0.50–0.52 lies below the training range. Output
+sensitivity to the conditioning value (P0; rms change versus using the true Ma on an interp
+trajectory):
+
+| Ma used | 0.50 | 0.55 | 0.60 | 0.66 (true) | 0.70 | 0.80 | 0.90 |
+|---|---|---|---|---|---|---|---|
+| rms change | 0.57 | 0.43 | 0.25 | 0 | 0.16 | 0.42 | 0.61 |
+
+The response is smooth and monotonic in |ΔMa|. The no-conditioning model (P3) is exactly 0
+everywhere, as expected.
