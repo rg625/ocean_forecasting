@@ -231,3 +231,56 @@ def test_acdm_layout_round_trip():
         a[:, :, 3], phys[:, :, 2].transpose(-1, -2).numpy(), rtol=1e-6
     )  # p
     np.testing.assert_allclose(a[:, 0, 4, 0, 0], ma.numpy())
+
+
+@pytest.mark.parametrize("gen", GENS)
+def test_no_fixed_point_is_pure_linear(gen):
+    """fixed_point='none': z(tau) = exp(tau A) z0 exactly (no offset anywhere)."""
+    torch.manual_seed(0)
+    cfg = CTKAEConfig(
+        height=16,
+        width=32,
+        latent_dim=8,
+        widths=[8, 16],
+        blocks_per_stage=1,
+        cond_embed=8,
+        generator=gen,
+        dense_rank=2,
+        fixed_point="none",
+    )
+    m = CTKAE(cfg).double()
+    perturb_heads(m)
+    assert not any(n == "mu0" for n, _ in m.named_parameters())
+    _, _, ma = batch()
+    z0 = torch.randn(3, 8, dtype=torch.float64)
+    taus = torch.tensor([[0.1, 0.7]] * 3, dtype=torch.float64)
+    zs = m.propagate(z0, taus, ma)
+    A = m.generator_matrix(ma)
+    for b in range(3):
+        for k in range(2):
+            torch.testing.assert_close(
+                zs[b, k],
+                torch.linalg.matrix_exp(A[b] * taus[b, k]) @ z0[b],
+                rtol=1e-9,
+                atol=1e-9,
+            )
+
+
+@pytest.mark.parametrize("gen", GENS)
+def test_augmented_generator_reproduces_affine_rollout(gen):
+    """With a fixed point mu(Ma), the model is exactly linear in [z; 1]."""
+    m = tiny(gen).double()
+    perturb_heads(m)
+    with torch.no_grad():
+        m.mu0.add_(torch.randn_like(m.mu0))
+    _, _, ma = batch()
+    z0 = torch.randn(3, 8, dtype=torch.float64)
+    taus = torch.tensor([[0.2, 1.3]] * 3, dtype=torch.float64)
+    zs = m.propagate(z0, taus, ma)
+    Aug = m.augmented_generator(ma)
+    z_aug = torch.cat([z0, torch.ones(3, 1, dtype=torch.float64)], -1)
+    for b in range(3):
+        for k in range(2):
+            out = torch.linalg.matrix_exp(Aug[b] * taus[b, k]) @ z_aug[b]
+            torch.testing.assert_close(out[:-1], zs[b, k], rtol=1e-9, atol=1e-9)
+            torch.testing.assert_close(out[-1], torch.tensor(1.0, dtype=torch.float64))

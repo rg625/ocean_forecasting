@@ -10,6 +10,7 @@ the obstacle cells are zeroed. Channel order is VARS = [v_x, v_y, p, rho]; the A
 truth uses [v_x, v_y, rho, p], handled by ``to_acdm_layout``.
 """
 
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -72,6 +73,7 @@ class TraWindows:
         ma_intervals: Optional[Sequence[Tuple[float, float]]],
         device: torch.device,
         dtype=torch.float16,
+        extra_raw_sims: Sequence[str] = (),
     ):
         ds = xr.open_dataset(path)
         ma = ds.Ma.values.astype(np.float32)
@@ -85,9 +87,15 @@ class TraWindows:
         idx = np.nonzero(keep)[0]
         self.ma = torch.from_numpy(ma[idx]).to(device)
         self.mask = torch.from_numpy(_mask(ds)).to(device)
-        self.x = torch.from_numpy(normalise(ds, sims=idx)).to(
-            device=device, dtype=dtype
-        )
+        x = normalise(ds, sims=idx)
+        if extra_raw_sims:  # e.g. ACDM sim 40 (Ma 0.90), absent from train.nc
+            T = x.shape[1]
+            raw = [load_raw_sim(d, T, _mask(ds)) for d in extra_raw_sims]
+            x = np.concatenate([x] + [r[0][None] for r in raw], axis=0)
+            self.ma = torch.cat(
+                [self.ma, torch.tensor([r[1] for r in raw], device=device)]
+            )
+        self.x = torch.from_numpy(x).to(device=device, dtype=dtype)
         self.S, self.T = self.x.shape[:2]
         self.device = device
 
@@ -139,6 +147,29 @@ class TraWindows:
             torch.arange(1, n_leads + 1, device=self.device).float() * stride * DT_RAW
         ).expand(len(out), -1)
         return win, tgt, taus, ma
+
+
+def load_raw_sim(sim_dir: str, n_frames: int, mask: np.ndarray):
+    """One simulation from the official ACDM export (sim_XXXXXX/{velocity,density,pressure}_
+    NNNNNN.npz, arrays [c, 128, 64]) -> ([T, C, 64, 128] normalised + masked, Mach).
+    Frame t of the export equals frame t of train.nc after a transpose (verified on sim 39
+    to 3e-8)."""
+    import json
+
+    d = Path(sim_dir)
+    ma = float(json.loads((d / "src" / "description.json").read_text())["Mach Number"])
+    frames = []
+    for t in range(n_frames):
+        vel = np.load(d / f"velocity_{t:06d}.npz")["arr_0"]
+        rho = np.load(d / f"density_{t:06d}.npz")["arr_0"][0]
+        p = np.load(d / f"pressure_{t:06d}.npz")["arr_0"][0]
+        fields = {"v_x": vel[0].T, "v_y": vel[1].T, "p": p.T, "rho": rho.T}
+        frames.append(
+            np.stack(
+                [((fields[v] - TRA_MEAN[v]) / (TRA_STD[v] + 1e-8)) * mask for v in VARS]
+            )
+        )
+    return np.stack(frames).astype(np.float32), ma
 
 
 def load_eval_case(path: str, device: torch.device, stride: int = 1):

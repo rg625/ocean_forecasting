@@ -44,7 +44,11 @@ class CTKAEConfig:
     film_encoder: bool = True
     film_decoder: bool = True
     cond_generator: bool = True  # A depends on c
-    cond_fixed_point: bool = True  # mu depends on c
+    cond_fixed_point: bool = True  # mu depends on c (legacy switch; see fixed_point)
+    # "conditional": mu(c) = mu0 + MLP(c); "global": mu = mu0; "none": mu = 0, i.e. the
+    # latent dynamics are dz/dt = A(c) z with no offset. With an offset the model is still
+    # exactly linear in [z; 1] (see augmented_generator).
+    fixed_point: str = "conditional"
     generator: str = "block"  # block | hurwitz | dense
     omega_max: float = 12.0  # init range of block frequencies (rad / time unit)
     gamma_init: Tuple[float, float] = (0.01, 0.3)
@@ -312,9 +316,18 @@ class CTKAE(nn.Module):
             self.gen = MatrixGenerator(cfg, cfg.generator)
         else:
             raise ValueError(f"unknown generator {cfg.generator}")
-        self.mu0 = nn.Parameter(torch.zeros(cfg.latent_dim))
+        mode = cfg.fixed_point
+        if mode == "conditional" and not cfg.cond_fixed_point:
+            mode = "global"  # back-compat with configs that only set cond_fixed_point
+        if mode not in ("conditional", "global", "none"):
+            raise ValueError(f"unknown fixed_point {cfg.fixed_point}")
+        self.fixed_point_mode = mode
+        if mode == "none":
+            self.register_buffer("mu0", torch.zeros(cfg.latent_dim))
+        else:
+            self.mu0 = nn.Parameter(torch.zeros(cfg.latent_dim))
         self.mu_head = None
-        if cfg.cond_fixed_point:
+        if mode == "conditional":
             self.mu_head = nn.Sequential(
                 nn.Linear(e, e), nn.SiLU(), nn.Linear(e, cfg.latent_dim)
             )
@@ -387,6 +400,23 @@ class CTKAE(nn.Module):
     def generator_matrix(self, c: Optional[Tensor]) -> Tensor:
         e = self.embed_cond(c)
         return self.gen.matrix(e, 1 if c is None else c.shape[0])
+
+    def augmented_generator(self, c: Optional[Tensor]) -> Tensor:
+        """Purely linear form of the latent dynamics on the state [z; 1]:
+
+            d/dt [z; 1] = [[A, -A mu], [0, 0]] [z; 1]
+
+        so exp(tau * A_aug) [z0; 1] = [mu + exp(tau A)(z0 - mu); 1], identical to propagate().
+        The constant observable 1 is a Koopman eigenfunction with eigenvalue 0."""
+        B = 1 if c is None else c.shape[0]
+        e = self.embed_cond(c)
+        A = self.gen.matrix(e, B)
+        mu = self.fixed_point(e, B)
+        d = A.shape[-1]
+        Aug = torch.zeros(B, d + 1, d + 1, dtype=A.dtype, device=A.device)
+        Aug[:, :d, :d] = A
+        Aug[:, :d, d] = -(A @ mu.to(A.dtype)[..., None])[..., 0]
+        return Aug
 
     def config_dict(self):
         return asdict(self.cfg)

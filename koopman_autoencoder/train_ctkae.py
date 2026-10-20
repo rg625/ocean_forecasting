@@ -41,7 +41,14 @@ DEFAULTS = OmegaConf.create(
         "run_name": "ctkae",
         "out_root": "model_outputs_ctkae",
         "seed": 0,
-        "data": {"train_file": "data/acdm/128_tra/train.nc", "val_ma": [0.60, 0.75]},
+        # val_ma: [] trains on every simulation with no validation split and keeps the
+        # final checkpoint (the ACDM protocol); extra_raw_sims appends simulations read
+        # from the official ACDM export (e.g. sim 40, Ma 0.90, absent from train.nc).
+        "data": {
+            "train_file": "data/acdm/128_tra/train.nc",
+            "val_ma": [0.60, 0.75],
+            "extra_raw_sims": [],
+        },
         "model": {},
         "train": {
             "steps": 20000,
@@ -125,16 +132,21 @@ def main():
     )
     run.mkdir(parents=True, exist_ok=False)
 
-    tr_int, va_int = train_val_intervals(cfg.data.val_ma)
-    train = TraWindows(cfg.data.train_file, tr_int, dev)
-    val = TraWindows(cfg.data.train_file, va_int, dev)
+    extra = list(cfg.data.get("extra_raw_sims", []) or [])
+    if cfg.data.val_ma:
+        tr_int, va_int = train_val_intervals(cfg.data.val_ma)
+        train = TraWindows(cfg.data.train_file, tr_int, dev, extra_raw_sims=extra)
+        val = TraWindows(cfg.data.train_file, va_int, dev)
+    else:
+        train = TraWindows(cfg.data.train_file, None, dev, extra_raw_sims=extra)
+        val = None
     model = build_model(cfg.model).to(dev)
     n_frames = model.cfg.n_frames
     meta = {
         "config": OmegaConf.to_container(cfg, resolve=True),
         "git": git_state(Path(__file__).parent),
         "train": describe(train),
-        "val": describe(val),
+        "val": describe(val) if val is not None else None,
         "n_params": sum(p.numel() for p in model.parameters()),
     }
     (run / "run_metadata.json").write_text(json.dumps(meta, indent=1))
@@ -236,8 +248,9 @@ def main():
             log.write(json.dumps(rec) + "\n")
             log.flush()
         if step % tc.val_every == 0 or step == tc.steps:
-            v = validate(model, val, n_frames)
-            score = eval(tc.select, {}, v)  # e.g. "val_mse60+0.25*val_mse240"
+            v = validate(model, val, n_frames) if val is not None else {}
+            # without a validation split the final checkpoint is used (best == last)
+            score = eval(tc.select, {}, v) if val is not None else -float(step)
             v.update(
                 step=step,
                 score=score,
