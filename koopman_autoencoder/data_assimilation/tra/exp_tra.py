@@ -75,6 +75,13 @@ class Bench:
                 kw["config_path"] = self.a.kae_config
             if getattr(self.a, "kae_input_frames", 0):
                 kw["input_frames"] = self.a.kae_input_frames
+            if getattr(self.a, "kae_kind", "legacy") == "ctkae":
+                # the CT-KAE takes the KAE slot, so every KAE code path runs unchanged
+                from data_assimilation.tra.ctkae_adapter import CTKAEAdapter
+
+                return CTKAEAdapter(
+                    self.a.kae_run, self.regime, self.dev, ckpt=self.a.kae_ckpt
+                )
             return KAEAdapter(self.a.kae_run, self.regime, self.dev, **kw)
         return TurbpredAdapter(
             self.base / MODELS[name] / "Model.pth",
@@ -126,7 +133,7 @@ def tune(b: Bench, out: Path) -> Dict:
         noise_std=b.a.noise,
     )
     best = {}
-    for name in FOURDVAR:
+    for name in [m for m in FOURDVAR if m in b.a.methods]:
         ad = b.model(name)
         rows = []
         for lr in b.a.lrs:
@@ -168,7 +175,7 @@ def headline(b: Bench, out: Path, tuning: Dict) -> None:
     )
     logger.info(f"  {json.dumps(prob.meta())}")
     store, summary = {"problem": prob.meta()}, {}
-    for name in FOURDVAR:
+    for name in [m for m in FOURDVAR if m in b.a.methods]:
         ad = b.model(name)
         lr = tuning[name]["lr"]
         r = b.solve(
@@ -2542,6 +2549,15 @@ def main():
     ap.add_argument(
         "--kae-run",
         default=("model_outputs_tra/continous_linear_128/run-20260821_031121"),
+    )
+    ap.add_argument(
+        "--kae-kind",
+        default="legacy",
+        choices=["legacy", "ctkae"],
+        help="which model fills the KAE slot: the legacy KoopmanAutoencoder or the CT-KAE",
+    )
+    ap.add_argument(
+        "--kae-ckpt", default="best.pth", help="checkpoint file for --kae-kind ctkae"
     )
     ap.add_argument("--sections", nargs="+", default=["tune", "headline"])
     ap.add_argument(
