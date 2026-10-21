@@ -17,7 +17,7 @@
 \title{\textbf{Continuous-time Koopman autoencoder for transonic flow}\\[2pt]
 \large Audit, fixes, redesign and benchmark against ACDM}
 \author{Prepared for R.~Grozavescu}
-\date{20 October 2026}
+\date{21 October 2026}
 
 \begin{document}
 \maketitle
@@ -36,8 +36,8 @@ while keeping its continuous-time dynamics and zero-shot conditioning?
 \item \textbf{Re-scored every baseline} with one verified scorer. This covers ACDM and all 13
   official checkpoints from the ACDM paper (\S\ref{sec:baselines}).
 \item \textbf{Built a redesigned model} (CT-KAE) in a separate file and \textbf{tested it in
-  17 training runs}: 7 pilots, 5 final runs, a retrained legacy model and 4 representation
-  tests (\S\ref{sec:model}--\ref{sec:repr}).
+  25 training runs}: 7 pilots, 5 final runs, a retrained legacy model, 4 representation
+  tests (\S\ref{sec:model}--\ref{sec:repr}) and 8 follow-up runs (\S\ref{sec:followup}--\ref{sec:fairh8}).
 \end{enumerate}
 
 \textbf{Main result} (test set, MSE $\times10^{-3}$, lower is better; ``energy'' is the share of
@@ -49,10 +49,11 @@ the true fluctuation energy the forecast keeps, where 1 is ideal):
  & Interpolation & Extrapolation & Long rollout & Energy at & Correlation at\\
  & 60 steps & 60 steps & 240 steps & step 58 (interp) & step 58 (interp)\\
 \midrule
-Original KAE (reproducible)      & 11.43 & 2.12 & 18.6 & 1.26 & 0.28\\
-\textbf{New CT-KAE} (3 seeds)    & \textbf{4.07} $\pm$ 0.29 & \textbf{2.18} $\pm$ 0.14 & \textbf{16.5} $\pm$ 2.0 & 0.77 & 0.62\\
+Original KAE (reproducible) & 11.43 & 2.12 & 18.6 & 1.26 & 0.28\\
+CT-KAE, 2 $\to$ 60 (3 seeds) & 4.07 $\pm$ 0.29 & 2.18 $\pm$ 0.14 & 16.5 $\pm$ 2.0 & 0.77 & 0.62\\
+\textbf{CT-KAE, 2 $\to$ 8} (3 seeds) & \textbf{3.49} $\pm$ 0.15 & \textbf{1.98} $\pm$ 0.31 & \textbf{16.2} $\pm$ 0.6 & \textbf{0.94} & \textbf{0.69}\\
 ACDM (official)                  & 2.81--3.02 & 1.99--2.22 & 22.5--22.8 & 1.10 & 0.73\\
-U-Net (official, best variant)   & 1.53 & 1.42 & 22.4 & 1.08 & 0.85\\
+U-Net (official, best) & 1.53 & 1.42 & 22.4 & 1.08 & 0.85\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -71,6 +72,19 @@ U-Net (official, best variant)   & 1.53 & 1.42 & 22.4 & 1.08 & 0.85\\
   ACDM's at the first step), not the continuous-time dynamics. At long lead times the dynamics
   match ACDM on interpolation and beat it on extrapolation (Fig.~\ref{fig:lead}).
 \end{itemize}
+
+\callout{\textbf{Update, 21 October: fair-horizon model} (details in \S\ref{sec:fairh8}).
+\begin{itemize}
+\item Trained only for forecasting, end-to-end, on ACDM's data with the baselines' horizon
+  (2 frames $\to$ 8 predicted), latent 256. This is \textbf{the best CT-KAE}: interp 3.49,
+  extrap 1.98, long 16.2 (3 seeds). It keeps 94\% of the oscillation energy at step 58, and its
+  first-step error is 2.5$\times$ lower than the 60-step model's.
+\item Against ACDM it is still behind on interpolation (about 2.9) and level on
+  extrapolation.
+\item \textbf{Data assimilation: the original model is still best} (df = 9: 0.093--0.098 vs
+  0.078--0.086). This holds after widening the learning-rate search, which the earlier runs
+  had capped.
+\end{itemize}}
 
 \callout{\textbf{Update, 20 October} (details in \S\ref{sec:followup}).
 \begin{itemize}
@@ -415,6 +429,9 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
 \input{followup_section.tex}
 
 %==========================================================================================
+\input{fair_h8_section.tex}
+
+%==========================================================================================
 \section{Answers to the project's questions}\label{sec:answers}
 
 \begin{enumerate}[leftmargin=*]
@@ -435,7 +452,8 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
     same split.
   \end{itemize}
 \item \textbf{Best formulation?} $2\times2$ oscillator blocks with Mach-dependent damping and
-  frequency, exact propagation, and training on 60-step rollouts.
+  frequency, exact propagation, latent 256, purely linear dynamics $dz/dt = A(Ma)\,z$, trained
+  end-to-end on 2 $\to$ 8 windows with every frame supervised (\S\ref{sec:fairh8}).
   \begin{itemize}
   \item The fixed point $\mu$ can be dropped at no cost (\S\ref{sec:mu}), giving purely linear
     latent dynamics.
@@ -444,17 +462,18 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
   \end{itemize}
 \item \textbf{Did it beat ACDM?} \textbf{No} on interpolation; \textbf{level} on
   extrapolation; lower 240-step MSE, but not better long-horizon dynamics.
-\item \textbf{By how much?} Interpolation $+40\%$ worse than ACDM (4.07 vs about 2.9);
-  extrapolation within noise (2.18 vs 1.99--2.22).
+\item \textbf{By how much?} With the fair 2 $\to$ 8 model: interpolation $+20\%$ worse than
+  ACDM (3.49 vs about 2.9); extrapolation within noise (1.98 vs 1.99--2.22).
 \item \textbf{Zero-shot?} Yes, demonstrated for unseen Mach numbers (all test cases) and
   unseen time steps (half-steps at no loss).
-\item \textbf{Better or worse for data assimilation?} Not better. Your original model remains the
-  best DA model. The best new model (curriculum) ties it at df = 1 and is 15--25\% behind at
-  df = 9. All of them except the ACDM-setting model beat U-Net, FNO and ACDM at df = 9
+\item \textbf{Better or worse for data assimilation?} Worse. Your original model remains the
+  best DA model. The fair-horizon model is 13--24\% behind at df = 9 and about 1.5$\times$ its
+  error at df = 1 (\S\ref{sec:fairh8}). The curriculum model ties it at df = 1 and is
+  15--25\% behind at df = 9. All of them except the ACDM-setting model beat U-Net, FNO and ACDM at df = 9
   (\S\ref{sec:da}).
 \item \textbf{Physically meaningful long-horizon behaviour?} Partly. It tracks the true flow
-  much longer than the original, but the MSE-selected model still damps oscillations
-  mid-rollout (Fig.~\ref{fig:energy}).
+  much longer than the original. The 60-step model damps oscillations mid-rollout
+  (Fig.~\ref{fig:energy}); the fair 2 $\to$ 8 model mostly does not (energy 0.94 at step 58).
 \item \textbf{Cost?} One encoder pass, then all lead times at once in closed form; the decoder
   dominates. Training is about 0.31\,s per step, 12.5\,GB, about 1 hour per model. ACDM needs
   20 denoising passes per step.
@@ -476,17 +495,19 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
   \item One-step training gives a sharp autoencoder, but poor dynamics
     (\S\ref{sec:acdmsetting}).
   \item A one-step-then-60-step curriculum kept only part of it (\S\ref{sec:curr}).
-  \item Next to try: freeze or slow down the autoencoder after the one-step phase, and a
-    multiscale decoder that adds back fine detail.
+  \item Short-horizon training with every frame supervised brought it from 0.66 to 0.26
+    (\S\ref{sec:fairh8}).
+  \item Next to try, still end-to-end: a multiscale decoder that adds back fine detail.
   \end{itemize}
   \emph{Test:} first-step error below about 0.1, with long-lead error unchanged.
-\item \textbf{For data assimilation, train for it.} The DA gap comes from fitting
-  observations 9--25 steps ahead, not from representation (\S\ref{sec:da}). Two options:
+\item \textbf{Explain the DA gap without changing the training objective}, since the model is
+  trained only for forecasting. The gap comes from fitting observations 9--25 steps ahead.
+  It is neither representation nor forecast skill (\S\ref{sec:fairh8}). Two tests:
   \begin{itemize}
-  \item weight the training loss on those leads;
-  \item add a 4D-Var-style objective that recovers $z_0$ from sparse future observations.
+  \item re-run the original KAE's DA with a checkpoint not selected on the DA regime;
+  \item compare the singular values of the observation-to-latent map for both models.
   \end{itemize}
-  Also widen the DA learning-rate grid beyond 1.0 for the new models.
+  Also re-tune the curriculum model on the wider learning-rate grid.
 \item \textbf{Remove the mid-rollout damping without paying MSE.} Select checkpoints on a
   combined score of correlation and energy, and train the amplitude term in the latent
   coordinates that carry shedding.

@@ -287,3 +287,62 @@ representation.
 
 Superseded: `model_outputs_ctkae/da/` (v1). Its "canonical" sweeps actually ran at df9,
 because `--pin-delta-f` defaults to 9, and its learning-rate grid was too narrow.
+
+## 12. Fair-horizon CT-KAE (21 Oct): 2 -> 8, ACDM data, end-to-end, forecasting objective only
+
+Config `configs/ctkae/fair_h8.yaml`; runner `scripts/run_fair_h8.sh` (seed 0, latent 128 and
+256) and `scripts/run_h8_followup.sh` (DA re-tune, seeds 1-2 of latent 256). Summary in
+`results/h8_summary.json` (`scripts/h8_summary.py`).
+
+The setting:
+- 2 conditioning frames -> 8 predicted frames, every frame supervised, stride 2 only.
+- ACDM's 33 training simulations (train.nc plus raw sim 40), batch 16, 20k steps.
+- No validation split; last.pth is evaluated.
+- Purely linear latent dynamics (fixed_point none). No DA objective, no frozen stages.
+
+Test MSE x1e-3 (last.pth):
+
+| Model | interp | extrap | longer | Lead-1 interp | Energy at 58 (interp) | ACC at 58 (interp) |
+|---|---|---|---|---|---|---|
+| H8 latent 256, 3 seeds (`H8_d256_s{0,1,2}_*`) | 3.49 +- 0.15 | 1.98 +- 0.31 | 16.21 +- 0.59 | 0.26 | 0.94 | 0.69 |
+| per seed s0 / s1 / s2 | 3.43 / 3.38 / 3.66 | 1.67 / 1.97 / 2.29 | 16.80 / 15.61 / 16.22 | | | |
+| H8 latent 128, seed 0 | 3.84 | 1.92 | 15.92 | 0.35 | 0.89 | |
+| 2->60, 3 seeds (section 6) | 4.07 +- 0.29 | 2.18 +- 0.14 | 16.5 +- 2.0 | 0.66 | 0.77 | 0.62 |
+| ACDM | 2.81-3.02 | 1.99-2.22 | 22.5-22.8 | 0.03 | 1.10 | 0.73 |
+
+- **Best CT-KAE so far.** Interp -14% and extrap -9% vs 2->60, lead-1 error 2.5x lower,
+  energy kept to 0.94.
+- **Against ACDM:** behind on interp, level on extrap (within seed spread), lower on longer.
+- **Confound:** this round also changes the data (33 vs 30 sims), the steps (20k vs 12k) and
+  the supervision, so the gain is not attributable to the horizon alone.
+- **Latent 256 vs 128:** 24.7M vs 16.3M parameters, same time (~58 min, 12.3 GB on an
+  unshared GPU).
+- **Zero-shot:** half-step 3.450 vs whole-step 3.434 (s0). The Mach sweep is smooth.
+- **Leads 9-25** (mean MSE): H8 d256 1.14 interp / 0.66 extrap, against 3.83 / 1.36 for the
+  original KAE (E0 best).
+
+**Data assimilation** (`model_outputs_ctkae/da_v3/`; `scripts/run_da_v2.sh` with
+`LRS="0.3 1.0 3.0 10.0" DA_ROOT=da_v3`). The v2 grid ended at its top (1.0). The widened grid
+puts the optimum inside it, at lr 3.0, for every H8 run: d256 seed 0 tuning error 0.059 /
+0.043 / 0.034 / 0.053 at 0.3 / 1 / 3 / 10. Mean relative error over each sweep's points:
+
+| Sweep | Original KAE | H8 d256, lr 3 (3 seeds) | H8 d256 s0, lr 1 | H8 d128 s0, lr 1 | Curriculum, lr 1 |
+|---|---|---|---|---|---|
+| df9 delta_l | 0.085 | 0.096 +- 0.002 | 0.100 | 0.109 | 0.094 |
+| df9 noise | 0.078 | 0.094 +- 0.002 | 0.100 | 0.110 | 0.094 |
+| df9 sparsity | 0.086 | 0.098 +- 0.002 | 0.104 | 0.115 | 0.100 |
+| df9 misspec | 0.078 | 0.093 +- 0.002 | 0.100 | 0.110 | 0.099 |
+| df9 n_obs | 0.079 | 0.095 +- 0.004 | 0.100 | 0.111 | 0.095 |
+| df9 joint sparsity | 0.078 (3/5 pts) | 0.097 +- 0.005 | 0.101 | 0.112 | 0.100 |
+| df1 delta_f / single obs | 0.070 / 0.089 | 0.076 / 0.080 (s0) | 0.083 / 0.088 | 0.093 / 0.093 | 0.074 / 0.091 |
+| df1 delta_l / noise / sparsity / misspec / n_obs / joint | 0.027 / 0.028 / 0.031 / 0.028 / 0.026 / 0.027 | 0.040 / 0.041 / 0.047 / 0.041 / 0.042 / 0.043 (s0) | 0.047 / 0.049 / 0.056 / 0.049 / 0.048 / 0.050 | 0.055 / 0.058 / 0.069 / 0.058 / 0.059 / 0.062 | 0.027 / 0.028 / 0.037 / 0.029 / 0.027 / 0.028 |
+| Decoder floor / encode-init | 0.041 / 0.074 | 0.026 / 0.088 (3-seed mean) | 0.027 / 0.086 | 0.031 / 0.096 | 0.032 / 0.096 |
+
+- **The original KAE remains the best DA model.** At df9 the H8 model is 13-24% behind it,
+  consistently over seeds. At df1 its error is about 1.5x the original's on the window sweeps,
+  though it is better on single obs.
+- **The wider learning-rate grid** improved H8 d256 by 7-10% at df9 and 9-16% at df1.
+- **The curriculum model was not re-tuned** on the wider grid; its rate is also at the old
+  grid top.
+- **The gap is neither representation nor forecast skill** (see the floor and the leads 9-25
+  numbers above).

@@ -1,0 +1,141 @@
+%==========================================================================================
+\section{Follow-up (21 October): fair-horizon training (2 $\to$ 8)}\label{sec:fairh8}
+
+The requirements for this round were:
+\begin{itemize}
+\item the model is trained \textbf{only for forecasting}, with no data-assimilation objective;
+\item it is trained \textbf{end-to-end}, with no frozen or staged parts;
+\item its training horizon is \textbf{comparable to the baselines}: 2 conditioning frames and 8
+  predicted frames, as in U-Net\_ut's 8-frame unroll and the original KAE's 2 $\to$ 8;
+\item its latent size is accurate but affordable.
+\end{itemize}
+
+\textbf{Setting} (\texttt{configs/ctkae/fair\_h8.yaml}):
+\begin{itemize}
+\item every one of the 8 predicted frames is supervised, at stride 2 only ($\Delta t = 0.1$, as
+  ACDM);
+\item ACDM's 33 training simulations, all frames, batch 16, 20k steps, final checkpoint, no
+  validation split;
+\item purely linear latent dynamics $dz/dt = A(Ma)\,z$, with no $\mu$ (\S\ref{sec:mu}).
+\end{itemize}
+Compared with the 60-step model of \S\ref{sec:exp}, this round also changes the training data
+(33 vs 30 simulations), the number of steps (20k vs 12k) and the supervision (every frame vs
+random frames). The gain below therefore cannot be credited to the short horizon alone.
+
+\subsection{Forecasting}
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+Test, MSE $\times10^{-3}$ & interp & extrap & long & lead 1 & energy at 58 & corr.\ at 58\\
+\midrule
+\textbf{H8, latent 256} (3 seeds) & 3.49 $\pm$ 0.15 & 1.98 $\pm$ 0.31 & 16.2 $\pm$ 0.6 & 0.26 & \textbf{0.94} & 0.69\\
+H8, latent 128 (seed 0)           & 3.84 & 1.92 & 15.9 & 0.35 & 0.89 & --\\
+2 $\to$ 60 (3 seeds, \S\ref{sec:exp}) & 4.07 $\pm$ 0.29 & 2.18 $\pm$ 0.14 & 16.5 $\pm$ 2.0 & 0.66 & 0.77 & 0.62\\
+ACDM (official)                   & 2.81--3.02 & 1.99--2.22 & 22.5--22.8 & 0.03 & 1.10 & 0.73\\
+U-Net (official, best variant)    & 1.53 & 1.42 & 22.4 & 0.02 & 1.08 & 0.85\\
+\bottomrule
+\end{tabular}
+\end{center}
+{\footnotesize Per seed, latent 256: interp 3.43 / 3.38 / 3.66, extrap 1.67 / 1.97 / 2.29,
+long 16.8 / 15.6 / 16.2.}
+
+\textbf{Result.}
+\begin{itemize}
+\item \textbf{This is the best CT-KAE so far.} Compared with the 60-step model:
+  \begin{itemize}
+  \item interpolation error is 14\% lower and extrapolation error 9\% lower;
+  \item the first-step error is 2.5$\times$ lower (0.26 vs 0.66);
+  \item it keeps 94\% of the oscillation energy at step 58 instead of 77\%, so the
+    mid-rollout damping is mostly gone.
+  \end{itemize}
+\item \textbf{Against ACDM:}
+  \begin{itemize}
+  \item it is still behind on interpolation (3.49 vs about 2.9);
+  \item it is level on extrapolation (1.98 vs 1.99--2.22; seed spread 1.67--2.29);
+  \item it has lower 240-step error.
+  \end{itemize}
+  The U-Nets remain better on both 60-step cases.
+\item \textbf{Latent size.} 256 beats 128 on interpolation, the first-step error, the energy at
+  step 58 and every DA number. On extrapolation and the 240-step case the two are within the
+  seed spread. 256 costs 24.7\,M parameters against 16.3\,M, at the same training time: about
+  1 hour and 12.3\,GB on one GPU when not shared. 256 is the recommended size.
+\item \textbf{Zero-shot still holds.} Predictions at unseen half-steps are as accurate as those
+  at whole steps (3.450 vs 3.434), and the response to Mach number is smooth.
+\end{itemize}
+
+\subsection{Data assimilation}
+
+\textbf{Setup.}
+\begin{itemize}
+\item \textbf{Same pipeline as \S\ref{sec:da}:} 4D-Var code, KAE slot, and learning rate tuned
+  on \texttt{gt\_extrap}.
+\item \textbf{Wider learning-rate grid.} The earlier grid (0.03--1.0) ended at its top value
+  for the new models, while the error was still falling. So I widened it to 0.3--10. The
+  optimum is now inside the grid at 3.0, for both latent sizes and all three seeds (tuning
+  error 0.034 at 3.0, against 0.043 at 1.0 and 0.053 at 10).
+\end{itemize}
+
+Mean relative error over each sweep's points (8 problems per point; $\pm$ is the standard
+deviation over seeds):
+
+\begin{center}\footnotesize
+\begin{tabular}{lccccc}
+\toprule
+Sweep & Original & H8, 256 & H8, 256 & H8, 128 & Curriculum\\
+ & KAE & lr 3, 3 seeds & lr 1, seed 0 & lr 1, seed 0 & lr 1\\
+\midrule
+\multicolumn{6}{l}{\emph{df = 9}}\\
+window length $\delta_l$ & \textbf{0.085} & 0.096 $\pm$ 0.002 & 0.100 & 0.109 & 0.094\\
+noise                    & \textbf{0.078} & 0.094 $\pm$ 0.002 & 0.100 & 0.110 & 0.094\\
+sparsity                 & \textbf{0.086} & 0.098 $\pm$ 0.002 & 0.104 & 0.115 & 0.100\\
+misspecified noise       & \textbf{0.078} & 0.093 $\pm$ 0.002 & 0.100 & 0.110 & 0.099\\
+number of observations   & \textbf{0.079} & 0.095 $\pm$ 0.004 & 0.100 & 0.111 & 0.095\\
+joint sparsity           & \textbf{0.078}$^\ast$ & 0.097 $\pm$ 0.005 & 0.101 & 0.112 & 0.100\\
+\midrule
+\multicolumn{6}{l}{\emph{df = 1 (seed 0 only for H8)}}\\
+first-observation lead $\delta_f$ & \textbf{0.070} & 0.076 & 0.083 & 0.093 & 0.074\\
+single observation       & 0.089 & \textbf{0.080} & 0.088 & 0.093 & 0.091\\
+window length $\delta_l$ & \textbf{0.027} & 0.040 & 0.047 & 0.055 & 0.027\\
+noise                    & \textbf{0.028} & 0.041 & 0.049 & 0.058 & 0.028\\
+sparsity                 & \textbf{0.031} & 0.047 & 0.056 & 0.069 & 0.037\\
+misspecified noise       & \textbf{0.028} & 0.041 & 0.049 & 0.058 & 0.029\\
+number of observations   & \textbf{0.026} & 0.042 & 0.048 & 0.059 & 0.027\\
+joint sparsity           & \textbf{0.027} & 0.043 & 0.050 & 0.062 & 0.028\\
+\midrule
+\multicolumn{6}{l}{\emph{Representation check (df = 9 default problem)}}\\
+decoder floor            & 0.041 & \textbf{0.026} & 0.027 & 0.031 & 0.032\\
+4D-Var started from the true state & \textbf{0.074} & 0.088 & 0.086 & 0.096 & 0.096\\
+\bottomrule
+\end{tabular}
+\end{center}
+{\footnotesize $^\ast$ 3 of 5 points. The curriculum model was not re-tuned on the wider grid;
+its learning rate is also at the old grid top, so its numbers may also improve.}
+
+\textbf{Result.}
+\begin{itemize}
+\item \textbf{The original KAE is still the best data-assimilation model.}
+  \begin{itemize}
+  \item df = 9: the fair-horizon model is 13--24\% behind it (0.093--0.098 vs
+    0.078--0.086). The gap is consistent across the three seeds.
+  \item df = 1: it is about 1.5$\times$ the original's error on the window sweeps, but slightly
+    better on the single-observation sweep.
+  \end{itemize}
+\item \textbf{The fair-horizon model is level with the curriculum model at df = 9.} It is
+  worse at df = 1.
+\item \textbf{Tuning mattered.} The wider learning-rate grid alone improved the new model
+  by 7--10\% at df = 9 and by 9--16\% at df = 1 (seed 0).
+\item \textbf{The gap is not representation.} The new decoder reproduces the true state
+  better than the original's (floor 0.026 vs 0.041). The gap opens when 4D-Var fits
+  observations 9--25 steps ahead (0.088 vs 0.074 from the true state).
+\item \textbf{Forecast skill does not explain it either.} Over leads 9--25 the new model's
+  forecast error is 3.4$\times$ lower than the original's on interpolation (1.14 vs 3.83) and
+  2.1$\times$ lower on extrapolation (0.66 vs 1.36). Two causes remain untested:
+  \begin{itemize}
+  \item the original DA checkpoint was selected on the regime DA is tested on;
+  \item the latent coordinates of the two models are conditioned differently for the inverse
+    problem.
+  \end{itemize}
+  A DA-style training objective, which might close the gap, is excluded by design: the model
+  is trained only for forecasting.
+\end{itemize}

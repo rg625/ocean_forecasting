@@ -4,21 +4,28 @@
 # df9 are now passed explicitly; (b) the CT-KAE's learning-rate search ended at the top of
 # its grid, so the grid is widened to 0.03-1.0 for every model (still tuned on gt_extrap).
 # Memory-hungry sweeps (n_obs, joint_sparsity) run last.
-#   usage: run_da_v2.sh LABEL KIND RUN_DIR [CKPT]
+#   usage: [LRS="..."] [DA_ROOT=da_v2] [DF9_ONLY=1] run_da_v2.sh LABEL KIND RUN_DIR [CKPT]
+# LRS overrides the tuning grid; DF9_ONLY=1 runs only tune + repr check + the df9 sweeps.
 set -u
 LABEL=$1; KIND=$2; RUN=$3; CKPT=${4:-best.pth}
 cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
 PY=/home/rg625/anaconda3/envs/samudra/bin/python
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-OUT=model_outputs_ctkae/da_v2/$LABEL; mkdir -p $OUT/df9 $OUT/df1
+LRS=${LRS:-"0.03 0.1 0.3 1.0"}; DF9_ONLY=${DF9_ONLY:-0}
+OUT=model_outputs_ctkae/${DA_ROOT:-da_v2}/$LABEL; mkdir -p $OUT/df9 $OUT/df1
 LOG=$OUT/run.log
 M="--methods KAE --kae-kind $KIND --kae-run $RUN --kae-ckpt $CKPT --regime test"
 run () { local label=$1; shift; echo "=== $label $(date -Is)" >> $LOG; $PY -m data_assimilation.tra.exp_tra $M "$@" >> $LOG 2>&1; echo "--- $label exit=$? $(date -Is)" >> $LOG; }
-run tune --out-dir $OUT/df9 --sections tune --tune-iters 400 --n-tune 6 --lrs 0.03 0.1 0.3 1.0
+run tune --out-dir $OUT/df9 --sections tune --tune-iters 400 --n-tune 6 --lrs $LRS
 cp $OUT/df9/tuning.json $OUT/df1/tuning.json
 LR=$($PY -c "import json;print(json.load(open('$OUT/df9/tuning.json'))['KAE']['lr'])")
 echo "=== repr_check lr=$LR $(date -Is)" >> $LOG
 $PY -m data_assimilation.tra.da_repr_check --kae-kind $KIND --kae-run $RUN --kae-ckpt $CKPT --lr $LR --json $OUT/repr_check.json >> $LOG 2>&1
+if [ "$DF9_ONLY" = 1 ]; then
+  for s in delta_l noise sparsity misspec_noise n_obs; do run df9_$s --out-dir $OUT/df9 --pin-delta-f 9 --sections $s --iters 500 --n-problems 8; done
+  run df9_joint_sparsity --out-dir $OUT/df9 --pin-delta-f 9 --sections joint_sparsity --iters 500 --n-problems 8 --joint-n-obs 1 4 8 16 32
+  echo "=== DONE $(date -Is)" >> $LOG; exit 0
+fi
 run headline --out-dir $OUT/df1 --sections headline --iters 2000 --n-problems 12
 for s in delta_f single_obs; do run $s --out-dir $OUT/df1 --sections $s --iters 500 --n-problems 8; done
 for s in delta_l noise sparsity misspec_noise; do run df9_$s --out-dir $OUT/df9 --pin-delta-f 9 --sections $s --iters 500 --n-problems 8; done
