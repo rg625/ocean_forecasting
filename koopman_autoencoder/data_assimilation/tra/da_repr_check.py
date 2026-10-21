@@ -8,7 +8,7 @@ no noise) on the test regime, reports the t0 analysis rel-L2 for:
   climatology-init 4D-Var from the uninformed start used in every reported result
 
     python -m data_assimilation.tra.da_repr_check --kae-kind legacy|ctkae --kae-run RUN \
-        [--kae-ckpt best.pth] --lr LR --json out.json
+        [--kae-ckpt FILE] --lr LR --json out.json
 """
 
 import argparse
@@ -25,7 +25,7 @@ from data_assimilation.tra.protocol import build_problem
 ap = argparse.ArgumentParser()
 ap.add_argument("--kae-kind", choices=["legacy", "ctkae"], required=True)
 ap.add_argument("--kae-run", required=True)
-ap.add_argument("--kae-ckpt", default="best.pth")
+ap.add_argument("--kae-ckpt", default=None, help="as in exp_tra.py")
 ap.add_argument("--lr", type=float, required=True)
 ap.add_argument("--iters", type=int, default=500)
 ap.add_argument("--n-problems", type=int, default=8)
@@ -35,11 +35,12 @@ dev = torch.device("cuda")
 if a.kae_kind == "ctkae":
     from data_assimilation.tra.ctkae_adapter import CTKAEAdapter
 
-    ad = CTKAEAdapter(a.kae_run, REGIMES["tra"], dev, ckpt=a.kae_ckpt)
+    ad = CTKAEAdapter(a.kae_run, REGIMES["tra"], dev, ckpt=a.kae_ckpt or "best.pth")
 else:
     from data_assimilation.tra.kae_adapter import KAEAdapter
 
-    ad = KAEAdapter(a.kae_run, REGIMES["tra"], dev)
+    ck = Path(a.kae_run) / "checkpoints" / a.kae_ckpt if a.kae_ckpt else None
+    ad = KAEAdapter(a.kae_run, REGIMES["tra"], dev, ckpt=ck)
 data = PhysicalData("data/acdm/128_tra/gt_interp.nc", "tra", dev)
 prob = build_problem(
     data,

@@ -309,3 +309,26 @@ def test_horizon_schedule_hold_then_ramp():
         {"steps": 1000, "k_start": 10, "k_max": 60, "curriculum_frac": 0.5}
     )
     assert train_ctkae.horizon_at(250, tc0) == 35  # legacy schedule unchanged
+
+
+def test_multiscale_decoder_starts_plain_learns_and_round_trips(tmp_path):
+    m = tiny("block", z_inject=[2, 1])
+    win, mask, ma = batch()
+    z = m.encode(win, mask, ma)
+    out = m.decode(z, mask, ma)
+    plain = m.decoder.inject
+    m.decoder.inject = torch.nn.ModuleDict()
+    torch.testing.assert_close(out, m.decode(z, mask, ma), rtol=0, atol=0)
+    m.decoder.inject = plain
+    out.pow(2).mean().backward()
+    for s in ("0", "1"):
+        assert m.decoder.inject[s]["proj"].weight.grad.abs().sum() > 0
+    torch.save(
+        {"model": m.state_dict(), "model_config": m.config_dict()}, tmp_path / "c.pth"
+    )
+    ck = torch.load(tmp_path / "c.pth", weights_only=False)
+    m2 = CTKAE(CTKAEConfig(**ck["model_config"]))
+    m2.load_state_dict(ck["model"], strict=True)
+    assert m2.cfg.z_inject == [2, 1]
+    with pytest.raises(ValueError):
+        tiny("block", z_inject=[2])

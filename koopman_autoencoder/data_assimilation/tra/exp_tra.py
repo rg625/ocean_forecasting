@@ -80,8 +80,13 @@ class Bench:
                 from data_assimilation.tra.ctkae_adapter import CTKAEAdapter
 
                 return CTKAEAdapter(
-                    self.a.kae_run, self.regime, self.dev, ckpt=self.a.kae_ckpt
+                    self.a.kae_run,
+                    self.regime,
+                    self.dev,
+                    ckpt=self.a.kae_ckpt or "best.pth",
                 )
+            if getattr(self.a, "kae_ckpt", None):
+                kw["ckpt"] = Path(self.a.kae_run) / "checkpoints" / self.a.kae_ckpt
             return KAEAdapter(self.a.kae_run, self.regime, self.dev, **kw)
         return TurbpredAdapter(
             self.base / MODELS[name] / "Model.pth",
@@ -2557,7 +2562,10 @@ def main():
         help="which model fills the KAE slot: the legacy KoopmanAutoencoder or the CT-KAE",
     )
     ap.add_argument(
-        "--kae-ckpt", default="best.pth", help="checkpoint file for --kae-kind ctkae"
+        "--kae-ckpt",
+        default=None,
+        help="checkpoint file name: in the run dir for ctkae (default best.pth), in "
+        "RUN/checkpoints for legacy (default best_model.pth)",
     )
     ap.add_argument("--sections", nargs="+", default=["tune", "headline"])
     ap.add_argument(

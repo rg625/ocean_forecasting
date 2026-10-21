@@ -54,6 +54,9 @@ class CTKAEConfig:
     gamma_init: Tuple[float, float] = (0.01, 0.3)
     dense_rank: int = 8  # low-rank conditional correction for hurwitz/dense
     padding_mode: str = "zeros"
+    # multiscale decoder: channels z writes directly at each decoder stage's resolution
+    # (coarse to fine, one entry per stage, 0 = none). Empty = single 1/8-resolution entry.
+    z_inject: List[int] = field(default_factory=list)
 
 
 # ----------------------------------------------------------------------------- utils
@@ -168,11 +171,32 @@ class Decoder(nn.Module):
             nn.SiLU(),
             nn.Conv2d(c, cfg.in_channels, 3, padding=1, padding_mode=cfg.padding_mode),
         )
+        # Multiscale: z also writes k channels straight onto each stage's grid (a linear,
+        # POD-like path to the fine scales), added through a zero-initialised 1x1 conv so
+        # training starts from the plain decoder. Still a function of (z, Ma) only, so the
+        # latent dynamics are untouched.
+        if cfg.z_inject and len(cfg.z_inject) != len(w):
+            raise ValueError(f"z_inject needs one entry per decoder stage ({len(w)})")
+        self.inject = nn.ModuleDict()
+        for s, (k, wo) in enumerate(zip(cfg.z_inject, w)):
+            if k <= 0:
+                continue
+            hs, ws = self.h0 * 2 ** (s + 1), self.w0 * 2 ** (s + 1)
+            proj = nn.Conv2d(k, wo, 1)
+            nn.init.zeros_(proj.weight)
+            nn.init.zeros_(proj.bias)
+            self.inject[str(s)] = nn.ModuleDict(
+                {"lin": nn.Linear(cfg.latent_dim, k * hs * ws), "proj": proj}
+            )
 
     def forward(self, z, e):
         h = self.from_z(z).view(-1, self.c0, self.h0, self.w0)
-        for up, blocks in zip(self.up, self.stages):
+        for s, (up, blocks) in enumerate(zip(self.up, self.stages)):
             h = up(F.interpolate(h, scale_factor=2, mode="nearest"))
+            if str(s) in self.inject:
+                inj = self.inject[str(s)]
+                k = inj["proj"].in_channels
+                h = h + inj["proj"](inj["lin"](z).view(-1, k, *h.shape[-2:]))
             for b in blocks:
                 h = b(h, e)
         return self.out(h)
