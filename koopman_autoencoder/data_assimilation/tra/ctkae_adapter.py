@@ -26,6 +26,22 @@ import torch
 from data_assimilation.tra.bridge import Regime
 
 
+class StructuredGenerator:
+    """e^{tau K(Ma)} for a CT-KAE whose generator is too large to form densely (detail
+    latent). ``apply`` acts on the adapter's shifted latent y = z - mu."""
+
+    def __init__(self, adapter: "CTKAEAdapter", par: torch.Tensor):
+        self.ad, self.par = adapter, par
+
+    def apply(self, y: torch.Tensor, tau: float) -> torch.Tensor:
+        par = self.par
+        if par.shape[0] != y.shape[0]:
+            par = par.expand(y.shape[0])
+        mu = self.ad._mu(par)
+        taus = torch.full((y.shape[0], 1), float(tau), device=y.device)
+        return self.ad.model.propagate(mu + y, taus, par)[:, 0] - mu
+
+
 class CTKAEAdapter:
     name = "KAE"
     is_diffusion = False
@@ -49,7 +65,7 @@ class CTKAEAdapter:
             p.requires_grad_(False)
         self.ckpt = str(path)
         self.n_control_frames = int(self.model.cfg.n_frames)
-        self.latent_dim = int(self.model.cfg.latent_dim)
+        self.latent_dim = int(self.model.state_dim)
         self.is_continuous = True
         self.vars = list(regime.nc_fields)
         self.param_name = regime.param_var
@@ -102,14 +118,20 @@ class CTKAEAdapter:
         x = self.to_model(window_phys) * self.mask
         return self.model.encode(x, self.mask, par) - self._mu(par)
 
-    def generator(self, param_phys: torch.Tensor) -> torch.Tensor:
-        """A(Ma) [B, D, D]: the exactly linear generator of the shifted latent."""
+    def generator(self, param_phys: torch.Tensor):
+        """A(Ma) [B, D, D]: the exactly linear generator of the shifted latent. With a
+        detail latent the generator is never formed densely; a StructuredGenerator that
+        applies e^{tau K} through the model is returned instead (same mathematics)."""
         par = self._remember(param_phys)
+        if self.model.detail is not None:
+            return StructuredGenerator(self, par)
         return self.model.generator_matrix(par)
 
     def propagate(self, z0, tau: float, K=None, param_phys=None) -> torch.Tensor:
         if K is None:
             K = self.generator(param_phys)
+        if isinstance(K, StructuredGenerator):
+            return K.apply(z0, tau)
         phi = torch.matrix_exp(K * float(tau))
         return (
             torch.bmm(phi, z0.unsqueeze(-1)).squeeze(-1)

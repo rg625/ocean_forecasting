@@ -77,22 +77,29 @@ def solve_kae(
         raise ValueError(f"unknown init {init!r}")
     z.requires_grad_(True)
     opt = torch.optim.Adam([z], lr=lr)
-    K = ad.generator(par).detach()
-    phis = [torch.matrix_exp(K * float(t)) for t in taus]  # precomputed once
+    K = ad.generator(par)
+    if hasattr(K, "apply"):  # structured operator (CT-KAE detail latent), never dense
+        steps = [lambda z, t=float(t): K.apply(z, t) for t in taus]
+    else:
+        K = K.detach()
+        phis = [torch.matrix_exp(K * float(t)) for t in taus]  # precomputed once
+        steps = [
+            (
+                (lambda z, p=p: torch.bmm(p, z.unsqueeze(-1)).squeeze(-1))
+                if p.dim() == 3
+                else (lambda z, p=p: z @ p.T)
+            )
+            for p in phis
+        ]
     hist = {"iter": [], "loss": [], "rel_t0": []}
     t_start = time.perf_counter()
     for it in range(iters):
         opt.zero_grad(set_to_none=True)
         loss = 0.0
-        for j, phi in enumerate(phis):
-            zt = (
-                torch.bmm(phi, z.unsqueeze(-1)).squeeze(-1)
-                if phi.dim() == 3
-                else z @ phi.T
-            )
-            pred = ad.decode(zt)
+        for j, step in enumerate(steps):
+            pred = ad.decode(step(z))
             loss = loss + ((pred - y[j]) * mask[j]).pow(2).mean()
-        loss = loss / len(phis)
+        loss = loss / len(steps)
         loss.backward()
         opt.step()
         if track_every and (it % track_every == 0 or it == iters - 1):

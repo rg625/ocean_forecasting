@@ -57,6 +57,16 @@ class CTKAEConfig:
     # multiscale decoder: channels z writes directly at each decoder stage's resolution
     # (coarse to fine, one entry per stage, 0 = none). Empty = single 1/8-resolution entry.
     z_inject: List[int] = field(default_factory=list)
+    # Two-timescale latent: besides the d oscillators, a spatial detail latent of
+    # detail_channels maps on the grid of encoder stage detail_level (resolution
+    # H / 2^level), zero-padded by detail_pad = [py, px] cells; the padding is part of
+    # the state, so wrap-around of the periodic propagator never breaks the semigroup.
+    # Its generator is diagonal in Fourier space: lambda = -gamma(|k|, c) + i 2 pi k.u(c),
+    # i.e. linear advection plus decay ("advect"), or decay only ("decay"). 0 = off.
+    detail_channels: int = 0
+    detail_mode: str = "advect"
+    detail_level: int = 1
+    detail_pad: List[int] = field(default_factory=lambda: [8, 16])
 
 
 # ----------------------------------------------------------------------------- utils
@@ -132,13 +142,18 @@ class Encoder(nn.Module):
         self.norm = nn.GroupNorm(_groups(c), c)
         self.to_z = nn.Linear(c * h * wd, cfg.latent_dim)  # flatten: keeps "where"
 
-    def forward(self, x, e):
+    def forward(self, x, e, tap: Optional[int] = None):
+        """z [B, d]; with ``tap``, also the stage-``tap`` features before downsampling."""
         h = self.stem(x)
-        for blocks, down in zip(self.stages, self.down):
+        feat = None
+        for i, (blocks, down) in enumerate(zip(self.stages, self.down)):
             for b in blocks:
                 h = b(h, e)
+            if i == tap:
+                feat = h
             h = down(h)
-        return self.to_z(F.silu(self.norm(h)).flatten(1))
+        z = self.to_z(F.silu(self.norm(h)).flatten(1))
+        return z if tap is None else (z, feat)
 
 
 class Decoder(nn.Module):
@@ -189,7 +204,8 @@ class Decoder(nn.Module):
                 {"lin": nn.Linear(cfg.latent_dim, k * hs * ws), "proj": proj}
             )
 
-    def forward(self, z, e):
+    def forward(self, z, e, extra: Optional[dict] = None):
+        """``extra``: {stage: features} added after that stage's upsampling."""
         h = self.from_z(z).view(-1, self.c0, self.h0, self.w0)
         for s, (up, blocks) in enumerate(zip(self.up, self.stages)):
             h = up(F.interpolate(h, scale_factor=2, mode="nearest"))
@@ -197,6 +213,8 @@ class Decoder(nn.Module):
                 inj = self.inject[str(s)]
                 k = inj["proj"].in_channels
                 h = h + inj["proj"](inj["lin"](z).view(-1, k, *h.shape[-2:]))
+            if extra is not None and s in extra:
+                h = h + extra[s]
             for b in blocks:
                 h = b(h, e)
         return self.out(h)
@@ -320,6 +338,121 @@ class MatrixGenerator(nn.Module):
 
 
 # ------------------------------------------------------------------------- the model
+class DetailLatent(nn.Module):
+    """Spatial detail latent with a linear, Fourier-diagonal continuous-time generator.
+
+    State: [B, c, Hp, Wp] (the stage grid plus its zero padding), flattened into z after
+    the d oscillator coordinates. Per channel c and wavenumber k (cycles per cell),
+
+        lambda(k) = -(softplus(a_c) + softplus(b_c) |k|^2 / k_max^2) + i 2 pi k . u_c
+
+    with a, b, u shifted by a zero-initialised head of the condition embedding. Then
+    exp(tau L) = F^-1 diag(e^{tau lambda}) F exactly. lambda(-k) = conj(lambda(k)), and the
+    phase is zeroed on the self-conjugate Nyquist bins, so the map is real, linear, a
+    semigroup and never grows (Re lambda <= 0)."""
+
+    def __init__(self, cfg: CTKAEConfig):
+        super().__init__()
+        n = len(cfg.widths)
+        if not 0 <= cfg.detail_level < n:
+            raise ValueError(f"detail_level must be in [0, {n})")
+        if cfg.detail_mode not in ("advect", "decay"):
+            raise ValueError(f"unknown detail_mode {cfg.detail_mode}")
+        c, lvl = cfg.detail_channels, cfg.detail_level
+        self.c, self.level = c, lvl
+        self.dec_stage = n - 1 - lvl
+        self.h, self.w = cfg.height // 2**lvl, cfg.width // 2**lvl
+        self.py, self.px = cfg.detail_pad
+        self.hp, self.wp = self.h + 2 * self.py, self.w + 2 * self.px
+        self.dim = c * self.hp * self.wp
+        self.advect = cfg.detail_mode == "advect"
+        cin = cfg.widths[lvl]
+        self.enc = nn.Sequential(
+            nn.GroupNorm(_groups(cin), cin), nn.SiLU(), nn.Conv2d(cin, c, 1)
+        )
+        cdec = list(reversed(cfg.widths))[self.dec_stage]
+        self.dec = nn.Conv2d(c, cdec, 1)
+        nn.init.zeros_(self.dec.weight)  # training starts from the plain decoder
+        nn.init.zeros_(self.dec.bias)
+        one = float(_inv_softplus(torch.tensor(1.0)))
+        self.a = nn.Parameter(torch.full((c,), one))  # e-fold time 1 at k = 0
+        self.b = nn.Parameter(torch.full((c,), one))
+        # advection speeds in cells per time unit, spread over channels
+        self.u = nn.Parameter(
+            torch.stack([torch.linspace(0.0, 10.0, c), torch.zeros(c)], -1)
+        )
+        self.head = None
+        if cfg.cond_generator:
+            self.head = nn.Sequential(
+                nn.Linear(cfg.cond_embed, cfg.cond_embed),
+                nn.SiLU(),
+                nn.Linear(cfg.cond_embed, 4 * c),
+            )
+            nn.init.zeros_(self.head[-1].weight)
+            nn.init.zeros_(self.head[-1].bias)
+        ky = torch.fft.fftfreq(self.hp)
+        kx = torch.fft.rfftfreq(self.wp)
+        KY, KX = torch.meshgrid(ky, kx, indexing="ij")
+        nyq = (KY.abs() == 0.5) | (KX.abs() == 0.5)  # self-conjugate bins
+        # deterministic from the grid, so kept out of checkpoints
+        for name, v in (
+            ("ky", KY),
+            ("kx", KX),
+            ("k2", (KY**2 + KX**2) / 0.5),  # |k|^2 / k_max^2
+            ("phase_ok", (~nyq).float()),
+        ):
+            self.register_buffer(name, v.contiguous().clone(), persistent=False)
+
+    def params(self, e: Optional[Tensor], batch: int):
+        a, b, u = self.a.expand(batch, -1), self.b.expand(batch, -1), self.u
+        u = u.expand(batch, -1, -1)
+        if self.head is not None and e is not None:
+            d = self.head(e).view(batch, self.c, 4)
+            a, b, u = a + d[..., 0], b + d[..., 1], u + d[..., 2:]
+        if not self.advect:
+            u = torch.zeros_like(u)
+        return F.softplus(a), F.softplus(b), u
+
+    def rates(self, e: Optional[Tensor], batch: int) -> Tensor:
+        """lambda [B, c, Hp, Wp//2+1] (complex)."""
+        a, b, u = self.params(e, batch)
+        gam = a[..., None, None] + b[..., None, None] * self.k2
+        ph = (
+            2
+            * math.pi
+            * (u[..., 0, None, None] * self.kx + u[..., 1, None, None] * self.ky)
+        )
+        return torch.complex(-gam, ph * self.phase_ok)
+
+    def to_state(self, feat: Tensor) -> Tensor:
+        """Encoder stage features -> padded detail state, flattened [B, dim]."""
+        g = self.enc(feat)
+        return F.pad(g, (self.px, self.px, self.py, self.py)).flatten(1)
+
+    def to_decoder(self, y: Tensor) -> Tensor:
+        """Flattened detail state [N, dim] -> decoder stage features (inner region)."""
+        g = y.view(-1, self.c, self.hp, self.wp)
+        g = g[..., self.py : self.py + self.h, self.px : self.px + self.w]
+        return self.dec(g)
+
+    def propagate(self, y: Tensor, taus: Tensor, e: Optional[Tensor]) -> Tensor:
+        """y: [B, dim]; taus: [B, K] -> [B, K, dim], exactly e^{tau L} y."""
+        B = y.shape[0]
+        lam = self.rates(e, B)  # [B, c, Hp, Wf]
+        Y = torch.fft.rfft2(y.view(B, self.c, self.hp, self.wp))
+        m = torch.exp(lam[:, None] * taus[:, :, None, None, None])  # [B, K, c, Hp, Wf]
+        out = torch.fft.irfft2(Y[:, None] * m, s=(self.hp, self.wp))
+        return out.flatten(2)
+
+    def dense_generator(self, e: Optional[Tensor] = None) -> Tensor:
+        """The generator as an explicit [dim, dim] matrix (tests on tiny grids only)."""
+        lam = self.rates(e, 1)[0]
+        eye = torch.eye(self.dim, device=lam.device, dtype=lam.real.dtype)
+        eye = eye.view(-1, self.c, self.hp, self.wp)
+        cols = torch.fft.irfft2(torch.fft.rfft2(eye) * lam, s=(self.hp, self.wp))
+        return cols.flatten(1).T
+
+
 class CTKAE(nn.Module):
     def __init__(self, cfg: CTKAEConfig):
         super().__init__()
@@ -334,6 +467,11 @@ class CTKAE(nn.Module):
         )
         self.encoder = Encoder(cfg)
         self.decoder = Decoder(cfg)
+        self.detail = DetailLatent(cfg) if cfg.detail_channels > 0 else None
+        self.slow_dim = cfg.latent_dim
+        self.state_dim = cfg.latent_dim + (
+            0 if self.detail is None else self.detail.dim
+        )
         if cfg.generator == "block":
             self.gen: nn.Module = BlockGenerator(cfg)
         elif cfg.generator in ("hurwitz", "dense"):
@@ -372,9 +510,12 @@ class CTKAE(nn.Module):
         return self.embed((c - self.c_ref) / self.c_scale)
 
     def fixed_point(self, e: Optional[Tensor], batch: int) -> Tensor:
+        """[B, state_dim]; the detail latent (if any) has its fixed point at 0."""
         mu = self.mu0.expand(batch, -1)
         if self.mu_head is not None and e is not None:
             mu = mu + self.mu_head(e)
+        if self.detail is not None:
+            mu = F.pad(mu, (0, self.detail.dim))
         return mu
 
     # --- maps ----------------------------------------------------------------------
@@ -391,7 +532,10 @@ class CTKAE(nn.Module):
             ],
             1,
         )
-        return self.encoder(x, e)
+        if self.detail is None:
+            return self.encoder(x, e)
+        z, feat = self.encoder(x, e, tap=self.detail.level)
+        return torch.cat([z, self.detail.to_state(feat).to(z.dtype)], -1)
 
     def decode(self, z: Tensor, mask: Tensor, c: Optional[Tensor]) -> Tensor:
         """z: [..., d] -> [..., C, H, W] (obstacle cells zeroed)."""
@@ -400,7 +544,11 @@ class CTKAE(nn.Module):
         e = self.embed_cond(c)
         if e is not None and e.shape[0] != zf.shape[0]:
             e = e.repeat_interleave(zf.shape[0] // e.shape[0], dim=0)
-        x = self.decoder(zf, e)
+        if self.detail is None:
+            x = self.decoder(zf, e)
+        else:
+            zs, zd = zf[:, : self.slow_dim], zf[:, self.slow_dim :]
+            x = self.decoder(zs, e, {self.detail.dec_stage: self.detail.to_decoder(zd)})
         x = x * mask.to(x.dtype)  # [H, W] static obstacle mask, broadcast
         return x.view(*lead, *x.shape[1:])
 
@@ -411,9 +559,12 @@ class CTKAE(nn.Module):
         # latent dynamics always run in >= fp32, outside autocast
         ty = torch.promote_types(torch.float32, self.mu0.dtype)
         with torch.autocast(device_type=z0.device.type, enabled=False):
-            y = self.gen.propagate(
-                (z0 - mu).to(ty), taus.to(ty), None if e is None else e.to(ty)
-            )
+            y0 = (z0 - mu).to(ty)
+            ee = None if e is None else e.to(ty)
+            y = self.gen.propagate(y0[:, : self.slow_dim], taus.to(ty), ee)
+            if self.detail is not None:
+                yd = self.detail.propagate(y0[:, self.slow_dim :], taus.to(ty), ee)
+                y = torch.cat([y, yd], -1)
         return mu[:, None] + y
 
     def forward(self, window, mask, c, taus):
@@ -422,6 +573,12 @@ class CTKAE(nn.Module):
         return z0, zs
 
     def generator_matrix(self, c: Optional[Tensor]) -> Tensor:
+        """Dense generator of the oscillator latent. With a detail latent the full
+        generator is blockdiag(this, detail) and is never formed: use propagate()."""
+        if self.detail is not None:
+            raise NotImplementedError(
+                "the detail latent's generator is not formed densely; use propagate()"
+            )
         e = self.embed_cond(c)
         return self.gen.matrix(e, 1 if c is None else c.shape[0])
 
@@ -432,6 +589,10 @@ class CTKAE(nn.Module):
 
         so exp(tau * A_aug) [z0; 1] = [mu + exp(tau A)(z0 - mu); 1], identical to propagate().
         The constant observable 1 is a Koopman eigenfunction with eigenvalue 0."""
+        if self.detail is not None:
+            raise NotImplementedError(
+                "augmented form is defined for the oscillators only"
+            )
         B = 1 if c is None else c.shape[0]
         e = self.embed_cond(c)
         A = self.gen.matrix(e, B)

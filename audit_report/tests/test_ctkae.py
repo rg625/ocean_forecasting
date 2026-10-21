@@ -332,3 +332,71 @@ def test_multiscale_decoder_starts_plain_learns_and_round_trips(tmp_path):
     assert m2.cfg.z_inject == [2, 1]
     with pytest.raises(ValueError):
         tiny("block", z_inject=[2])
+
+
+def _detail_model(mode):
+    m = tiny("block", detail_channels=2, detail_mode=mode, detail_pad=[2, 3])
+    with torch.no_grad():
+        d = m.detail
+        d.a.copy_(torch.tensor([-0.5, 0.7]))
+        d.b.copy_(torch.tensor([0.3, -1.0]))
+        d.u.copy_(torch.tensor([[3.0, -1.5], [7.0, 2.0]]))
+        for p in d.head.parameters():
+            p.add_(0.2 * torch.randn_like(p))
+    return m
+
+
+@pytest.mark.parametrize("mode", ["advect", "decay"])
+def test_detail_latent_is_exactly_linear_semigroup_and_stable(mode):
+    m = _detail_model(mode).double()
+    d = m.detail
+    assert (d.hp, d.wp) == (12, 22)  # even sizes: the Nyquist bins are exercised
+    ma = torch.tensor([0.55, 0.8], dtype=torch.float64)
+    e = m.embed_cond(ma)
+    g = torch.Generator().manual_seed(3)
+    y1 = torch.randn(2, d.dim, generator=g, dtype=torch.float64)
+    y2 = torch.randn(2, d.dim, generator=g, dtype=torch.float64)
+
+    def prop(y, t):
+        return d.propagate(y, torch.full((2, 1), t, dtype=torch.float64), e)[:, 0]
+
+    for b in range(2):  # FFT propagation == expm of the explicit dense generator
+        G = d.dense_generator(e[b : b + 1])
+        assert torch.linalg.eigvals(G).real.max() < 1e-9  # never grows
+        for t in (0.07, 0.3, -0.1):
+            ref = torch.linalg.matrix_exp(t * G) @ y1[b]
+            torch.testing.assert_close(prop(y1, t)[b], ref, rtol=1e-9, atol=1e-9)
+    torch.testing.assert_close(
+        prop(2.0 * y1 - 3.0 * y2, 0.2), 2.0 * prop(y1, 0.2) - 3.0 * prop(y2, 0.2)
+    )
+    torch.testing.assert_close(prop(prop(y1, 0.13), 0.29), prop(y1, 0.42))
+    torch.testing.assert_close(prop(y1, 0.0), y1)
+    assert (prop(y1, 0.5).norm(dim=-1) <= y1.norm(dim=-1) + 1e-12).all()
+
+
+def test_detail_model_wiring_and_round_trip(tmp_path):
+    m = _detail_model("advect")
+    win, mask, ma = batch()
+    z = m.encode(win, mask, ma)
+    assert z.shape == (3, m.state_dim) and m.state_dim == 8 + m.detail.dim
+    # the decoder ignores the detail state at initialisation (zero-initialised path)
+    zd0 = torch.cat([z[:, :8], torch.zeros_like(z[:, 8:])], -1)
+    torch.testing.assert_close(m.decode(z, mask, ma), m.decode(zd0, mask, ma))
+    # the oscillator part propagates exactly as without the detail latent
+    taus = torch.tensor([0.1, 0.25]).expand(3, -1)
+    zs = m.propagate(z, taus, ma)
+    ref = m.gen.propagate(z[:, :8], taus, m.embed_cond(ma))
+    torch.testing.assert_close(zs[..., :8], ref)
+    out = m.decode(zs.flatten(0, 1), mask, ma.repeat_interleave(2))
+    out.pow(2).mean().backward()
+    assert m.detail.dec.weight.grad.abs().sum() > 0
+    with pytest.raises(NotImplementedError):
+        m.generator_matrix(ma)
+    torch.save(
+        {"model": m.state_dict(), "model_config": m.config_dict()}, tmp_path / "c.pth"
+    )
+    ck = torch.load(tmp_path / "c.pth", weights_only=False)
+    m2 = CTKAE(CTKAEConfig(**ck["model_config"]))
+    m2.load_state_dict(ck["model"], strict=True)
+    with torch.no_grad():
+        torch.testing.assert_close(m2.propagate(z, taus, ma), m.propagate(z, taus, ma))
