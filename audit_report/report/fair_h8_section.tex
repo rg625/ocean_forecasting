@@ -109,12 +109,13 @@ decoder floor            & 0.041 & \textbf{0.026} & 0.027 & 0.031 & 0.032\\
 \bottomrule
 \end{tabular}
 \end{center}
-{\footnotesize $^\ast$ 3 of 5 points. The curriculum model was not re-tuned on the wider grid;
-its learning rate is also at the old grid top, so its numbers may also improve.}
+{\footnotesize $^\ast$ 3 of 5 points. The curriculum model's learning rate (1.0) was later confirmed
+on the wider grid (\S\ref{sec:round3}).}
 
 \textbf{Result.}
 \begin{itemize}
-\item \textbf{The original KAE is still the best data-assimilation model.}
+\item \textbf{Against the original's selected checkpoint, the original KAE is still the best
+  data-assimilation model.} The like-for-like comparison follows in \S\ref{sec:selection}.
   \begin{itemize}
   \item df = 9: the fair-horizon model is 13--24\% behind it (0.093--0.098 vs
     0.078--0.086). The gap is consistent across the three seeds.
@@ -130,11 +131,13 @@ its learning rate is also at the old grid top, so its numbers may also improve.}
   observations 9--25 steps ahead (0.088 vs 0.074 from the true state).
 \item \textbf{Forecast skill does not explain it either.} Over leads 9--25 the new model's
   forecast error is 3.4$\times$ lower than the original's on interpolation (1.14 vs 3.83) and
-  2.1$\times$ lower on extrapolation (0.66 vs 1.36). Two causes remain untested:
+  2.1$\times$ lower on extrapolation (0.66 vs 1.36). Two candidate causes were tested afterwards (\S\ref{sec:round3}):
   \begin{itemize}
-  \item the original DA checkpoint was selected on the regime DA is tested on;
-  \item the latent coordinates of the two models are conditioned differently for the inverse
-    problem.
+  \item \emph{checkpoint selection:} the original DA checkpoint was selected on the
+    trajectories DA is tested on. \textbf{Confirmed}: with its final checkpoint the original
+    falls behind the new model at df = 9;
+  \item \emph{conditioning of the inverse problem:} explains the difference between the
+    original's two checkpoints, but not the rest.
   \end{itemize}
   A DA-style training objective, which might close the gap, is excluded by design: the model
   is trained only for forecasting.

@@ -346,3 +346,58 @@ puts the optimum inside it, at lr 3.0, for every H8 run: d256 seed 0 tuning erro
   grid top.
 - **The gap is neither representation nor forecast skill** (see the floor and the leads 9-25
   numbers above).
+
+## 13. Round 3 (21 Oct evening): checkpoint selection, DA conditioning, multiscale decoder
+
+Runner: `scripts/run_round3.sh`. Summary: `results/h8_summary.json` (sections `da`,
+`conditioning`, `forecast.H8ms_d256`).
+
+**Curriculum re-tune.** Widened grid 0.3-10 gives tuning error 0.022 / 0.019 / 0.021 / 0.031,
+so lr stays at 1.0. The DA v3 rerun reproduces v2 exactly.
+
+**Original KAE, final checkpoint (`epoch_199.pth`, `da_v3/legacy_ep199`).** All earlier
+legacy DA used `best_model.pth`. That is epoch 40, selected by forecast loss on gt_interp,
+the trajectories DA is tested on. Tuned lr is 0.3 with the grid at 0.03-3.
+
+| Sweep | Orig ep40 (selected) | Orig ep199 (final) | Curriculum | H8 d256 (3 seeds) | H8ms d256 s0 |
+|---|---|---|---|---|---|
+| df9 delta_l / noise / sparsity / misspec / n_obs / joint | 0.085 / 0.078 / 0.086 / 0.078 / 0.079 / 0.078 | 0.099 / 0.101 / 0.104 / 0.102 / 0.106 / 0.106 | 0.094 / 0.094 / 0.100 / 0.099 / 0.095 / 0.100 | 0.096 / 0.094 / 0.098 / 0.093 / 0.095 / 0.097 | 0.109 / 0.105 / 0.112 / 0.106 / 0.105 / 0.107 |
+| df1 delta_f / single obs | 0.070 / 0.089 | 0.083 / 0.103 | 0.074 / 0.091 | 0.076 / 0.080 (s0) | 0.091 / 0.097 |
+| df1 delta_l / noise / sparsity / misspec / n_obs / joint | 0.027 / 0.028 / 0.031 / 0.028 / 0.026 / 0.027 | 0.028 / 0.028 / 0.032 / 0.029 / 0.028 / 0.029 | 0.027 / 0.028 / 0.037 / 0.029 / 0.027 / 0.028 | 0.040 / 0.041 / 0.047 / 0.041 / 0.042 / 0.043 (s0) | 0.051 / 0.053 / 0.062 / 0.053 / 0.054 / 0.057 |
+
+- **The original's df9 lead is checkpoint selection.** With its final checkpoint it is
+  3-10% worse than H8 d256 on every df9 sweep.
+- **df1 window sweeps:** the original (either checkpoint) and the curriculum model are level
+  and best. H8 is about 1.5x worse.
+
+**DA conditioning** (`data_assimilation/tra/da_conditioning.py`, `da_v3/conditioning/`):
+
+- **Setup:** df9 default problem, 8 problems. Generalised singular values ("gains") of
+  (J_obs, J_state) at the encoded truth.
+- **Jacobians:** central finite differences with TF32 off, which otherwise limits accuracy
+  to about 1e-3. They match an autograd JVP to < 1e-3.
+
+| | Orig ep40 | Orig ep199 | Curriculum | H8 d256 | H8 d128 | H8ms d256 |
+|---|---|---|---|---|---|---|
+| analysis error | 0.079 | 0.107 | 0.102 | 0.093 | 0.111 | 0.112 |
+| weakest / 10th-pct / median gain | 0.10 / 0.44 / 3.5 | 0.02 / 0.14 / 1.9 | 0.13 / 0.45 / 3.2 | 0.11 / 0.43 / 3.0 | 0.15 / 0.42 / 2.8 | 0.11 / 0.45 / 3.0 |
+| directions with gain < 0.1 x median | 7.5% | 13.4% | 6.8% | 6.6% | 4.6% | 6.4% |
+| modes with e-folding < first lead | 0.8% | 15.6% | 0 | 0 | 0 | 0 |
+| cond(J_obs^T J_obs), latent coordinates | 3e5 | 4e7 | 2e3 | 2e4 | 8e3 | 1e4 |
+| misfit(analysis) / misfit(encoded truth) | 0.20 | 0.24 | 0.55 | 0.83 | 0.84 | 0.88 |
+
+- **ep199 is badly conditioned:** fast-decaying modes and weak gains. This explains why it
+  is worse than ep40 at df9 but not at df1.
+- **The other models do not separate** on these linear measures.
+- **Every analysis fits the observations better than the encoded truth.** The error is
+  model-limited, not optimisation-limited.
+
+**Multiscale decoder** (`z_inject: [16, 4, 2]`, `configs/ctkae/fair_h8_ms.yaml`; 33.1M
+params, +3% time; run `H8ms_d256_s0_*`, last.pth). Test: interp 3.67, extrap 1.97, longer
+16.26. Lead-1 interp 0.260 (H8 d256 s0: 0.261), lead-10 0.427 (0.466), energy at 58 0.94.
+
+- **No gain:** the pre-registered seed rule (lead-1 < 0.235) was not met, so no seeds 1-2.
+- **DA is worse:** df9 0.105-0.112.
+- **dt zero-shot holds:** half-step 3.683 vs whole-step 3.672.
+- **Conclusion:** decoder capacity, like latent size (section 10), is not the cause of the
+  first-step error.

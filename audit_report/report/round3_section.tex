@@ -1,0 +1,161 @@
+%==========================================================================================
+\section{Follow-up (21 October, evening): why the original wins DA, and a multiscale decoder}\label{sec:round3}
+
+Three questions were left open by \S\ref{sec:fairh8}. Every run in this section used the same DA
+code, problems and tuning procedure as before. Results are in
+\texttt{results/h8\_summary.json}.
+
+\subsection{Was the curriculum model under-tuned?}
+
+\textbf{No.} On the widened learning-rate grid its optimum stays at 1.0, inside the grid
+(tuning error 0.022 / 0.019 / 0.021 / 0.031 at 0.3 / 1 / 3 / 10). Its DA numbers reproduced
+exactly, so the values in \S\ref{sec:da} stand.
+
+\subsection{Does checkpoint selection explain the original's DA advantage?}\label{sec:selection}
+
+\textbf{Background.} Every DA result for your original KAE so far used
+\texttt{best\_model.pth}. That checkpoint comes from epoch 40 and was picked by forecast loss
+on \texttt{gt\_interp}, the same trajectories DA is tested on. The new models never see the
+test trajectories before testing:
+\begin{itemize}
+\item the fair-horizon model uses its final checkpoint;
+\item the curriculum model's checkpoint is picked on held-out Mach numbers.
+\end{itemize}
+I therefore re-ran the full DA suite on the original's \emph{final} checkpoint (epoch 199).
+This is also the checkpoint behind its reproducible forecast numbers (11.43 / 2.12 / 18.62).
+Its tuned learning rate is unchanged at 0.3, inside the grid.
+
+\begin{center}\footnotesize
+\begin{tabular}{lccccc}
+\toprule
+Sweep & \multicolumn{2}{c}{Original KAE} & Curriculum & H8, 256 & H8, 256\\
+ & selected (ep.\ 40) & final (ep.\ 199) & & 3 seeds & multiscale\\
+\midrule
+\multicolumn{6}{l}{\emph{df = 9}}\\
+window length $\delta_l$ & 0.085 & 0.099 & \textbf{0.094} & 0.096 & 0.109\\
+noise                    & 0.078 & 0.101 & \textbf{0.094} & \textbf{0.094} & 0.105\\
+sparsity                 & 0.086 & 0.104 & 0.100 & \textbf{0.098} & 0.112\\
+misspecified noise       & 0.078 & 0.102 & 0.099 & \textbf{0.093} & 0.106\\
+number of observations   & 0.079 & 0.106 & \textbf{0.095} & \textbf{0.095} & 0.105\\
+joint sparsity           & 0.078$^\ast$ & 0.106 & 0.100 & \textbf{0.097} & 0.107\\
+\midrule
+\multicolumn{6}{l}{\emph{df = 1 (H8, 256: seed 0)}}\\
+first-observation lead $\delta_f$ & 0.070 & 0.083 & \textbf{0.074} & 0.076 & 0.091\\
+single observation       & 0.089 & 0.103 & 0.091 & \textbf{0.080} & 0.097\\
+window length $\delta_l$ & 0.027 & 0.028 & \textbf{0.027} & 0.040 & 0.051\\
+noise                    & 0.028 & \textbf{0.028} & \textbf{0.028} & 0.041 & 0.053\\
+sparsity                 & 0.031 & \textbf{0.032} & 0.037 & 0.047 & 0.062\\
+misspecified noise       & 0.028 & \textbf{0.029} & \textbf{0.029} & 0.041 & 0.053\\
+number of observations   & 0.026 & 0.028 & \textbf{0.027} & 0.042 & 0.054\\
+joint sparsity           & 0.027 & 0.029 & \textbf{0.028} & 0.043 & 0.057\\
+\midrule
+tuned learning rate      & 0.3 & 0.3 & 1.0 & 3.0 & 3.0\\
+\bottomrule
+\end{tabular}
+\end{center}
+{\footnotesize Bold: best among the models whose checkpoint never saw the test trajectories (all
+columns except the first). $^\ast$ 3 of 5 points.}
+
+\textbf{Result: yes, at df = 9 the advantage comes from checkpoint selection.}
+\begin{itemize}
+\item \textbf{df = 9:} the original's final checkpoint scores 0.099--0.106, \emph{worse} than
+  both new models. The fair-horizon model (3 seeds) is 3--10\% better than it on every sweep.
+\item \textbf{df = 1:} selection barely matters on the window sweeps (0.026--0.031 vs
+  0.028--0.032). It does matter on the $\delta_f$ and single-observation sweeps (0.070 / 0.089
+  vs 0.083 / 0.103). On the window sweeps the original and the curriculum model are level and
+  best. The fair-horizon model is about
+  1.5$\times$ worse on the window sweeps, but better on the single-observation sweep.
+\item \textbf{The fair comparison is therefore:} the new model is better at df = 9 and
+  level or worse at df = 1, depending on the variant.
+\end{itemize}
+
+\subsection{Why: how well do the observations pin down the initial state?}\label{sec:conditioning}
+
+\textbf{Method} (\texttt{da\_conditioning.py}). On the df = 9 default problem, each model is
+linearised around its best representation of the true state. Two Jacobians are compared:
+\begin{itemize}
+\item the map from latent to observations (what 4D-Var fits);
+\item the map from latent to the initial state (what the analysis is scored on).
+\end{itemize}
+Their generalised singular values (the ``gains'') measure, in each direction, how much the
+observations change per unit change of the initial state. The measure does not depend on how
+the latent is parametrised, so models with different latents are comparable. A small gain
+marks a part of the initial state that the observations barely see. The Jacobians use finite
+differences and agree with autograd to $<10^{-3}$. Averages are over 8 problems.
+
+\begin{center}\footnotesize
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{2}{c}{Original KAE} & Curriculum & H8, 256 & H8, 128 & H8, 256\\
+ & ep.\ 40 & ep.\ 199 & & & & multiscale\\
+\midrule
+analysis error (this problem)              & 0.079 & 0.107 & 0.102 & 0.093 & 0.111 & 0.112\\
+weakest gain                               & 0.10 & \textbf{0.02} & 0.13 & 0.11 & 0.15 & 0.11\\
+10th-percentile gain                       & 0.44 & \textbf{0.14} & 0.45 & 0.43 & 0.42 & 0.45\\
+directions with gain $<$ 0.1 $\times$ median & 7.5\% & \textbf{13.4\%} & 6.8\% & 6.6\% & 4.6\% & 6.4\%\\
+modes decaying before the first observation & 0.8\% & \textbf{15.6\%} & 0 & 0 & 0 & 0\\
+condition number in latent coordinates     & $3\times10^5$ & $4\times10^7$ & $2\times10^3$ & $2\times10^4$ & $8\times10^3$ & $1\times10^4$\\
+misfit at analysis / at encoded truth      & 0.20 & 0.24 & 0.55 & 0.83 & 0.84 & 0.88\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Result.}
+\begin{itemize}
+\item \textbf{It explains the two original checkpoints.} In the final checkpoint the weakly
+  observed directions are three times weaker (10th-percentile gain 0.14 vs 0.44), and there
+  are nearly twice as many of them. 16\% of its modes decay before the first observation
+  (frame 9). That information is lost before 4D-Var can see it, which is why it
+  is worse at df = 9 and not at df = 1. The selected epoch-40 checkpoint happens to lack
+  these modes.
+\item \textbf{It does not separate the selected original from the new models.} Their gain
+  statistics are similar, and every new model has no fast-decaying modes and a far better
+  latent condition number. What remains between them at df = 9 is not visible in these
+  linear measures.
+\item \textbf{Every model fits the observations better than its own encoded truth does} (last
+  row $<1$). So the analysis error is limited by model error, not by optimisation, and more
+  iterations would not help.
+\end{itemize}
+
+\subsection{Multiscale decoder}\label{sec:multiscale}
+
+\textbf{Design} (\texttt{z\_inject} in \texttt{models/ct\_kae.py};
+\texttt{configs/ctkae/fair\_h8\_ms.yaml}).
+\begin{itemize}
+\item The latent $z$ also writes 16 / 4 / 2 channels directly onto the decoder's 16$\times$32 /
+  32$\times$64 / 64$\times$128 grids. This is a linear, POD-like path to the fine scales,
+  motivated by POD's lower reconstruction error.
+\item The new path enters through zero-initialised layers, so training starts from the plain
+  decoder.
+\item It is still a function of $(z, Ma)$ only, so the dynamics stay exactly linear.
+\item It is trained end-to-end in the same 2 $\to$ 8 setting.
+\item Cost: 33.1\,M parameters instead of 24.7\,M, and 3\% more time per step.
+\end{itemize}
+Rule fixed before the run: seeds 1--2 would follow only if seed 0's first-step error fell by at
+least 10\% (below 0.235).
+
+\begin{center}\small
+\begin{tabular}{lccccccc}
+\toprule
+Seed 0, test & interp & extrap & long & lead 1 & lead 10 & energy at 58 & DA df = 9\\
+\midrule
+H8, 256              & \textbf{3.43} & \textbf{1.67} & 16.80 & 0.261 & 0.466 & 0.94 & \textbf{0.091--0.095}\\
+H8, 256, multiscale  & 3.67 & 1.97 & \textbf{16.26} & 0.260 & \textbf{0.427} & 0.94 & 0.105--0.112\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Result: no gain.}
+\begin{itemize}
+\item The first-step error is unchanged (0.260 vs 0.261), so the rule stopped the extra
+  seeds.
+\item Interpolation and extrapolation are at the top of the plain model's seed spread
+  (3.38--3.66 and 1.67--2.29).
+\item DA is worse.
+\item Zero-shot time stepping still holds (3.683 at half steps vs 3.672 at whole steps).
+\item \textbf{What this rules out.} Together with the latent-size test (\S\ref{sec:repr}),
+  this rules out decoder capacity and latent size as the cause of the first-step error. The
+  same decoder reaches 0.08 under one-step training (\S\ref{sec:acdmsetting}). The floor is
+  therefore set by the trade-off in the training objective between reconstruction and
+  multi-step prediction.
+\end{itemize}

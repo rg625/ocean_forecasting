@@ -36,8 +36,8 @@ while keeping its continuous-time dynamics and zero-shot conditioning?
 \item \textbf{Re-scored every baseline} with one verified scorer. This covers ACDM and all 13
   official checkpoints from the ACDM paper (\S\ref{sec:baselines}).
 \item \textbf{Built a redesigned model} (CT-KAE) in a separate file and \textbf{tested it in
-  25 training runs}: 7 pilots, 5 final runs, a retrained legacy model, 4 representation
-  tests (\S\ref{sec:model}--\ref{sec:repr}) and 8 follow-up runs (\S\ref{sec:followup}--\ref{sec:fairh8}).
+  26 training runs}: 7 pilots, 5 final runs, a retrained legacy model, 4 representation
+  tests (\S\ref{sec:model}--\ref{sec:repr}) and 9 follow-up runs (\S\ref{sec:followup}--\ref{sec:round3}).
 \end{enumerate}
 
 \textbf{Main result} (test set, MSE $\times10^{-3}$, lower is better; ``energy'' is the share of
@@ -72,6 +72,19 @@ U-Net (official, best) & 1.53 & 1.42 & 22.4 & 1.08 & 0.85\\
   ACDM's at the first step), not the continuous-time dynamics. At long lead times the dynamics
   match ACDM on interpolation and beat it on extrapolation (Fig.~\ref{fig:lead}).
 \end{itemize}
+
+\callout{\textbf{Update, 21 October (evening)} (details in \S\ref{sec:round3}).
+\begin{itemize}
+\item \textbf{The original KAE's DA lead at df = 9 comes from checkpoint selection.} Its DA
+  checkpoint (epoch 40) was picked on the trajectories DA is tested on. With its final
+  checkpoint, as used for the new models and for its own forecast numbers, it scores
+  0.099--0.106 at df = 9. That is \emph{worse} than the fair-horizon model (0.093--0.098,
+  3 seeds) and the curriculum model (0.094--0.100).
+\item At df = 1 the original and the curriculum model stay level and best. The fair-horizon
+  model is about 1.5$\times$ worse on the window sweeps.
+\item A multiscale decoder did not lower the first-step error (0.260 vs 0.261). Decoder size
+  and latent size are now both ruled out as its cause.
+\end{itemize}}
 
 \callout{\textbf{Update, 21 October: fair-horizon model} (details in \S\ref{sec:fairh8}).
 \begin{itemize}
@@ -432,6 +445,9 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
 \input{fair_h8_section.tex}
 
 %==========================================================================================
+\input{round3_section.tex}
+
+%==========================================================================================
 \section{Answers to the project's questions}\label{sec:answers}
 
 \begin{enumerate}[leftmargin=*]
@@ -466,10 +482,17 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
   ACDM (3.49 vs about 2.9); extrapolation within noise (1.98 vs 1.99--2.22).
 \item \textbf{Zero-shot?} Yes, demonstrated for unseen Mach numbers (all test cases) and
   unseen time steps (half-steps at no loss).
-\item \textbf{Better or worse for data assimilation?} Worse. Your original model remains the
-  best DA model. The fair-horizon model is 13--24\% behind at df = 9 and about 1.5$\times$ its
-  error at df = 1 (\S\ref{sec:fairh8}). The curriculum model ties it at df = 1 and is
-  15--25\% behind at df = 9. All of them except the ACDM-setting model beat U-Net, FNO and ACDM at df = 9
+\item \textbf{Better or worse for data assimilation?} It depends on the checkpoint protocol
+  (\S\ref{sec:selection}).
+  \begin{itemize}
+  \item Like for like (no checkpoint chosen on the test trajectories): the fair-horizon model
+    is 3--10\% \emph{better} than the original at df = 9, and about 1.5$\times$ worse on the
+    df = 1 window sweeps. The curriculum model is level with the original at df = 1 and
+    slightly better at df = 9.
+  \item Against the original's test-selected checkpoint, the original wins everywhere except
+    the df = 1 single-observation sweep.
+  \item All KAEs beat U-Net, FNO and ACDM by a wide margin at df = 9.
+  \end{itemize} All of them except the ACDM-setting model beat U-Net, FNO and ACDM at df = 9
   (\S\ref{sec:da}).
 \item \textbf{Physically meaningful long-horizon behaviour?} Partly. It tracks the true flow
   much longer than the original. The 60-step model damps oscillations mid-rollout
@@ -497,17 +520,17 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
   \item A one-step-then-60-step curriculum kept only part of it (\S\ref{sec:curr}).
   \item Short-horizon training with every frame supervised brought it from 0.66 to 0.26
     (\S\ref{sec:fairh8}).
-  \item Next to try, still end-to-end: a multiscale decoder that adds back fine detail.
+  \item A multiscale decoder did not help (\S\ref{sec:multiscale}). The floor is set by the
+    trade-off between reconstruction and multi-step prediction in the training objective.
+  \item Next to try, still end-to-end and forecasting-only: a higher reconstruction weight,
+    or a reconstruction loss on every predicted frame's own encoding.
   \end{itemize}
   \emph{Test:} first-step error below about 0.1, with long-lead error unchanged.
-\item \textbf{Explain the DA gap without changing the training objective}, since the model is
-  trained only for forecasting. The gap comes from fitting observations 9--25 steps ahead.
-  It is neither representation nor forecast skill (\S\ref{sec:fairh8}). Two tests:
-  \begin{itemize}
-  \item re-run the original KAE's DA with a checkpoint not selected on the DA regime;
-  \item compare the singular values of the observation-to-latent map for both models.
-  \end{itemize}
-  Also re-tune the curriculum model on the wider learning-rate grid.
+\item \textbf{Report DA like for like.} The original's df = 9 lead came from a checkpoint
+  chosen on the DA test trajectories (\S\ref{sec:selection}). Any DA comparison should use
+  checkpoints chosen without the test trajectories, and should report the gain statistics of
+  \S\ref{sec:conditioning} alongside, since fast-decaying latent modes predict poor df = 9
+  results.
 \item \textbf{Remove the mid-rollout damping without paying MSE.} Select checkpoints on a
   combined score of correlation and energy, and train the amplitude term in the latent
   coordinates that carry shedding.

@@ -1,5 +1,6 @@
-"""Summarise the fair-horizon H8 runs: test forecast (mean +- std over seeds, last.pth) and DA
-(mean rel-L2 over each sweep's points) from da_v2 (lr grid 0.03-1) and da_v3 (lr grid 0.3-10).
+"""Summarise the fair-horizon H8 runs: test forecast (mean +- std over seeds, last.pth), DA
+(mean rel-L2 over each sweep's points) for every model in da_v2 (lr grid 0.03-1) and da_v3
+(widened grids), and the DA conditioning diagnostic (da_v3/conditioning).
 
     python h8_summary.py [--json out.json]
 """
@@ -65,9 +66,9 @@ def da(d: Path) -> dict:
 
 
 res: dict = {"forecast": {}, "da": {}}
-for d in (128, 256):
+for d in ("H8_d128", "H8_d256", "H8ms_d256"):
     per = []
-    for run in sorted(ROOT.glob(f"H8_d{d}_s*_*")):
+    for run in sorted(ROOT.glob(f"{d}_s*_*")):
         e = run / "eval/last.json"
         if not e.exists():
             continue
@@ -82,7 +83,7 @@ for d in (128, 256):
     if not per:
         continue
     keys = [k for k in per[0] if k != "run"]
-    res["forecast"][f"d{d}"] = {
+    res["forecast"][d] = {
         "runs": per,
         "mean": {k: round(float(np.mean([r[k] for r in per])), 3) for k in keys},
         "std": {
@@ -95,8 +96,20 @@ for d in (128, 256):
         },
     }
 for v in ("da_v2", "da_v3"):
-    for dd in sorted((ROOT / v).glob("ctkae_H8_*")):
-        res["da"][f"{v}/{dd.name}"] = da(dd)
+    for dd in sorted((ROOT / v).iterdir()):
+        if dd.is_dir() and dd.name != "conditioning":
+            res["da"][f"{v}/{dd.name}"] = da(dd)
+res["conditioning"] = {}
+for f in sorted((ROOT / "da_v3/conditioning").glob("*.json")):
+    j = json.loads(f.read_text())
+    res["conditioning"][f.stem] = {
+        "model": j["model"],
+        "lr": j["lr"],
+        "analysis_rel": round(j["analysis_rel"], 4),
+        "fd_vs_autograd_rel_err": j["fd_vs_autograd_rel_err"],
+        "share_problems_J_rec_below_J_true": j["share_problems_J_rec_below_J_true"],
+        **{k: round(v, 4) for k, v in j["mean"].items()},
+    }
 print(json.dumps(res, indent=1))
 if args.json:
     Path(args.json).write_text(json.dumps(res, indent=1))
