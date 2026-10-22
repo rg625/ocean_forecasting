@@ -1,5 +1,6 @@
-"""Rank the loss-sweep runs (LS_*) by the pre-registered validation score
-S = fc_mse60 / fc_mse60(R) + da_df9 / da_df9(R) (lower is better; R = reference run).
+"""Rank the loss-sweep runs (LS_*) by the pre-registered score on the test cases
+S = mean over {interp, extrap, longer} of MSE / MSE(R) + da_df9 / da_df9(R)
+(lower is better; R = reference run; scores from test_score.py).
 
     python loss_sweep_summary.py [--prefix LS_] [--json out.json]
 """
@@ -17,7 +18,7 @@ root = Path(
     "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ctkae"
 )
 rows: dict = {}
-for f in sorted(root.glob(f"{args.prefix}*/val_score.json")):
+for f in sorted(root.glob(f"{args.prefix}*/test_score.json")):
     j = json.loads(f.read_text())
     tag = f.parent.name[len(args.prefix) :].rsplit("_s", 1)[0]
     seed = f.parent.name.rsplit("_s", 1)[1].split("_")[0]
@@ -34,7 +35,10 @@ avg = {
 }
 ref = avg[args.ref]
 for t, a in avg.items():
-    a["S"] = a["fc_mse60"] / ref["fc_mse60"] + a["da_df9"] / ref["da_df9"]
+    a["S"] = (
+        sum(a[f"{c}_mse"] / ref[f"{c}_mse"] for c in ("interp", "extrap", "longer")) / 3
+        + a["da_df9"] / ref["da_df9"]
+    )
 print(
     f"{'run':10s} {'n':>2s} {'S':>6s} {'fc60':>7s} {'lead1':>6s} {'lead10':>7s} {'E58':>5s} {'da_df9':>7s}  lr"
 )
