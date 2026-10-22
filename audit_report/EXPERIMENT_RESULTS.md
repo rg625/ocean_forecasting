@@ -401,3 +401,45 @@ params, +3% time; run `H8ms_d256_s0_*`, last.pth). Test: interp 3.67, extrap 1.9
 - **dt zero-shot holds:** half-step 3.683 vs whole-step 3.672.
 - **Conclusion:** decoder capacity, like latent size (section 10), is not the cause of the
   first-step error.
+
+## 14. Attempts to cut the first-step error and the long-lead growth (21-22 Oct), all seed 0, last.pth
+
+All runs use the fair 2 -> 8 setting, latent 256, end-to-end, forecasting-only, with exactly
+linear latent dynamics. Configs are in `configs/ctkae/`; runners `scripts/run_detail.sh` and
+`scripts/run_lit_v3.sh`. DA is df9, mean over the points of each of the 6 sweeps.
+
+| Run | interp | extrap | longer | Lead 1 / 10 / 30 / 58 (interp) | DA df9 |
+|---|---|---|---|---|---|
+| H8_d256 baseline (`fair_h8`) | 3.43 | 1.67 | 16.80 | 0.261 / 0.466 / 3.25 / 8.17 | 0.091-0.095 |
+| Detail latent, advect (`fair_h8_detail`) | 8.85 | 5.53 | 16.98 | 0.021 / 0.303 / 8.96 / 15.8 | 0.142-0.176 |
+| Detail latent, decay only (`fair_h8_decay`) | 16.44 | 9.80 | 24.52 | 0.026 / 1.73 / 14.0 / 18.3 | 0.199-0.217 |
+| Detail latent, advect + decay floor 2.5 (`fair_h8_detailfloor`) | 12.79 | 5.99 | 24.73 | 0.030 / 0.320 / 16.8 / 21.5 | 0.292-0.306 |
+| Harmonic lattice, 64 of 128 pairs (`fair_h8_harm`) | 3.87 | 2.29 | **15.35** | 0.272 / 0.425 / 3.44 / 9.77 | 0.154-0.163 |
+| Multi-start consistency, w_tc 0.3 (`fair_h8_tc`) | 4.79 | 2.71 | 16.32 | 0.217 / 0.481 / 3.68 / 12.1 | 0.099-0.104 |
+
+Pre-registered success (interp <= 3.19 with extrap <= 2.29) was met by none.
+
+- **Detail latent (Fourier-diagonal, exactly linear).**
+  - All three variants fix the one-step error (0.02-0.03, matching ACDM and U-Net) but
+    collapse after the 8-frame window.
+  - The model moves the near-term dynamics into the detail latent: the oscillators go
+    static (advect) or off-shedding, and the decoder never learns to work without the
+    detail.
+  - A decay floor does not prevent this.
+  - The first `fair_h8_decay` attempt was killed at step 10900 when the session ended
+    (ABORTED) and was rerun.
+- **Harmonic lattice.** Training data show shedding frequency scattered by +-6.5% across
+  neighbouring Mach (`results/shedding_freq_train.json`) and only 57% of the spectrum on the
+  harmonic lattice. Locking half the oscillators to n * omega_1(Ma) gives:
+  - interp worse;
+  - longer slightly better (15.35, below all three H8 seeds);
+  - DA clearly worse.
+- **Multi-start consistency (tcKAE).**
+  - Lower one-step error (0.217) and the best DA tuning error (0.018) and encode-init floor
+    (0.078).
+  - But 60-step forecast and df9 DA sweeps are worse.
+- **Inference-time checks on H8_d256_s0** (`results/infer_ablate_H8_d256_s0.json`):
+  - removing damping worsens MSE (interp 3.43 -> 3.81), so the learned damping is useful
+    hedging;
+  - the trained latent has <= 0.5% of its temporal variance at >= 2x the shedding
+    frequency, so harmonics come from the decoder.
