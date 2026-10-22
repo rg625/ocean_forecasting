@@ -7,12 +7,14 @@
 # Selection rule (fixed before the runs, loss_sweep_summary.py):
 # S = mean(interp, extrap, longer MSE relative to the reference run) + da_df9 / ref, lower
 # is better; a change counts as helpful if it lowers S by >= 0.05.
-# Each training waits for >= 13 GB of free GPU memory so it cannot crash other jobs.
+# Batch 16 is split into 2 chunks of 8 with exact gradient accumulation (train.accum,
+# test_gradient_accumulation_is_exact): same training, peak 6.9 GB instead of 12.3 GB.
+# Each job waits for >= 8 GB of free GPU memory so it cannot crash other jobs.
 cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
 PY=/home/rg625/anaconda3/envs/samudra/bin/python
 S=../audit_report/scripts
-wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 13000 ]; do sleep 60; done; }
-BASE="--config=configs/ctkae/fair_h8.yaml model.latent_dim=256 train.steps=10000 seed=0"
+wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 8000 ]; do sleep 60; done; }
+BASE="--config=configs/ctkae/fair_h8.yaml model.latent_dim=256 train.steps=10000 train.accum=2 seed=0"
 run () {
   tag=$1; shift
   if ls -d model_outputs_ctkae/LS_${tag}_s0_*/test_score.json >/dev/null 2>&1; then echo "skip $tag"; return; fi
