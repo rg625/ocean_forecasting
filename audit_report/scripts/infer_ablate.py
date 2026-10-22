@@ -40,8 +40,8 @@ clim = train_climatology()
 STATE: dict = {"scale": 1.0, "w_override": None}
 
 
-def patched(e, batch):
-    g, w = orig_params(e, batch)
+def patched(e, batch, cn=None):
+    g, w = orig_params(e, batch, cn)
     if STATE["w_override"] is not None:
         w = STATE["w_override"](w, g)
     return g * STATE["scale"], w

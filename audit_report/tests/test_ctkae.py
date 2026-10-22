@@ -406,3 +406,89 @@ def test_detail_gamma_min_bounds_the_decay():
     m = tiny("block", detail_channels=2, detail_pad=[2, 3], detail_gamma_min=2.5)
     lam = m.detail.rates(m.embed_cond(torch.tensor([0.7])), 1)
     assert lam.real.max() <= -2.5
+
+
+def test_harmonic_bank_is_locked_exact_and_learnable():
+    m = tiny(
+        "block",
+        harmonic_pairs=2,
+        harmonic_orders=2,
+        harmonic_coef=[2.0, 0.5, 0.1],
+        fixed_point="none",
+    )
+    perturb_heads(m)
+    ma = torch.tensor([0.55, 0.8])
+    cn = m.norm_cond(ma)
+    g, w = m.gen.params(m.embed_cond(ma), 2, cn)
+    w1 = 2.0 + 0.5 * cn[:, 0] + 0.1 * cn[:, 0] ** 2
+    torch.testing.assert_close(w[:, :2], torch.stack([w1, 2 * w1], -1))
+    assert not torch.allclose(w[0, :2], w[1, :2])  # Mach-dependent
+    # propagation is still exactly e^{tau A}
+    A = m.generator_matrix(ma).double()
+    z = torch.randn(2, 8, dtype=torch.float64)
+    taus = torch.tensor([[0.3], [0.3]])
+    out = m.propagate(z.float(), taus, ma)[:, 0].double()
+    ref = torch.einsum("bij,bj->bi", torch.linalg.matrix_exp(0.3 * A), z)
+    torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-5)
+    out.pow(2).sum().backward()
+    assert m.gen.h_coef.grad.abs().sum() > 0
+
+
+def test_multistart_consistency_is_zero_for_a_consistent_embedding():
+    from types import SimpleNamespace
+
+    import train_ctkae
+
+    gen = tiny("block").gen
+    A = gen.matrix(None, 1)[0].detach()
+    z_ref = torch.randn(3, 8)
+    dt = 0.1
+
+    def enc(window, mask, ma):  # "encoder" reading the true latent at the window end
+        t_end = window[:, -1, 0, 0, 0]  # frame time stored in the data
+        return torch.stack(
+            [torch.linalg.matrix_exp(float(t) * A) @ z for t, z in zip(t_end, z_ref)]
+        )
+
+    def prop(z, lead, ma):
+        return torch.stack(
+            [
+                torch.stack([torch.linalg.matrix_exp(float(t) * A) @ zz for t in ll])
+                for zz, ll in zip(z, lead)
+            ]
+        )
+
+    fake = SimpleNamespace(encode=enc, propagate=prop, slow_dim=8)
+    T = 10
+    full = (torch.arange(T) * dt).view(1, T, 1, 1, 1).expand(3, T, 1, 2, 2).clone()
+    taus = (torch.arange(1, T - 1) * dt).expand(3, -1)
+    z0 = enc(full[:, :2], None, None)
+    l_tc = train_ctkae.multistart_consistency(
+        fake, full, z0, taus, None, None, 2, [0, 2, 4]
+    )
+    assert float(l_tc) < 1e-10
+    z_bad = z0 + 0.1 * torch.randn_like(z0)
+    assert (
+        float(
+            train_ctkae.multistart_consistency(
+                fake, full, z_bad, taus, None, None, 2, [0, 2, 4]
+            )
+        )
+        > 1e-4
+    )
+
+
+def test_multistart_consistency_runs_on_real_model_and_backprops():
+    import train_ctkae
+
+    m = tiny("block", harmonic_pairs=2, harmonic_orders=2)
+    g = torch.Generator().manual_seed(4)
+    full = torch.randn(3, 10, 4, 16, 32, generator=g)
+    mask = torch.ones(16, 32)
+    ma = torch.tensor([0.55, 0.66, 0.8])
+    taus = (torch.arange(1, 9) * 0.1).expand(3, -1)
+    z0 = m.encode(full[:, :2], mask, ma)
+    loss = train_ctkae.multistart_consistency(m, full, z0, taus, ma, mask, 2, [0, 2, 4])
+    assert torch.isfinite(loss) and float(loss) > 0
+    loss.backward()
+    assert m.encoder.stem.weight.grad.abs().sum() > 0

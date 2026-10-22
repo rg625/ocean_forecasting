@@ -132,11 +132,11 @@ def main():
             e = m.embed_cond(grid)
             res = {"ma": grid.tolist()}
             if m.cfg.generator == "block":
-                g, w = m.gen.params(e, len(grid))
+                g, w = m.gen.params(e, len(grid), m.norm_cond(grid))
                 res["gamma"] = g.T.tolist()
                 res["omega"] = w.T.tolist()
             else:
-                ev = torch.linalg.eigvals(m.gen.matrix(e, len(grid)))
+                ev = torch.linalg.eigvals(m.gen.matrix(e, len(grid), m.norm_cond(grid)))
                 res["spectral_abscissa"] = ev.real.max(-1).values.tolist()
             x, ma, mask = load_eval_case(str(DATA / "gt_interp.nc"), dev)
             taus = 0.1 * torch.arange(1, 59, device=dev, dtype=torch.float32)

@@ -54,6 +54,14 @@ class CTKAEConfig:
     gamma_init: Tuple[float, float] = (0.01, 0.3)
     dense_rank: int = 8  # low-rank conditional correction for hurwitz/dense
     padding_mode: str = "zeros"
+    # Harmonic lattice: the first harmonic_pairs oscillator pairs have frequencies locked to
+    # n * omega_1(Ma), n = 1..harmonic_orders (cycled), with omega_1(Ma) = c0 + c1 m + c2 m^2,
+    # m = (Ma - cond_ref) / cond_scale, learnable from harmonic_coef (block generator only).
+    # The bank starts nearly neutral (harmonic_gamma_init); the other pairs are free.
+    harmonic_pairs: int = 0
+    harmonic_orders: int = 4
+    harmonic_coef: List[float] = field(default_factory=lambda: [2.4, 0.0, 0.0])
+    harmonic_gamma_init: float = 0.01
     # multiscale decoder: channels z writes directly at each decoder stage's resolution
     # (coarse to fine, one entry per stage, 0 = none). Empty = single 1/8-resolution entry.
     z_inject: List[int] = field(default_factory=list)
@@ -241,6 +249,16 @@ class BlockGenerator(nn.Module):
                 math.log(cfg.gamma_init[0]), math.log(cfg.gamma_init[1])
             )
         )
+        self.n_h = cfg.harmonic_pairs
+        if self.n_h:
+            if not 0 < self.n_h <= m:
+                raise ValueError(f"harmonic_pairs must be in (0, {m}]")
+            g0[: self.n_h] = cfg.harmonic_gamma_init
+            orders = torch.arange(self.n_h) % cfg.harmonic_orders + 1
+            self.register_buffer("orders", orders.float())
+            self.h_coef = nn.Parameter(
+                torch.tensor(cfg.harmonic_coef, dtype=torch.float32)
+            )
         self.g_raw = nn.Parameter(_inv_softplus(g0))
         # frequencies log-spaced over (0.05, omega_max) with random sign-free jitter
         w0 = torch.exp(torch.linspace(math.log(0.05), math.log(cfg.omega_max), m))
@@ -257,17 +275,34 @@ class BlockGenerator(nn.Module):
             )  # starts at the unconditional generator
             nn.init.zeros_(self.head[-1].bias)
 
-    def params(self, e: Optional[Tensor], batch: int) -> Tuple[Tensor, Tensor]:
+    def omega1(self, cn: Optional[Tensor], batch: int) -> Tensor:
+        """Base frequency of the harmonic bank, [B]; cn: normalised condition [B, >=1]."""
+        mm = (
+            torch.zeros(batch, device=self.h_coef.device, dtype=self.h_coef.dtype)
+            if cn is None
+            else cn[:, 0].to(self.h_coef.dtype)
+        )
+        c = self.h_coef
+        return c[0] + c[1] * mm + c[2] * mm**2
+
+    def params(
+        self, e: Optional[Tensor], batch: int, cn: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tensor]:
         g_raw, w = self.g_raw.expand(batch, -1), self.w.expand(batch, -1)
         if self.head is not None and e is not None:
             dg, dw = self.head(e).chunk(2, dim=-1)
             g_raw, w = g_raw + dg, w + dw
+        if self.n_h:
+            wh = self.orders * self.omega1(cn, batch)[:, None]
+            w = torch.cat([wh.to(w.dtype), w[:, self.n_h :]], -1)
         return F.softplus(g_raw), w
 
-    def propagate(self, y: Tensor, taus: Tensor, e: Optional[Tensor]) -> Tensor:
+    def propagate(
+        self, y: Tensor, taus: Tensor, e: Optional[Tensor], cn: Optional[Tensor] = None
+    ) -> Tensor:
         """y: [B, d] (deviation from fixed point); taus: [B, K] -> [B, K, d]."""
         B = y.shape[0]
-        g, w = self.params(e, B)  # [B, m]
+        g, w = self.params(e, B, cn)  # [B, m]
         a = torch.exp(-g[:, None] * taus[..., None])  # [B, K, m]
         th = w[:, None] * taus[..., None]
         c, s = torch.cos(th) * a, torch.sin(th) * a
@@ -275,8 +310,10 @@ class BlockGenerator(nn.Module):
         out = torch.stack([c * y1 - s * y2, s * y1 + c * y2], dim=-1)  # [B, K, m, 2]
         return out.flatten(-2)
 
-    def matrix(self, e: Optional[Tensor], batch: int = 1) -> Tensor:
-        g, w = self.params(e, batch)
+    def matrix(
+        self, e: Optional[Tensor], batch: int = 1, cn: Optional[Tensor] = None
+    ) -> Tensor:
+        g, w = self.params(e, batch, cn)
         A = torch.zeros(batch, 2 * self.m, 2 * self.m, device=g.device, dtype=g.dtype)
         i = torch.arange(self.m, device=g.device)
         A[:, 2 * i, 2 * i] = -g
@@ -312,7 +349,9 @@ class MatrixGenerator(nn.Module):
                 wv[0].normal_(0, cfg.cond_embed**-0.5)
                 wv[1].zero_()
 
-    def matrix(self, e: Optional[Tensor], batch: int = 1) -> Tensor:
+    def matrix(
+        self, e: Optional[Tensor], batch: int = 1, cn: Optional[Tensor] = None
+    ) -> Tensor:
         Wb = self.W.expand(batch, -1, -1)
         if self.head is not None and e is not None:
             U, V = self.head(e).view(batch, 2, self.r, self.d).unbind(1)
@@ -324,7 +363,9 @@ class MatrixGenerator(nn.Module):
         S = 0.5 * (Wb + Wb.transpose(1, 2)) + 0.5 * (self.D + self.D.T)
         return J + S
 
-    def propagate(self, y: Tensor, taus: Tensor, e: Optional[Tensor]) -> Tensor:
+    def propagate(
+        self, y: Tensor, taus: Tensor, e: Optional[Tensor], cn: Optional[Tensor] = None
+    ) -> Tensor:
         B, K = taus.shape
         A = self.matrix(e, B)  # [B, d, d]
         grid = taus[:, :1] * torch.arange(1, K + 1, device=taus.device)
@@ -507,11 +548,15 @@ class CTKAE(nn.Module):
         self.register_buffer("coords", torch.stack([xx, yy])[None])
 
     # --- conditioning ----------------------------------------------------------------
-    def embed_cond(self, c: Optional[Tensor]) -> Optional[Tensor]:
+    def norm_cond(self, c: Optional[Tensor]) -> Optional[Tensor]:
         if c is None:
             return None
         c = c.view(c.shape[0], -1).to(self.c_ref.dtype)
-        return self.embed((c - self.c_ref) / self.c_scale)
+        return (c - self.c_ref) / self.c_scale
+
+    def embed_cond(self, c: Optional[Tensor]) -> Optional[Tensor]:
+        cn = self.norm_cond(c)
+        return None if cn is None else self.embed(cn)
 
     def fixed_point(self, e: Optional[Tensor], batch: int) -> Tensor:
         """[B, state_dim]; the detail latent (if any) has its fixed point at 0."""
@@ -565,7 +610,8 @@ class CTKAE(nn.Module):
         with torch.autocast(device_type=z0.device.type, enabled=False):
             y0 = (z0 - mu).to(ty)
             ee = None if e is None else e.to(ty)
-            y = self.gen.propagate(y0[:, : self.slow_dim], taus.to(ty), ee)
+            cn = self.norm_cond(c)
+            y = self.gen.propagate(y0[:, : self.slow_dim], taus.to(ty), ee, cn)
             if self.detail is not None:
                 yd = self.detail.propagate(y0[:, self.slow_dim :], taus.to(ty), ee)
                 y = torch.cat([y, yd], -1)
@@ -584,7 +630,7 @@ class CTKAE(nn.Module):
                 "the detail latent's generator is not formed densely; use propagate()"
             )
         e = self.embed_cond(c)
-        return self.gen.matrix(e, 1 if c is None else c.shape[0])
+        return self.gen.matrix(e, 1 if c is None else c.shape[0], self.norm_cond(c))
 
     def augmented_generator(self, c: Optional[Tensor]) -> Tensor:
         """Purely linear form of the latent dynamics on the state [z; 1]:
@@ -599,7 +645,7 @@ class CTKAE(nn.Module):
             )
         B = 1 if c is None else c.shape[0]
         e = self.embed_cond(c)
-        A = self.gen.matrix(e, B)
+        A = self.gen.matrix(e, B, self.norm_cond(c))
         mu = self.fixed_point(e, B)
         d = A.shape[-1]
         Aug = torch.zeros(B, d + 1, d + 1, dtype=A.dtype, device=A.device)

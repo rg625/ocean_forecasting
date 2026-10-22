@@ -7,6 +7,7 @@ Objective (all distances channel-weighted, see ct_data.channel_weights):
       + w_pred * mean_{k in S} |D(z_k) - x_{t+k}|^2          z_k exact: mu + e^{tau_k A}(z_0 - mu)
       + w_lat  * mean_{k in S} |z_k - sg(E(x_{t+k-n+1..t+k}))|^2 / E|sg(E)|^2
       + w_amp  * mean_{k in S} (|y_k|_block - |sg(y_k^enc)|_block)^2   (block generator only)
+      + w_tc   * multistart_consistency (windows starting at tc_starts inside the clip; off by default)
 With a detail latent (models/ct_kae.DetailLatent) the w_lat term is computed for the
 oscillators and the detail state separately, each normalised by its own E|sg(E)|^2, and
 summed; w_amp applies to the oscillators only.
@@ -72,6 +73,8 @@ DEFAULTS = OmegaConf.create(
             "w_pred": 1.0,
             "w_lat": 0.1,
             "w_amp": 0.0,
+            "w_tc": 0.0,
+            "tc_starts": [0, 2, 4],
             "val_every": 1000,
             "log_every": 100,
             "select": "val_mse60+0.25*val_mse240",
@@ -101,6 +104,30 @@ def amp_loss(y_pred, y_tgt):
     rp = y_pred.view(*y_pred.shape[:-1], -1, 2).norm(dim=-1)
     rt = y_tgt.view(*y_tgt.shape[:-1], -1, 2).norm(dim=-1)
     return ((rp - rt) ** 2).mean() / (rt.pow(2).mean() + 1e-6)
+
+
+def multistart_consistency(model, full, z0, taus, ma, mask, n_frames, starts):
+    """tcKAE-style temporal consistency (Nayak et al. 2024) inside the training clip.
+
+    Windows starting at frames ``starts`` of ``full`` [B, n + K, ...] are encoded (start 0
+    reuses ``z0``) and propagated to every frame after the latest window; pairwise
+    disagreement of these latents, normalised by their mean square, is returned. Both
+    sides carry gradients. Only frames already inside the supervised clip are used."""
+    dtf = taus[:, :1]  # constant frame spacing within a batch
+    first = max(starts) + n_frames  # first frame after every window
+    common = torch.arange(first, full.shape[1], device=full.device, dtype=dtf.dtype)
+    sd = model.slow_dim
+    zs = []
+    for st in starts:
+        z = z0 if st == 0 else model.encode(full[:, st : st + n_frames], mask, ma)
+        lead = (common - (st + n_frames - 1))[None] * dtf  # [B, C]
+        zs.append(model.propagate(z.float(), lead, ma)[..., :sd])
+    num = [
+        ((zs[i] - zs[j]) ** 2).mean()
+        for i in range(len(zs))
+        for j in range(i + 1, len(zs))
+    ]
+    return torch.stack(num).mean() / (torch.stack(zs).pow(2).mean().detach() + 1e-6)
 
 
 @torch.no_grad()
@@ -237,11 +264,24 @@ def main():
                 if tc.w_amp > 0 and model.cfg.generator == "block":
                     mu = model.fixed_point(model.embed_cond(ma), B)[:, None]
                     l_amp = amp_loss((zs - mu)[..., :sd], (zt - mu)[..., :sd].detach())
+            l_tc = torch.zeros((), device=dev)
+            if tc.w_tc > 0:
+                l_tc = multistart_consistency(
+                    model,
+                    torch.cat([win, tgt], 1),
+                    z0,
+                    taus,
+                    ma,
+                    train.mask,
+                    n_frames,
+                    list(tc.tc_starts),
+                )
             loss = (
                 tc.w_rec * l_rec
                 + tc.w_pred * l_pred
                 + tc.w_lat * l_lat
                 + tc.w_amp * l_amp
+                + tc.w_tc * l_tc
             )
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -254,6 +294,7 @@ def main():
             ("pred", l_pred),
             ("lat", l_lat),
             ("amp", l_amp),
+            ("tc", l_tc),
             ("gn", gn),
         ):
             acc[k] = acc.get(k, 0.0) + float(v)
