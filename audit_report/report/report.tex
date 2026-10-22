@@ -17,7 +17,7 @@
 \title{\textbf{Continuous-time Koopman autoencoder for transonic flow}\\[2pt]
 \large Audit, fixes, redesign and benchmark against ACDM}
 \author{Prepared for R.~Grozavescu}
-\date{21 October 2026}
+\date{22 October 2026}
 
 \begin{document}
 \maketitle
@@ -36,8 +36,8 @@ while keeping its continuous-time dynamics and zero-shot conditioning?
 \item \textbf{Re-scored every baseline} with one verified scorer. This covers ACDM and all 13
   official checkpoints from the ACDM paper (\S\ref{sec:baselines}).
 \item \textbf{Built a redesigned model} (CT-KAE) in a separate file and \textbf{tested it in
-  26 training runs}: 7 pilots, 5 final runs, a retrained legacy model, 4 representation
-  tests (\S\ref{sec:model}--\ref{sec:repr}) and 9 follow-up runs (\S\ref{sec:followup}--\ref{sec:round3}).
+  31 training runs}: 7 pilots, 5 final runs, a retrained legacy model, 4 representation
+  tests (\S\ref{sec:model}--\ref{sec:repr}) and 14 follow-up runs (\S\ref{sec:followup}--\ref{sec:round4}).
 \end{enumerate}
 
 \textbf{Main result} (test set, MSE $\times10^{-3}$, lower is better; ``energy'' is the share of
@@ -60,18 +60,45 @@ U-Net (official, best) & 1.53 & 1.42 & 22.4 & 1.08 & 0.85\\
 
 \textbf{Bottom line.}
 \begin{itemize}
-\item The new model is \good{2.8$\times$ more accurate than the original} on interpolation. Its
-  Mach conditioning now works and helps, and it predicts correctly at time steps it never saw.
+\item The best new model (2 $\to$ 8) is \good{3.3$\times$ more accurate than the original} on
+  interpolation. Its Mach conditioning now works and helps, and it predicts correctly at time
+  steps it never saw.
+\item It is the best latent model on this benchmark: every latent model in the ACDM paper
+  scores 6.4--7.4 on interpolation.
 \item It does \textbf{not} beat ACDM on interpolation. It is \textbf{level} with ACDM on
   extrapolation.
 \item It has lower error than ACDM on the 240-step rollout, but partly because it damps the
   oscillations. A constant mean field scores 15.8 on that case, so 240-step MSE is not good
   evidence of skill.
-\item The official U-Nets from the ACDM paper beat both models on the two 60-step cases.
-\item The remaining gap is located: it is the \textbf{autoencoder's reconstruction error} (20--30$\times$
-  ACDM's at the first step), not the continuous-time dynamics. At long lead times the dynamics
-  match ACDM on interpolation and beat it on extrapolation (Fig.~\ref{fig:lead}).
+\item The official stabilised U-Nets from the ACDM paper beat all models on the two 60-step
+  cases.
+\item \textbf{Where the remaining gap comes from} (\S\ref{sec:diag4}):
+  \begin{itemize}
+  \item the reconstruction error at the first step is about 0.26, against 0.02--0.03 for the
+    U-Net and ACDM. It explains about half of the gap to ACDM, but only an eighth of the gap
+    to the U-Net;
+  \item the rest is error that grows with lead time: blurred or misplaced structure,
+    harmonics, and late phase drift. The shedding frequency itself is accurate.
+  \end{itemize}
+  Five targeted fixes did not close it under the 8-frame horizon rule (\S\ref{sec:attempts4}).
 \end{itemize}
+
+\callout{\textbf{Update, 22 October} (details in \S\ref{sec:round4}).
+\begin{itemize}
+\item \textbf{The first-step error is all reconstruction}, but it explains only half of the
+  gap to ACDM and an eighth of the gap to the U-Net. The rest grows with lead time: blurred
+  or misplaced structure, harmonics, and late phase drift. The shedding frequency itself is
+  accurate.
+\item \textbf{Five fixes from a 47-paper literature review were tried; none helped.}
+  \begin{itemize}
+  \item A detail latent cut the first-step error to ACDM's level (0.02), but collapsed after
+    the 8-frame training window.
+  \item A harmonic-lattice generator and multi-start consistency both made the 60-step
+    forecast worse.
+  \end{itemize}
+\item \textbf{The plain fair-horizon model remains the best.} Under the 8-frame horizon rule
+  it appears to be close to the ceiling for a linear-latent model.
+\end{itemize}}
 
 \callout{\textbf{Update, 21 October (evening)} (details in \S\ref{sec:round3}).
 \begin{itemize}
@@ -448,6 +475,9 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
 \input{round3_section.tex}
 
 %==========================================================================================
+\input{round4_section.tex}
+
+%==========================================================================================
 \section{Answers to the project's questions}\label{sec:answers}
 
 \begin{enumerate}[leftmargin=*]
@@ -520,20 +550,21 @@ act. At late lead times the curves meet or cross. A linear POD with 128 modes re
   \item A one-step-then-60-step curriculum kept only part of it (\S\ref{sec:curr}).
   \item Short-horizon training with every frame supervised brought it from 0.66 to 0.26
     (\S\ref{sec:fairh8}).
-  \item A multiscale decoder did not help (\S\ref{sec:multiscale}). The floor is set by the
-    trade-off between reconstruction and multi-step prediction in the training objective.
-  \item Next to try, still end-to-end and forecasting-only: a higher reconstruction weight,
-    or a reconstruction loss on every predicted frame's own encoding.
+  \item A multiscale decoder did not help (\S\ref{sec:multiscale}).
+  \item A detail latent fixed the first step (0.02) but collapsed after the 8-frame window
+    (\S\ref{sec:attempts4}).
+  \item Under the 8-frame rule the floor is set by the trade-off between reconstruction and
+    multi-step prediction. The remaining lever is the horizon rule itself: the same 8 frames
+    spread over a longer time span.
   \end{itemize}
-  \emph{Test:} first-step error below about 0.1, with long-lead error unchanged.
 \item \textbf{Report DA like for like.} The original's df = 9 lead came from a checkpoint
   chosen on the DA test trajectories (\S\ref{sec:selection}). Any DA comparison should use
   checkpoints chosen without the test trajectories, and should report the gain statistics of
   \S\ref{sec:conditioning} alongside, since fast-decaying latent modes predict poor df = 9
   results.
-\item \textbf{Remove the mid-rollout damping without paying MSE.} Select checkpoints on a
-  combined score of correlation and energy, and train the amplitude term in the latent
-  coordinates that carry shedding.
+\item \textbf{Do not remove the damping.} Setting it to zero at inference worsens MSE
+  (interp 3.43 $\to$ 3.81, \S\ref{sec:diag4}). It hedges uncertain components. Energy and
+  correlation can still be reported alongside MSE for checkpoint selection.
 \item \textbf{Report fairly.} Always show error-vs-lead, energy and correlation curves together
   with MSE, and include the U-Nets, not only ACDM.
 \item \textbf{QG:} regenerate an independent test set before any QG claim.
