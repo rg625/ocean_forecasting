@@ -400,3 +400,9 @@ def test_detail_model_wiring_and_round_trip(tmp_path):
     m2.load_state_dict(ck["model"], strict=True)
     with torch.no_grad():
         torch.testing.assert_close(m2.propagate(z, taus, ma), m.propagate(z, taus, ma))
+
+
+def test_detail_gamma_min_bounds_the_decay():
+    m = tiny("block", detail_channels=2, detail_pad=[2, 3], detail_gamma_min=2.5)
+    lam = m.detail.rates(m.embed_cond(torch.tensor([0.7])), 1)
+    assert lam.real.max() <= -2.5

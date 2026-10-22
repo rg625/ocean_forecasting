@@ -67,6 +67,9 @@ class CTKAEConfig:
     detail_mode: str = "advect"
     detail_level: int = 1
     detail_pad: List[int] = field(default_factory=lambda: [8, 16])
+    # floor on the detail decay rate (per time unit; 2.5 = e-folding in 4 frames of 0.1),
+    # so the detail latent cannot carry the dynamics beyond the near term
+    detail_gamma_min: float = 0.0
 
 
 # ----------------------------------------------------------------------------- utils
@@ -344,7 +347,7 @@ class DetailLatent(nn.Module):
     State: [B, c, Hp, Wp] (the stage grid plus its zero padding), flattened into z after
     the d oscillator coordinates. Per channel c and wavenumber k (cycles per cell),
 
-        lambda(k) = -(softplus(a_c) + softplus(b_c) |k|^2 / k_max^2) + i 2 pi k . u_c
+        lambda(k) = -(gamma_min + softplus(a_c) + softplus(b_c) |k|^2 / k_max^2) + i 2 pi k . u_c
 
     with a, b, u shifted by a zero-initialised head of the condition embedding. Then
     exp(tau L) = F^-1 diag(e^{tau lambda}) F exactly. lambda(-k) = conj(lambda(k)), and the
@@ -366,6 +369,7 @@ class DetailLatent(nn.Module):
         self.hp, self.wp = self.h + 2 * self.py, self.w + 2 * self.px
         self.dim = c * self.hp * self.wp
         self.advect = cfg.detail_mode == "advect"
+        self.gamma_min = float(cfg.detail_gamma_min)
         cin = cfg.widths[lvl]
         self.enc = nn.Sequential(
             nn.GroupNorm(_groups(cin), cin), nn.SiLU(), nn.Conv2d(cin, c, 1)
@@ -416,7 +420,7 @@ class DetailLatent(nn.Module):
     def rates(self, e: Optional[Tensor], batch: int) -> Tensor:
         """lambda [B, c, Hp, Wp//2+1] (complex)."""
         a, b, u = self.params(e, batch)
-        gam = a[..., None, None] + b[..., None, None] * self.k2
+        gam = self.gamma_min + a[..., None, None] + b[..., None, None] * self.k2
         ph = (
             2
             * math.pi

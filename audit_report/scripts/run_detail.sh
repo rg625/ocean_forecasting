@@ -6,7 +6,7 @@
 cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
 PY=/home/rg625/anaconda3/envs/samudra/bin/python
 S=../audit_report/scripts
-for v in detail decay; do
+for v in ${VARIANTS:-detail decay}; do
   name=H8${v}_d256
   echo "=== $(date) train $name"
   $PY train_ctkae.py --config=configs/ctkae/fair_h8_$v.yaml run_name=$name seed=0 2>&1 | grep -v Warning | tail -1
