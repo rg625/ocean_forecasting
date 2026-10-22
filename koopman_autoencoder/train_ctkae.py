@@ -7,6 +7,7 @@ Objective (all distances channel-weighted, see ct_data.channel_weights):
       + w_pred * mean_{k in S} |D(z_k) - x_{t+k}|^2          z_k exact: mu + e^{tau_k A}(z_0 - mu)
       + w_lat  * mean_{k in S} |z_k - sg(E(x_{t+k-n+1..t+k}))|^2 / E|sg(E)|^2
       + w_amp  * mean_{k in S} (|y_k|_block - |sg(y_k^enc)|_block)^2   (block generator only)
+      (w_pred term optionally weighted linearly over leads, 1 -> w_lead_ramp, mean 1)
       + w_tc   * multistart_consistency (windows starting at tc_starts inside the clip; off by default)
 With a detail latent (models/ct_kae.DetailLatent) the w_lat term is computed for the
 oscillators and the detail state separately, each normalised by its own E|sg(E)|^2, and
@@ -74,6 +75,7 @@ DEFAULTS = OmegaConf.create(
             "w_lat": 0.1,
             "w_amp": 0.0,
             "w_tc": 0.0,
+            "w_lead_ramp": 1.0,
             "tc_starts": [0, 2, 4],
             "val_every": 1000,
             "log_every": 100,
@@ -96,8 +98,21 @@ def horizon_at(step: int, tc) -> int:
     return int(round(tc.k_start + (tc.k_max - tc.k_start) * frac))
 
 
-def weighted_mse(a, b, w):
-    return (((a - b) ** 2).mean(dim=(-1, -2)) * w).mean()
+def weighted_mse(a, b, w, lead_w=None):
+    """Channel-weighted MSE; ``lead_w`` [n] (mean 1) weights the lead axis of [B, n, C, H, W]."""
+    e = ((a - b) ** 2).mean(dim=(-1, -2)) * w
+    if lead_w is not None:
+        e = e * lead_w[:, None]
+    return e.mean()
+
+
+def lead_weights(idx, K: int, ramp: float):
+    """Linear weights from 1 (lead 1) to ``ramp`` (lead K) at the decoded leads ``idx``
+    (0-based), normalised to mean 1; None when flat."""
+    if ramp == 1.0:
+        return None
+    lw = 1.0 + (ramp - 1.0) * idx.float() / max(K - 1, 1)
+    return lw / lw.mean()
 
 
 def amp_loss(y_pred, y_tgt):
@@ -233,7 +248,9 @@ def main():
             ma_rep = ma.repeat_interleave(nd)
             x_hat = model.decode(zs, train.mask, ma_rep).float()
             x_rec = model.decode(z0, train.mask, ma).float()
-            l_pred = weighted_mse(x_hat, tgt[:, idx], w_ch)
+            l_pred = weighted_mse(
+                x_hat, tgt[:, idx], w_ch, lead_weights(idx, K, tc.w_lead_ramp)
+            )
             l_rec = weighted_mse(x_rec, win[:, -1], w_ch)
             l_lat = torch.zeros((), device=dev)
             l_amp = torch.zeros((), device=dev)

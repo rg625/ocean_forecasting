@@ -492,3 +492,18 @@ def test_multistart_consistency_runs_on_real_model_and_backprops():
     assert torch.isfinite(loss) and float(loss) > 0
     loss.backward()
     assert m.encoder.stem.weight.grad.abs().sum() > 0
+
+
+def test_lead_weights_ramp_and_flat():
+    import train_ctkae
+
+    idx = torch.arange(8)
+    assert train_ctkae.lead_weights(idx, 8, 1.0) is None
+    lw = train_ctkae.lead_weights(idx, 8, 2.0)
+    torch.testing.assert_close(lw.mean(), torch.tensor(1.0))
+    torch.testing.assert_close(lw[-1] / lw[0], torch.tensor(2.0))
+    a, b = torch.zeros(2, 8, 4, 3, 3), torch.ones(2, 8, 4, 3, 3)
+    w = torch.ones(4)
+    torch.testing.assert_close(
+        train_ctkae.weighted_mse(a, b, w, lw), train_ctkae.weighted_mse(a, b, w)
+    )
