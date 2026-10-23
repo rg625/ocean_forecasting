@@ -9,6 +9,9 @@ Objective (all distances channel-weighted, see ct_data.channel_weights):
       + w_amp  * mean_{k in S} (|y_k|_block - |sg(y_k^enc)|_block)^2   (block generator only)
       (w_pred term optionally weighted linearly over leads, 1 -> w_lead_ramp, mean 1)
       + w_tc   * multistart_consistency (windows starting at tc_starts inside the clip; off by default)
+      + optional terms of the original KAE loss, off by default (see step_backward):
+        w_back (backward latent consistency), w_cos (directional cosine), w_energy (latent
+        norm smoothness), w_sob_t / w_sob_x (temporal / spatial Sobolev), w_spec (spectral)
 With a detail latent (models/ct_kae.DetailLatent) the w_lat term is computed for the
 oscillators and the detail state separately, each normalised by its own E|sg(E)|^2, and
 summed; w_amp applies to the oscillators only.
@@ -28,6 +31,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -76,6 +80,13 @@ DEFAULTS = OmegaConf.create(
             "w_amp": 0.0,
             "w_tc": 0.0,
             "w_lead_ramp": 1.0,
+            # optional terms of the original KAE formulation, off by default (ablations)
+            "w_back": 0.0,
+            "w_cos": 0.0,
+            "w_energy": 0.0,
+            "w_sob_t": 0.0,
+            "w_sob_x": 0.0,
+            "w_spec": 0.0,
             "accum": 1,
             "tc_starts": [0, 2, 4],
             "val_every": 1000,
@@ -147,22 +158,82 @@ def multistart_consistency(model, full, z0, taus, ma, mask, n_frames, starts):
     return torch.stack(num).mean(), torch.stack(zs).pow(2).mean().detach() + 1e-6
 
 
+def sobolev_time(x_hat_seq, x_seq, w_ch, ok):
+    """Temporal Sobolev term: channel-weighted MSE between consecutive-frame differences of
+    the forecast and of the truth, over the frame pairs flagged in ``ok`` [n-1]."""
+    dh = x_hat_seq[:, 1:] - x_hat_seq[:, :-1]
+    dt = x_seq[:, 1:] - x_seq[:, :-1]
+    return weighted_mse(dh[:, ok], dt[:, ok], w_ch)
+
+
+def sobolev_space(e, w_ch):
+    """Spatial Sobolev term on the error field e [..., C, H, W]: channel-weighted mean of
+    its squared finite differences along both grid directions."""
+    gx = (e[..., :, 1:] - e[..., :, :-1]).pow(2).mean(dim=(-1, -2))
+    gy = (e[..., 1:, :] - e[..., :-1, :]).pow(2).mean(dim=(-1, -2))
+    return ((gx + gy) * w_ch).mean()
+
+
+def spectral_l1(x_hat, x, w_ch, den=None):
+    """Spectral term: channel-weighted L1 distance of the 2-D Fourier amplitudes, divided by
+    the channel-weighted mean amplitude of the truth (``den``, computed on the full batch
+    by the caller)."""
+    fh = torch.fft.rfft2(x_hat.float()).abs()
+    ft = torch.fft.rfft2(x.float()).abs()
+    num = ((fh - ft).abs().mean(dim=(-1, -2)) * w_ch).mean()
+    if den is None:
+        den = (ft.mean(dim=(-1, -2)) * w_ch).mean() + 1e-6
+    return num / den
+
+
+LOSS_TERMS = (
+    "loss",
+    "rec",
+    "pred",
+    "lat",
+    "amp",
+    "tc",
+    "back",
+    "cos",
+    "energy",
+    "sob_t",
+    "sob_x",
+    "spec",
+)
+
+
 def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, accum=1):
     """Forward and backward of one training step on a batch split into ``accum`` equal
     chunks, whose gradients add up to the full-batch gradient (less GPU memory, same
-    training). The latent-consistency, amplitude and multi-start terms divide by second
-    moments of detached quantities; these are computed once on the full batch, so every
-    term is a chunk mean with a full-batch denominator and the result does not depend on
-    ``accum``. Returns the full-batch loss terms."""
+    training). Terms that divide by batch statistics (latent consistency, amplitude,
+    multi-start, backward consistency, energy, spectral) take those statistics from
+    detached quantities computed once on the full batch, so every term is a chunk mean
+    with a full-batch denominator and the result does not depend on ``accum``.
+
+    Terms (weights in ``tc``; all but rec / pred / lat / amp are off by default):
+      rec    |D(E(window)) - x_t|^2                     pred   |D(z_k) - x_{t+k}|^2
+      lat    |z_k - sg E(x_{t+k})|^2 / E|z|^2           amp    oscillator amplitudes
+      tc     multi-start consistency                    back   |e^{-tau A} E(last window) - sg E(.)|^2
+      cos    1 - cos(z_k, sg E(x_{t+k}))                energy (|z_{k+1}| - |z_k|)^2 / E|z|^2
+      sob_t  temporal Sobolev (frame differences)       sob_x  spatial Sobolev (error gradients)
+      spec   spectral L1 of Fourier amplitudes
+    Returns the full-batch loss terms."""
     B = win.shape[0]
     if B % accum:
         raise ValueError(f"batch {B} not divisible by accum {accum}")
     b, nd, sd = B // accum, len(idx), model.slow_dim
     lw = lead_weights(idx, K, tc.w_lead_ramp)
     amp_on = tc.w_amp > 0 and model.cfg.generator == "block"
-    zt = den_lat = den_det = den_amp = den_tc = None
+    w_back = getattr(tc, "w_back", 0.0)
+    w_cos = getattr(tc, "w_cos", 0.0)
+    w_energy = getattr(tc, "w_energy", 0.0)
+    w_sob_t = getattr(tc, "w_sob_t", 0.0)
+    w_sob_x = getattr(tc, "w_sob_x", 0.0)
+    w_spec = getattr(tc, "w_spec", 0.0)
+    need_zt = tc.w_lat > 0 or tc.w_amp > 0 or w_back > 0 or w_cos > 0 or w_energy > 0
+    zt = den_lat = den_det = den_amp = den_tc = den_en = den_spec = None
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=tc.amp):
-        if tc.w_lat > 0 or tc.w_amp > 0:
+        if need_zt:
             full = torch.cat([win, tgt], 1)
             wins = torch.stack(
                 [full[:, int(k) + 1 : int(k) + 1 + n_frames] for k in idx], 1
@@ -177,6 +248,7 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
                 .view(B, nd, -1)
             )
             den_lat = zt[..., :sd].pow(2).mean() + 1e-6
+            den_en = zt[..., :sd].pow(2).sum(-1).mean() + 1e-6
             if model.detail is not None:
                 den_det = zt[..., sd:].pow(2).mean() + 1e-6
             if amp_on:
@@ -195,12 +267,18 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
                 n_frames,
                 list(tc.tc_starts),
             )
-    tot = dict.fromkeys(("loss", "rec", "pred", "lat", "amp", "tc"), 0.0)
+    if w_spec > 0:
+        ft = torch.fft.rfft2(tgt[:, idx].float()).abs()
+        den_spec = (ft.mean(dim=(-1, -2)) * w_ch).mean() + 1e-6
+    # frame pairs (window frame t, lead idx[0]+1, ...) that are consecutive in time
+    seq_idx = torch.cat([idx.new_tensor([-1]), idx])
+    ok = (seq_idx[1:] - seq_idx[:-1]) == 1
+    tot = dict.fromkeys(LOSS_TERMS, 0.0)
     for c in range(accum):
         sl = slice(c * b, (c + 1) * b)
         w_, t_, ta_, m_ = win[sl], tgt[sl], taus[sl], ma[sl]
         zero = torch.zeros((), device=win.device)
-        l_lat, l_amp, l_tc = zero, zero, zero
+        l_lat = l_amp = l_tc = l_back = l_cos = l_en = l_st = l_sx = l_sp = zero
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=tc.amp):
             z0 = model.encode(w_, mask, m_)
             zs = model.propagate(z0.float(), ta_, m_)[:, idx]  # [b, n, d]
@@ -220,6 +298,30 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
                     l_amp = amp_loss(
                         (zs - mu)[..., :sd], (ztc - mu)[..., :sd].detach(), den_amp
                     )
+                if w_cos > 0:
+                    l_cos = (
+                        1 - F.cosine_similarity(zs[..., :sd], ztc[..., :sd], dim=-1)
+                    ).mean()
+                if w_energy > 0:
+                    nrm = torch.cat(
+                        [
+                            z0.float()[:, None, :sd].norm(dim=-1),
+                            zs[..., :sd].norm(dim=-1),
+                        ],
+                        1,
+                    )
+                    d = nrm[:, 1:] - nrm[:, :-1]
+                    l_en = d[:, ok].pow(2).mean() / den_en
+                if w_back > 0:
+                    # backward consistency: encode the last window of the clip and run
+                    # the same generator backwards to every earlier latent (and to t)
+                    full_ = torch.cat([w_, t_], 1)
+                    z_end = model.encode(full_[:, -n_frames:], mask, m_).float()
+                    t_end = ta_[:, -1:]
+                    back = torch.cat([ta_[:, idx] - t_end, -t_end], 1)
+                    zb = model.propagate(z_end, back, m_)[..., :sd]
+                    ref = torch.cat([ztc, z0.float()[:, None]], 1)[..., :sd].detach()
+                    l_back = ((zb - ref) ** 2).mean() / den_lat
             if den_tc is not None:
                 num, _ = multistart_consistency(
                     model,
@@ -232,21 +334,47 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
                     list(tc.tc_starts),
                 )
                 l_tc = num / den_tc
+            if w_sob_t > 0:
+                l_st = sobolev_time(
+                    torch.cat([x_rec[:, None], x_hat], 1),
+                    torch.cat([w_[:, -1:], t_[:, idx]], 1),
+                    w_ch,
+                    ok,
+                )
+            if w_sob_x > 0:
+                l_sx = sobolev_space(x_hat - t_[:, idx], w_ch)
+            if w_spec > 0:
+                l_sp = spectral_l1(x_hat, t_[:, idx], w_ch, den_spec)
             loss = (
                 tc.w_rec * l_rec
                 + tc.w_pred * l_pred
                 + tc.w_lat * l_lat
                 + tc.w_amp * l_amp
                 + tc.w_tc * l_tc
+                + w_back * l_back
+                + w_cos * l_cos
+                + w_energy * l_en
+                + w_sob_t * l_st
+                + w_sob_x * l_sx
+                + w_spec * l_sp
             )
         (loss / accum).backward()
-        for k, v in (
-            ("loss", loss),
-            ("rec", l_rec),
-            ("pred", l_pred),
-            ("lat", l_lat),
-            ("amp", l_amp),
-            ("tc", l_tc),
+        for k, v in zip(
+            LOSS_TERMS,
+            (
+                loss,
+                l_rec,
+                l_pred,
+                l_lat,
+                l_amp,
+                l_tc,
+                l_back,
+                l_cos,
+                l_en,
+                l_st,
+                l_sx,
+                l_sp,
+            ),
         ):
             tot[k] += float(v) / accum
     return tot

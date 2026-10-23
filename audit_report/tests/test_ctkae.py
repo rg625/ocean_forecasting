@@ -525,6 +525,12 @@ def test_gradient_accumulation_is_exact():
         w_tc=0.3,
         w_lead_ramp=2.0,
         tc_starts=[0, 2, 4],
+        w_back=0.1,
+        w_cos=0.1,
+        w_energy=0.1,
+        w_sob_t=0.1,
+        w_sob_x=0.1,
+        w_spec=0.1,
     )
     g = torch.Generator().manual_seed(5)
     B, K = 4, 8
@@ -550,3 +556,77 @@ def test_gradient_accumulation_is_exact():
             assert abs(res[accum][0][k] - ref) <= 1e-5 * (1 + abs(ref)), k
         for a, b in zip(res[accum][1], res[1][1]):
             torch.testing.assert_close(a, b, rtol=1e-4, atol=1e-6)
+
+
+def test_physics_terms_vanish_on_perfect_prediction_and_are_positive_otherwise():
+    import train_ctkae
+
+    g = torch.Generator().manual_seed(6)
+    x = torch.randn(2, 5, 4, 16, 32, generator=g)
+    y = x + 0.1 * torch.randn(2, 5, 4, 16, 32, generator=g)
+    w = torch.ones(4)
+    ok = torch.ones(4, dtype=torch.bool)
+    assert float(train_ctkae.sobolev_time(x, x, w, ok)) == 0.0
+    assert float(train_ctkae.sobolev_space(x - x, w)) == 0.0
+    assert float(train_ctkae.spectral_l1(x, x, w)) < 1e-6
+    assert float(train_ctkae.sobolev_time(y, x, w, ok)) > 0
+    assert float(train_ctkae.sobolev_space(y - x, w)) > 0
+    assert float(train_ctkae.spectral_l1(y, x, w)) > 0
+    # a constant shift in time leaves frame differences unchanged
+    assert float(train_ctkae.sobolev_time(x + 1.0, x, w, ok)) < 1e-10
+
+
+@pytest.mark.parametrize(
+    "term", ["w_back", "w_cos", "w_energy", "w_sob_t", "w_sob_x", "w_spec"]
+)
+def test_each_optional_term_changes_the_gradient(term):
+    from types import SimpleNamespace
+
+    import train_ctkae
+
+    base = dict(
+        amp=False,
+        w_rec=1.0,
+        w_pred=1.0,
+        w_lat=0.1,
+        w_amp=0.1,
+        w_tc=0.0,
+        w_lead_ramp=1.0,
+        tc_starts=[0, 2, 4],
+    )
+    g = torch.Generator().manual_seed(7)
+    win = torch.randn(2, 2, 4, 16, 32, generator=g)
+    tgt = torch.randn(2, 8, 4, 16, 32, generator=g)
+    taus = (torch.arange(1, 9) * 0.1).expand(2, -1)
+    ma = torch.tensor([0.6, 0.8])
+    mask = torch.ones(16, 32)
+    grads = []
+    for extra in ({}, {term: 1.0}):
+        m = tiny("block", fixed_point="none")
+        parts = train_ctkae.step_backward(
+            m,
+            win,
+            tgt,
+            taus,
+            ma,
+            mask,
+            torch.arange(8),
+            8,
+            2,
+            SimpleNamespace(**base, **extra),
+            torch.ones(4),
+            1,
+        )
+        grads.append(
+            torch.cat([p.grad.flatten() for p in m.parameters() if p.grad is not None])
+        )
+    key = {
+        "w_back": "back",
+        "w_cos": "cos",
+        "w_energy": "energy",
+        "w_sob_t": "sob_t",
+        "w_sob_x": "sob_x",
+        "w_spec": "spec",
+    }[term]
+    assert parts[key] > 0
+    assert not torch.allclose(grads[0], grads[1])

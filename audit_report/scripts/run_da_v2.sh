@@ -5,7 +5,8 @@
 # its grid, so the grid is widened to 0.03-1.0 for every model (still tuned on gt_extrap).
 # Memory-hungry sweeps (n_obs, joint_sparsity) run last.
 #   usage: [LRS="..."] [DA_ROOT=da_v2] [DF9_ONLY=1] run_da_v2.sh LABEL KIND RUN_DIR [CKPT]
-# LRS overrides the tuning grid; DF9_ONLY=1 runs only tune + repr check + the df9 sweeps.
+# LRS overrides the tuning grid; DF9_ONLY=1 runs only tune + repr check + the df9 sweeps
+# (DF9_SECTIONS selects which).
 set -u
 LABEL=$1; KIND=$2; RUN=$3; CKPT=${4:-}  # empty: the adapter's default checkpoint
 cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
@@ -23,8 +24,15 @@ LR=$($PY -c "import json;print(json.load(open('$OUT/df9/tuning.json'))['KAE']['l
 echo "=== repr_check lr=$LR $(date -Is)" >> $LOG
 $PY -m data_assimilation.tra.da_repr_check --kae-kind $KIND --kae-run $RUN $CK --lr $LR --json $OUT/repr_check.json >> $LOG 2>&1
 if [ "$DF9_ONLY" = 1 ]; then
-  for s in delta_l noise sparsity misspec_noise n_obs; do run df9_$s --out-dir $OUT/df9 --pin-delta-f 9 --sections $s --iters 500 --n-problems 8; done
-  run df9_joint_sparsity --out-dir $OUT/df9 --pin-delta-f 9 --sections joint_sparsity --iters 500 --n-problems 8 --joint-n-obs 1 4 8 16 32
+  # DF9_SECTIONS restricts the df9 sweeps (default: all six)
+  SECS=${DF9_SECTIONS:-"delta_l noise sparsity misspec_noise n_obs joint_sparsity"}
+  for s in $SECS; do
+    if [ "$s" = joint_sparsity ]; then
+      run df9_joint_sparsity --out-dir $OUT/df9 --pin-delta-f 9 --sections joint_sparsity --iters 500 --n-problems 8 --joint-n-obs 1 4 8 16 32
+    else
+      run df9_$s --out-dir $OUT/df9 --pin-delta-f 9 --sections $s --iters 500 --n-problems 8
+    fi
+  done
   echo "=== DONE $(date -Is)" >> $LOG; exit 0
 fi
 run headline --out-dir $OUT/df1 --sections headline --iters 2000 --n-problems 12

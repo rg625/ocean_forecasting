@@ -2,7 +2,8 @@
 at the user's request; see the caveat in EXPERIMENT_RESULTS.md).
 
 Forecasting: RUN/eval/<ckpt>.json from eval_ctkae.py (gt_interp / gt_extrap / gt_longer,
-benchmark scorer). Data assimilation, as the established protocol: 4D-Var learning rate tuned
+benchmark scorer; MSE on predicted frames and on all frames, the ACDM-paper convention) and
+LSiM (lsim_score.py, ACDM convention, x10^-1). Data assimilation, as the established protocol: 4D-Var learning rate tuned
 on gt_extrap (canonical schedule, 6 problems, 400 iterations), then the df = 9 default problem
 on gt_interp (observations at t0 + [9, 12, 15, 19, 25], full fields, noise-free, 16 problems,
 500 iterations).
@@ -24,12 +25,18 @@ from data_assimilation.tra.bridge import REGIMES, PhysicalData  # noqa: E402
 from data_assimilation.tra.ctkae_adapter import CTKAEAdapter  # noqa: E402
 from data_assimilation.tra.fourdvar import solve_kae  # noqa: E402
 from data_assimilation.tra.protocol import build_problem, canonical  # noqa: E402
+from eval_ctkae import load_model, rollout  # noqa: E402
+from models.ct_data import load_eval_case, to_acdm_layout  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).parent))
+from lsim_score import lsim  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("run_dir")
 ap.add_argument("--ckpt", default="last.pth")
 ap.add_argument("--lrs", type=float, nargs="+", default=[0.3, 1.0, 3.0, 10.0])
 ap.add_argument("--json", default=None)
+ap.add_argument("--no-lsim", action="store_true")
 args = ap.parse_args()
 dev = torch.device("cuda")
 run = Path(args.run_dir)
@@ -37,9 +44,23 @@ ev = json.loads((run / "eval" / f"{Path(args.ckpt).stem}.json").read_text())
 out: dict = {"run": run.name, "ckpt": args.ckpt}
 for c in ("interp", "extrap", "longer"):
     out[f"{c}_mse"] = ev[c]["mse_pred"]
+    out[f"{c}_mse_all"] = ev[c]["mse_all"]  # ACDM-paper convention (all frames)
     out[f"{c}_lead1"] = ev[c]["mse_lead"][0]
     out[f"{c}_E58"] = ev[c]["energy_lead"][57]
     out[f"{c}_acc58"] = ev[c]["acc_lead"][57]
+
+if not args.no_lsim:  # LSiM, ACDM convention (lsim_score.py)
+    m, _ = load_model(run, args.ckpt, dev)
+    for c in ("interp", "extrap", "longer"):
+        x, ma, mask = load_eval_case(str(REPO / f"data/acdm/128_tra/gt_{c}.nc"), dev)
+        T = x.shape[1]
+        taus = 0.1 * torch.arange(1, T - 1, device=dev, dtype=torch.float32)
+        with torch.no_grad():
+            full = torch.cat([x[:, :2], rollout(m, x, ma, mask, 1, taus)], 1)
+        pred = to_acdm_layout(full, ma)[None, :, :, :4]
+        out[f"{c}_lsim"], out[f"{c}_lsim_sd"] = lsim(pred, c)
+    del m
+    torch.cuda.empty_cache()
 
 ad = CTKAEAdapter(run, REGIMES["tra"], dev, ckpt=args.ckpt)
 D = REPO / "data/acdm/128_tra"

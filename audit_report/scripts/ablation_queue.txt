@@ -1,0 +1,77 @@
+# tag|seed|run_name|overrides  (run_ablation.sh; order = priority)
+ref|0|H8_d256|
+ref|1|H8_d256|
+ref|2|H8_d256|
+nocond|0|AB_nocond|model.film_encoder=false model.film_decoder=false model.cond_generator=false
+dense|0|AB_dense|model.generator=dense
+hurwitz|0|AB_hurwitz|model.generator=hurwitz
+d128|0|H8_d128|model.latent_dim=128
+d512|0|AB_d512|model.latent_dim=512
+frames1|0|AB_frames1|model.n_frames=1
+onestep|0|AB_onestep|train.k_start=1 train.k_max=1 train.n_dec=1
+mu|0|AB_mu|model.fixed_point=conditional
+norec|0|AB_norec|train.w_rec=0.0
+nopred|0|AB_nopred|train.w_pred=0.0
+nolat|0|AB_nolat|train.w_lat=0.0
+noamp|0|AB_noamp|train.w_amp=0.0
+back|0|AB_back|train.w_back=0.1
+cos|0|AB_cos|train.w_cos=0.1
+energy|0|AB_energy|train.w_energy=0.1
+sobt|0|AB_sobt|train.w_sob_t=0.1
+sobx|0|AB_sobx|train.w_sob_x=0.1
+spec|0|AB_spec|train.w_spec=0.1
+nocond|1|AB_nocond|model.film_encoder=false model.film_decoder=false model.cond_generator=false
+dense|1|AB_dense|model.generator=dense
+hurwitz|1|AB_hurwitz|model.generator=hurwitz
+d128|1|H8_d128|model.latent_dim=128
+d512|1|AB_d512|model.latent_dim=512
+frames1|1|AB_frames1|model.n_frames=1
+onestep|1|AB_onestep|train.k_start=1 train.k_max=1 train.n_dec=1
+mu|1|AB_mu|model.fixed_point=conditional
+norec|1|AB_norec|train.w_rec=0.0
+nopred|1|AB_nopred|train.w_pred=0.0
+nolat|1|AB_nolat|train.w_lat=0.0
+noamp|1|AB_noamp|train.w_amp=0.0
+back|1|AB_back|train.w_back=0.1
+cos|1|AB_cos|train.w_cos=0.1
+energy|1|AB_energy|train.w_energy=0.1
+sobt|1|AB_sobt|train.w_sob_t=0.1
+sobx|1|AB_sobx|train.w_sob_x=0.1
+spec|1|AB_spec|train.w_spec=0.1
+nocond|2|AB_nocond|model.film_encoder=false model.film_decoder=false model.cond_generator=false
+dense|2|AB_dense|model.generator=dense
+hurwitz|2|AB_hurwitz|model.generator=hurwitz
+d128|2|H8_d128|model.latent_dim=128
+d512|2|AB_d512|model.latent_dim=512
+frames1|2|AB_frames1|model.n_frames=1
+onestep|2|AB_onestep|train.k_start=1 train.k_max=1 train.n_dec=1
+mu|2|AB_mu|model.fixed_point=conditional
+norec|2|AB_norec|train.w_rec=0.0
+nopred|2|AB_nopred|train.w_pred=0.0
+nolat|2|AB_nolat|train.w_lat=0.0
+noamp|2|AB_noamp|train.w_amp=0.0
+back|2|AB_back|train.w_back=0.1
+cos|2|AB_cos|train.w_cos=0.1
+energy|2|AB_energy|train.w_energy=0.1
+sobt|2|AB_sobt|train.w_sob_t=0.1
+sobx|2|AB_sobx|train.w_sob_x=0.1
+spec|2|AB_spec|train.w_spec=0.1
+S_rec03|0|AB_rec03|train.w_rec=0.3
+S_rec3|0|AB_rec3|train.w_rec=3.0
+S_pred03|0|AB_pred03|train.w_pred=0.3
+S_pred3|0|AB_pred3|train.w_pred=3.0
+S_lat003|0|AB_lat003|train.w_lat=0.03
+S_lat03|0|AB_lat03|train.w_lat=0.3
+S_lat1|0|AB_lat1|train.w_lat=1.0
+S_amp003|0|AB_amp003|train.w_amp=0.03
+S_amp05|0|AB_amp05|train.w_amp=0.5
+S_back1|0|AB_back1|train.w_back=1.0
+S_cos1|0|AB_cos1|train.w_cos=1.0
+S_energy1|0|AB_energy1|train.w_energy=1.0
+S_sobt1|0|AB_sobt1|train.w_sob_t=1.0
+S_sobx1|0|AB_sobx1|train.w_sob_x=1.0
+S_spec1|0|AB_spec1|train.w_spec=1.0
+S_lr15e5|0|AB_lr15e5|train.lr=1.5e-4
+S_lr6e4|0|AB_lr6e4|train.lr=6e-4
+S_uniform|0|AB_uniform|train.channel_weighting=uniform
+S_ramp2|0|AB_ramp2|train.w_lead_ramp=2.0
