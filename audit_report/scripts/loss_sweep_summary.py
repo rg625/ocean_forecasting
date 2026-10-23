@@ -28,7 +28,14 @@ if args.ref not in rows:
 avg = {
     t: {
         k: sum(r[k] for r in v) / len(v)
-        for k in ("fc_mse60", "fc_lead1", "fc_lead10", "fc_E58", "da_df9")
+        for k in (
+            "interp_mse",
+            "extrap_mse",
+            "longer_mse",
+            "interp_lead1",
+            "interp_E58",
+            "da_df9",
+        )
     }
     | {"n": len(v), "da_lr": [r["da_lr"] for r in v]}
     for t, v in rows.items()
@@ -40,12 +47,15 @@ for t, a in avg.items():
         + a["da_df9"] / ref["da_df9"]
     )
 print(
-    f"{'run':10s} {'n':>2s} {'S':>6s} {'fc60':>7s} {'lead1':>6s} {'lead10':>7s} {'E58':>5s} {'da_df9':>7s}  lr"
+    f"{'run':10s} {'n':>2s} {'S':>6s} {'interp':>7s} {'extrap':>7s} {'longer':>7s} "
+    f"{'lead1':>6s} {'E58':>5s} {'da_df9':>7s}  lr"
 )
 for t, a in sorted(avg.items(), key=lambda kv: kv[1]["S"]):
     flag = " *" if a["S"] <= avg[args.ref]["S"] - 0.05 else ""
     print(
-        f"{t:10s} {a['n']:2d} {a['S']:6.3f} {a['fc_mse60']:7.3f} {a['fc_lead1']:6.3f} {a['fc_lead10']:7.3f} {a['fc_E58']:5.2f} {a['da_df9']:7.4f}  {a['da_lr']}{flag}"
+        f"{t:10s} {a['n']:2d} {a['S']:6.3f} {a['interp_mse']:7.3f} {a['extrap_mse']:7.3f} "
+        f"{a['longer_mse']:7.3f} {a['interp_lead1']:6.3f} {a['interp_E58']:5.2f} "
+        f"{a['da_df9']:7.4f}  {a['da_lr']}{flag}"
     )
 if args.json:
     Path(args.json).write_text(json.dumps(avg, indent=1))
