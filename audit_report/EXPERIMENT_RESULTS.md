@@ -443,3 +443,50 @@ Pre-registered success (interp <= 3.19 with extrap <= 2.29) was met by none.
     hedging;
   - the trained latent has <= 0.5% of its temporal variance at >= 2x the shedding
     frequency, so harmonics come from the decoder.
+
+## 15. Loss-hyperparameter search (22-23 Oct)
+
+At the user's request, runs were scored on the test cases.
+- **Score:** S = mean over interp, extrap and longer of MSE relative to the reference, plus
+  df9 DA (gt_interp, lr tuned on gt_extrap) relative to the reference. Lower is better; the
+  reference scores 2.00.
+- **Helpful threshold, fixed before the runs:** S <= ref - 0.05.
+- **Runs:** trained on all data, with exact gradient accumulation (accum 2,
+  `test_gradient_accumulation_is_exact`).
+- **Files:**
+  - scripts: `scripts/run_loss_sweep.sh`, `run_loss_stage2.sh`, `run_loss_stage2b.sh`,
+    `test_score.py`, `loss_sweep_summary.py`;
+  - stage-1 ranking: `results/loss_sweep_stage1.json`.
+
+**Stage 1** (10k steps, seed 0, one change at a time from the fair 2 -> 8, latent 256
+setting):
+
+| Change | S | interp | extrap | longer | DA df9 |
+|---|---|---|---|---|---|
+| w_amp 0.1 -> 0.5 | **1.905** | 3.98 | 1.96 | 14.71 | 0.089 |
+| lr 3e-4 -> 6e-4 | **1.923** | 3.10 | 1.92 | 16.58 | 0.094 |
+| uniform channel weights | 1.994 | 4.48 | 2.05 | 15.65 | 0.090 |
+| reference | 2.000 | 3.96 | 2.25 | 15.64 | 0.092 |
+| w_amp 0 / lead ramp 2 / w_rec 3 / lr 1.5e-4 / w_rec 0.3 / w_lat 1 | 2.10-2.61 | 3.8-5.6 | 2.2-2.7 | 15.7-19.0 | 0.099-0.127 |
+| w_lat 0 | 5.54 | 17.3 | 11.7 | 33.2 | 0.151 |
+
+**Final stage** (20k steps, fresh seed 10), against the current best H8_d256 at 20k steps
+(seeds 0 / 1 / 2):
+
+| Run | interp | extrap | longer | lead 1 | DA df9 | S |
+|---|---|---|---|---|---|---|
+| H8_d256 (current best) | 3.43 / 3.38 / 3.66 | 1.67 / 1.97 / 2.29 | 16.8 / 15.6 / 16.2 | 0.25-0.26 | 0.089 / 0.091 / 0.091 | 2.00 |
+| w_amp 0.5 + lr 6e-4 | 4.13 | 2.17 | 17.00 | 0.43 | 0.118 | worse |
+| w_amp 0.5 | 3.83 | 2.05 | 16.35 | 0.32 | 0.102 | 2.18 |
+| lr 6e-4 | 3.76 | 1.96 | 17.25 | 0.32 | 0.102 | 2.18 |
+
+**Result: no setting beats the current best at full length.** By the pre-set rule no
+further seeds were run; LS2_combo_s11 was stopped at start (ABORTED).
+
+- The stage-1 gains came from short, under-trained runs (the 10k reference scores interp
+  3.96 against 3.43 at 20k) and single seeds.
+- At full length both changes cost first-step sharpness (lead 1: 0.32 vs 0.26) and DA
+  (0.102 vs 0.089-0.091).
+- The inherited loss weights (w_rec 1, w_pred 1, w_lat 0.1, w_amp 0.1, lr 3e-4) are at or
+  near the optimum.
+- Removing the latent-consistency term is catastrophic.
