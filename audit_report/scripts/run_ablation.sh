@@ -14,7 +14,7 @@ S=../audit_report/scripts
 Q=$S/ablation_queue.txt
 LOCK=model_outputs_ctkae/ablation_state; mkdir -p $LOCK
 BASE="--config=configs/ctkae/fair_h8.yaml model.latent_dim=256 train.steps=20000 train.accum=2"
-wait_disk () { until [ $(df --output=avail -B1M / | tail -1) -ge 1500 ]; do sleep 120; done; }
+wait_disk () { until [ $(df --output=avail -B1M / | tail -1) -ge 600 ]; do sleep 120; done; }
 wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 8000 ]; do sleep 60; done; }
 finished_run () { for d in $(ls -d model_outputs_ctkae/${1}_s${2}_* 2>/dev/null | sort -r); do [ -f $d/DONE ] && [ -f $d/last.pth ] && { echo $d; return; }; done; }
 while true; do
