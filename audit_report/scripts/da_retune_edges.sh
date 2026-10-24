@@ -2,7 +2,8 @@
 # DA learning-rate re-tuning for finished ablation jobs (2026-10-24). If a run's tuned lr sits at
 # the edge of its grid (tuning on gt_extrap), the grid is extended outward by factors of 3-10 and
 # the tune + the four df9 sweeps (da_abl) and test_score's df9 problem are re-run; repeated until
-# the optimum is interior (max 3 rounds). Safe to re-run: interior rows are skipped.
+# the optimum is interior over the union of all grids tried (tuning_history.json; max 3 rounds).
+# Safe to re-run: interior rows are skipped. Uses the same serialised GPU start as the runner.
 cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
 PY=/home/rg625/anaconda3/envs/samudra/bin/python
 S=../audit_report/scripts
@@ -13,8 +14,13 @@ for f in model_outputs_ctkae/ablation_state/*.done; do
     [ -f $T ] || break
     G=$($PY - "$T" <<'PYEOF'
 import json, sys
+from pathlib import Path
 t = json.load(open(sys.argv[1]))["KAE"]
-lrs = sorted(r["lr"] for r in t["sweep"]); lr = t["lr"]
+hist = Path(sys.argv[1]).with_name("tuning_history.json")
+pts = {r["lr"]: r["rel"] for r in (json.loads(hist.read_text()) if hist.exists() else [])}
+pts.update({r["lr"]: r["rel"] for r in t["sweep"]})
+hist.write_text(json.dumps([{"lr": k, "rel": v} for k, v in sorted(pts.items())], indent=1))
+lrs = sorted(pts); lr = min(pts, key=pts.get)  # edge test on the union of all grids tried
 if lr == lrs[-1]:
     print(" ".join(f"{lr * k:g}" for k in (1, 3, 10, 30)))
 elif lr == lrs[0]:
