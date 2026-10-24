@@ -517,9 +517,12 @@ def main():
                 "run_metadata": meta,
             }
             torch.save(state, run / "last.pth")
+            # without a validation split best.pth would be a copy of last.pth (score =
+            # -step), so it is only written when there is a validation set
             if score < best:
                 best = score
-                torch.save(state, run / "best.pth")
+                if val is not None:
+                    torch.save(state, run / "best.pth")
     (run / "DONE").write_text(
         json.dumps({"best_score": best, "seconds": time.time() - t_start})
     )
