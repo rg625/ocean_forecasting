@@ -6,8 +6,8 @@
 #   PY             python interpreter of the project environment
 # Anything here can be overridden in env.local.sh next to this file (untracked, one per machine).
 
-OCEAN_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-: "${OCEAN_MAIN:=$(cd "$OCEAN_REPO" && cd "$(git rev-parse --git-common-dir)/.." && pwd)}"
+OCEAN_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+: "${OCEAN_MAIN:=$(cd "$OCEAN_REPO" && cd "$(git rev-parse --git-common-dir)/.." && pwd -P)}"
 
 if [ -d /rds ] && [ -d "$HOME/rds/hpc-work" ]; then
   OCEAN_MACHINE=hpc
