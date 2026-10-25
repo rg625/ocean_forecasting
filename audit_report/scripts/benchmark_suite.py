@@ -24,6 +24,7 @@ Usage:
     PATH_PATTERN may contain {case}. Built-in sources are always included.
 """
 
+from _paths import MAIN_ROOT
 import argparse
 import json
 from pathlib import Path
@@ -32,7 +33,7 @@ import numpy as np
 import torch
 import xarray as xr
 
-ROOT = Path("/home/rg625/mnt/ocean_forecasting")
+ROOT = MAIN_ROOT
 SAMPLING = ROOT / "autoreg_pde_diffusion/src/results/sampling"
 UNTIMED = ROOT / "autoreg_pde_diffusion/results_untimed"
 TRAIN = ROOT / "koopman_autoencoder/data/acdm/128_tra/train.nc"

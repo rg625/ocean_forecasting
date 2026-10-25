@@ -9,13 +9,14 @@ change vs the reference run of the same seed (mean over seeds).
     python ablation_table.py [--out audit_report/results/ablation_table]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 from pathlib import Path
 
 import numpy as np
 
-ROOT = Path("/home/rg625/mnt/ocean_forecasting_impl")
+ROOT = REPO_ROOT
 OUT = ROOT / "koopman_autoencoder/model_outputs_ctkae"
 STATE = OUT / "ablation_state"
 SWEEPS = ("G4_delta_l", "G5_n_obs", "G3_sparsity", "G2_noise")

@@ -1,8 +1,8 @@
 #!/bin/bash
 # Full runs after the pilots (selection on val_mse60, held-out Ma 0.60/0.75), then the
 # corrected legacy baseline E1. Interleaved so partial results are informative.
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 BASE="--config=configs/ctkae/base.yaml train.steps=12000 train.val_every=1000 train.select=val_mse60 train.strides=[1,2,3]"
 run() { name=$1; seed=$2; shift 2; echo "=== $(date) $name seed=$seed $*"; $PY train_ctkae.py $BASE run_name=$name seed=$seed "$@" 2>&1 | grep -v Warning | tail -2; }
 run F_block 0 model.generator=block train.w_amp=0.1

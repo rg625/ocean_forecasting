@@ -7,8 +7,8 @@
 #   S = mean_c(MSE_c / mean MSE_c of H8_d256 s0-2) + DA / mean DA of H8_d256 s0-2
 # is <= 1.95 (the current best scores 2.00 by construction).
 OLD=1635204
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
 until grep -q "=== DONE" model_outputs_ctkae/da_v3/ctkae_LS2_combo_s10/run.log 2>/dev/null; do sleep 10; done
 kill $OLD 2>/dev/null; sleep 3

@@ -8,6 +8,7 @@ Usage:
     python smoke_gradflow_profile.py [--repo PATH] [--steps 20] [--json out.json]
 """
 
+from _paths import MAIN_ROOT
 import argparse
 import json
 import sys
@@ -19,12 +20,10 @@ import torch
 from omegaconf import OmegaConf
 
 ap = argparse.ArgumentParser()
-ap.add_argument(
-    "--repo", default="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder"
-)
+ap.add_argument("--repo", default=str(MAIN_ROOT / "koopman_autoencoder"))
 ap.add_argument(
     "--data",
-    default="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/val.nc",
+    default=str(MAIN_ROOT / "koopman_autoencoder/data/acdm/128_tra/val.nc"),
 )
 ap.add_argument("--steps", type=int, default=20)
 ap.add_argument("--batch", type=int, default=32)

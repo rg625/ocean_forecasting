@@ -1,6 +1,7 @@
 """Check that a code tree loads the evaluated TRA checkpoint strictly and print a hash of
 its eval-mode outputs, so two trees (original vs audit branch) can be compared."""
 
+from _paths import MAIN_ROOT
 import sys
 import warnings
 
@@ -14,7 +15,10 @@ from tensordict import TensorDict  # noqa: E402
 from models.autoencoder import KoopmanAutoencoder  # noqa: E402
 from models.networks import TransformerConfig  # noqa: E402
 
-RUN = "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs_tra/continous_linear_128/run-20260821_031121"
+RUN = str(
+    MAIN_ROOT
+    / "koopman_autoencoder/model_outputs_tra/continous_linear_128/run-20260821_031121"
+)
 m = yaml.safe_load(open(RUN + "/continous_linear_128_tra.yaml"))
 model = KoopmanAutoencoder(
     data_variables={"v_x": 1, "v_y": 1, "p": 1, "rho": 1},

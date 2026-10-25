@@ -9,6 +9,7 @@ Scored with benchmark_suite.score on gt_interp / gt_extrap / gt_longer, last.pth
     python infer_ablate.py RUN_DIR [--ckpt last.pth] [--gamma_scale 1 0.5 0] [--snap] [--json out]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 import sys
@@ -18,7 +19,7 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).parent
-REPO = Path("/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder")
+REPO = REPO_ROOT / "koopman_autoencoder"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO))
 from benchmark_suite import load_gt, score, train_climatology  # noqa: E402

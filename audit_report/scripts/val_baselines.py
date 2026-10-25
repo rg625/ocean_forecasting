@@ -8,6 +8,7 @@ persistence, training climatology, POD(r) + 2-frame linear map (POD-DMD2).
     python val_baselines.py --rank 128 --json out.json
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 import sys
@@ -15,7 +16,7 @@ from pathlib import Path
 
 import torch
 
-sys.path.insert(0, "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder")
+sys.path.insert(0, str(REPO_ROOT / "koopman_autoencoder"))
 from models.ct_data import TraWindows, denormalise, train_val_intervals  # noqa: E402
 
 ap = argparse.ArgumentParser()
@@ -23,7 +24,7 @@ ap.add_argument("--rank", type=int, default=128)
 ap.add_argument("--json", default=None)
 args = ap.parse_args()
 cpu = torch.device("cpu")
-path = "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/data/acdm/128_tra/train.nc"
+path = str(REPO_ROOT / "koopman_autoencoder/data/acdm/128_tra/train.nc")
 tr_int, va_int = train_val_intervals([0.60, 0.75])
 train = TraWindows(path, tr_int, cpu, dtype=torch.float32)
 val = TraWindows(path, va_int, cpu, dtype=torch.float32)

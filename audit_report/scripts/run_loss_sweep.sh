@@ -10,8 +10,8 @@
 # Batch 16 is split into 2 chunks of 8 with exact gradient accumulation (train.accum,
 # test_gradient_accumulation_is_exact): same training, peak 6.9 GB instead of 12.3 GB.
 # Each job waits for >= 8 GB of free GPU memory so it cannot crash other jobs.
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
 wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 8000 ]; do sleep 60; done; }
 BASE="--config=configs/ctkae/fair_h8.yaml model.latent_dim=256 train.steps=10000 train.accum=2 seed=0"

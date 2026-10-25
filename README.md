@@ -97,6 +97,27 @@ The loss function balances:
 ### Data
 The repository includes tools for generating synthetic datasets using the `pyqg` library. Datasets are split into training, validation, and testing sets.
 
+## Machines and worktrees (cambox, HPC)
+
+Code moves between machines only through GitHub: push a branch on one machine, fetch it on
+the other. Each machine has one main checkout, which also holds the data, plus one worktree
+per active branch:
+
+    cambox: ~/mnt/ocean_forecasting          HPC: ~/rds/hpc-work/ocean_forecasting
+            ~/mnt/ocean_forecasting_impl          ~/rds/hpc-work/ocean_forecasting_impl
+
+New worktree:
+
+    git fetch origin && git worktree add ../ocean_forecasting_impl impl/ct-kae
+    bash ../ocean_forecasting_impl/setup_worktree.sh     # links data/ and LSiM.pth from the main checkout
+
+Machine-specific settings (python interpreter, main checkout) are in `env.sh`, which the
+scripts source; overrides go in an untracked `env.local.sh`. Python scripts in
+`audit_report/scripts` get the same roots from `_paths.py`. On HPC, CT-KAE jobs go through
+`koopman_autoencoder/training_scripts/ctkae_hpc.sbatch` (usage in its header).
+Data and checkpoints are not in git; copy them with `rsync -avP`.
+Note that `.gitignore` ignores `*.sh` and `*.yaml`, so new ones need `git add -f`.
+
 ## Configuration
 The main configurations are stored in YAML files:
 - `configs/model/config.yaml`: Defines model architecture, training parameters, and loss weights.

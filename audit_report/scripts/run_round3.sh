@@ -6,10 +6,10 @@
 #  4. multiscale-decoder CT-KAE (configs/ctkae/fair_h8_ms.yaml), seed 0: train, eval, DA,
 #     conditioning; seeds 1-2 follow only if seed 0's interp lead-1 error is >= 10% below
 #     H8_d256_s0's 0.261 (rule fixed before the run)
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
-LEG=/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/model_outputs_tra/continous_linear_128/run-20260821_031121
+LEG=$OCEAN_MAIN/koopman_autoencoder/model_outputs_tra/continous_linear_128/run-20260821_031121
 CURR=$(ls -d model_outputs_ctkae/C_curr_s0_* | tail -1)
 D256=$(ls -d model_outputs_ctkae/H8_d256_s0_* | tail -1)
 D128=$(ls -d model_outputs_ctkae/H8_d128_s0_* | tail -1)

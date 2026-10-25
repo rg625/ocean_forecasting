@@ -7,6 +7,7 @@ The model config comes from the checkpoint's run_metadata/config when present (a
 REPRO-02), otherwise from --model_yaml (e.g. the run's saved continous_linear_128_tra.yaml).
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 import sys
@@ -17,9 +18,7 @@ import torch
 import yaml
 
 ap = argparse.ArgumentParser()
-ap.add_argument(
-    "--repo", default="/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder"
-)
+ap.add_argument("--repo", default=str(REPO_ROOT / "koopman_autoencoder"))
 ap.add_argument("--ckpt", required=True)
 ap.add_argument("--model_yaml", default=None)
 ap.add_argument("--json", default=None)

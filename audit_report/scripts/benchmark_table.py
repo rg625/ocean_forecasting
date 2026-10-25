@@ -13,20 +13,16 @@ Usage:
     python benchmark_table.py --pod results/linear_baselines_r128.json --json out.json
 """
 
+from _paths import MAIN_ROOT
 import argparse
 import json
-from pathlib import Path
 
 import numpy as np
 import torch
 import xarray as xr
 
-SAMPLING = Path(
-    "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling"
-)
-TRAIN = Path(
-    "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/train.nc"
-)
+SAMPLING = MAIN_ROOT / "autoreg_pde_diffusion/src/results/sampling"
+TRAIN = MAIN_ROOT / "koopman_autoencoder/data/acdm/128_tra/train.nc"
 MODELS = {  # file -> stored-one-frame-early?
     "continous_linear_128_tra.npz": True,
     "azencot_linear_128_tra.npz": True,

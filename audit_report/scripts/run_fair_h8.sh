@@ -2,8 +2,8 @@
 # Fair-horizon CT-KAE (configs/ctkae/fair_h8.yaml): latent 128 and 256, seed 0. Each run is
 # followed by its test forecast evaluation and the DA comparison (KAE slot, df9 + df1),
 # strictly sequentially so nothing shares the GPU with training.
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 for d in 128 256; do
   name=H8_d$d
   echo "=== $(date) train $name"

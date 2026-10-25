@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -59,7 +60,7 @@ class PredictionLoss(nn.modules.loss._Loss):
             # load lsim
             self.lsim = LSIM_Model(baseType="lsim", isTrain=False, useGPU=self.useGPU)
             self.lsim.load(
-                "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/turbpred/lsim/models/LSiM.pth"
+                os.path.join(os.path.dirname(__file__), "lsim/models/LSiM.pth")
             )
             self.lsim.eval()
             # freeze lsim weights

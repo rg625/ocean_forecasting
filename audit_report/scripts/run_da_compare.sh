@@ -7,8 +7,8 @@
 #     KIND = legacy | ctkae
 set -u
 LABEL=$1; KIND=$2; RUN=$3; CKPT=${4:-best.pth}
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 BASE_OUT=model_outputs_ctkae/da/$LABEL
 CAN=$BASE_OUT/canonical; DF9=$BASE_OUT/df9

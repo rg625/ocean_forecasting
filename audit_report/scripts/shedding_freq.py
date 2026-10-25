@@ -7,6 +7,7 @@ Also: share of the coefficient spectrum's energy within +-5% of the harmonics n*
     python shedding_freq.py [--json out.json]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 from pathlib import Path
@@ -17,9 +18,7 @@ import xarray as xr
 ap = argparse.ArgumentParser()
 ap.add_argument("--json", default=None)
 args = ap.parse_args()
-ds = xr.open_dataset(
-    "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/data/acdm/128_tra/train.nc"
-)
+ds = xr.open_dataset(str(REPO_ROOT / "koopman_autoencoder/data/acdm/128_tra/train.nc"))
 DT = 0.05
 rows = []
 for i in range(ds.sizes["sim"]):

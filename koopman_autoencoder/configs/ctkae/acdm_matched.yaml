@@ -9,7 +9,7 @@ seed: 0
 data:
   train_file: data/acdm/128_tra/train.nc
   val_ma: []
-  extra_raw_sims: [/home/rg625/mnt/ocean_forecasting/data/128_tra/sim_000040]
+  extra_raw_sims: [data/raw_tra/sim_000040]
 model:
   latent_dim: 256
   widths: [64, 128, 256]

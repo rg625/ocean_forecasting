@@ -4,8 +4,8 @@
 # the tune + the four df9 sweeps (da_abl) and test_score's df9 problem are re-run; repeated until
 # the optimum is interior over the union of all grids tried (tuning_history.json; max 3 rounds).
 # Safe to re-run: interior rows are skipped. Uses the same serialised GPU start as the runner.
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
 LOCK=model_outputs_ctkae/ablation_state
 wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 4500 ]; do sleep 60; done; }

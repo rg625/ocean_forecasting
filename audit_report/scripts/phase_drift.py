@@ -14,6 +14,7 @@ share of true fluctuation energy in the two modes.
     python phase_drift.py --ctkae RUN_DIR[:CKPT] ... [--baselines acdm-r20 unet-m8] [--json out.json]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 import sys
@@ -23,7 +24,7 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).parent
-REPO = Path("/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder")
+REPO = REPO_ROOT / "koopman_autoencoder"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(REPO))
 from benchmark_suite import GT_STD, UNTIMED, load_gt, load_pred  # noqa: E402
