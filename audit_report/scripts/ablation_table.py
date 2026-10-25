@@ -20,6 +20,19 @@ ROOT = REPO_ROOT
 OUT = ROOT / "koopman_autoencoder/model_outputs_ctkae"
 STATE = OUT / "ablation_state"
 SWEEPS = ("G4_delta_l", "G5_n_obs", "G3_sparsity", "G2_noise")
+RES = ROOT / "audit_report/results"
+# baselines on the same cases and scorers: MSE (all frames) from the benchmark suite, LSiM
+# from lsim_score.py (results/lsim_baselines.json), DA from the df9 sweeps of the original
+# checkout (same problems: gt_interp, 8 problems per point, seed 200, 500 iterations)
+BASE_DA = Path(
+    "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/da_results_tra_df9"
+)
+BASELINES = [  # (label, benchmark-suite key, DA key)
+    ("ACDM (official, r20)", "acdm-r20", "ACDM"),
+    ("U-Net_ut (official, unrolled 8)", "unet-m8", "UNet"),
+    ("U-Net_tn (official, training noise 0.01)", "unet-m2-noise0.01", None),
+    ("Original KAE (paper checkpoint; DA only)", None, "KAE"),
+]
 LABELS = {
     "ref": "Full model (2 -> 8, latent 256, block generator, FiLM Ma)",
     "nocond": "- Mach conditioning (encoder, decoder, generator)",
@@ -98,6 +111,26 @@ def collect():
     return rows
 
 
+def baselines():
+    suite = json.loads((RES / "benchmark_suite_baselines.json").read_text())
+    ls = json.loads((RES / "lsim_baselines.json").read_text())
+    da: dict = {}
+    for sw in SWEEPS:
+        for r in json.loads((BASE_DA / f"{sw}.json").read_text())["rows"]:
+            for k, v in r.items():
+                if isinstance(v, dict) and "mean" in v:
+                    da.setdefault(k, []).append(v["mean"])
+    out = []
+    for lab, key, dk in BASELINES:
+        o = {}
+        for c in ("extrap", "interp", "longer"):
+            o[f"{c}_mse_all"] = suite[c][key]["mse_all"] if key else None
+            o[f"{c}_lsim"] = ls.get(key, {}).get(f"{c}_lsim") if key else None
+        o["da"] = float(np.mean(da[dk])) if dk else None
+        out.append((lab, o))
+    return out
+
+
 def fmt(v, sd=None, digits=2):
     if v is None:
         return "-"
@@ -137,6 +170,12 @@ def main():
         "|---|---|" + "---|" * len(KEYS),
     ]
     tex = []
+    md.append("| **Baselines (same cases and scorers)** |" + " |" * (len(KEYS) + 1))
+    tex.append(f"\\multicolumn{{{len(KEYS) + 2}}}{{l}}{{\\emph{{Baselines}}}}\\\\")
+    for lab, o in baselines():
+        cells = [fmt(o[k], None, dig.get(k, 2)) for k, _ in KEYS]
+        md.append(f"| {lab} | - | " + " | ".join(cells) + " |")
+        tex.append(lab + " & - & " + " & ".join(cells) + "\\\\")
     sens = sorted(t for t in s if t.startswith("S_"))
     for title, tags in GROUPS + [("Weight sensitivity (seed 0)", sens)]:
         present = [t for t in tags if t in s]
