@@ -630,3 +630,18 @@ def test_each_optional_term_changes_the_gradient(term):
     }[term]
     assert parts[key] > 0
     assert not torch.allclose(grads[0], grads[1])
+
+
+def test_cosine_lead_weights_match_original_kae():
+    import train_ctkae
+
+    idx = torch.arange(8)
+    lw = train_ctkae.lead_weights(idx, 8, 1.0, "cosine")
+    ref = 0.5 * (
+        1 + torch.cos(torch.pi * idx.float() / 7)
+    )  # models/loss.py of the original
+    torch.testing.assert_close(lw / lw.sum(), ref / ref.sum())
+    torch.testing.assert_close(lw.mean(), torch.tensor(1.0))
+    assert float(lw[-1]) < 1e-6 and float(lw[0]) == float(lw.max())
+    with pytest.raises(ValueError):
+        train_ctkae.lead_weights(idx, 8, 1.0, "bogus")

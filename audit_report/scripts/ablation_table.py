@@ -39,6 +39,7 @@ LABELS = {
     "sobt": "+ temporal Sobolev (0.1)",
     "sobx": "+ spatial Sobolev (0.1)",
     "spec": "+ spectral loss (0.1)",
+    "cosw": "Prediction weighting: cosine over leads (original KAE)",
 }
 GROUPS = [
     ("Reference", ["ref"]),
@@ -49,7 +50,7 @@ GROUPS = [
     ("Loss terms used (removed)", ["norec", "nopred", "nolat", "noamp"]),
     (
         "Loss terms of the original KAE (added)",
-        ["back", "cos", "energy", "sobt", "sobx", "spec"],
+        ["back", "cos", "energy", "sobt", "sobx", "spec", "cosw"],
     ),
 ]
 KEYS = [

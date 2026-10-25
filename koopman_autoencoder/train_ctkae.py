@@ -80,6 +80,7 @@ DEFAULTS = OmegaConf.create(
             "w_amp": 0.0,
             "w_tc": 0.0,
             "w_lead_ramp": 1.0,
+            "pred_weighting": "uniform",  # uniform | cosine (original KAE, see lead_weights)
             # optional terms of the original KAE formulation, off by default (ablations)
             "w_back": 0.0,
             "w_cos": 0.0,
@@ -118,9 +119,23 @@ def weighted_mse(a, b, w, lead_w=None):
     return e.mean()
 
 
-def lead_weights(idx, K: int, ramp: float):
-    """Linear weights from 1 (lead 1) to ``ramp`` (lead K) at the decoded leads ``idx``
-    (0-based), normalised to mean 1; None when flat."""
+def lead_weights(idx, K: int, ramp: float, mode: str = "uniform"):
+    """Weights of the decoded leads ``idx`` (0-based) in the prediction loss, mean 1; None
+    when uniform. ``ramp``: linear from 1 (lead 1) to ``ramp`` (lead K). ``mode="cosine"``:
+    the original KAE's weighting 0.5 (1 + cos(pi k / (K - 1))) (models/loss.py), largest at
+    lead 1 and zero at lead K."""
+    if mode == "cosine":
+        k = idx.float()
+        lw = (
+            0.5 * (1 + torch.cos(math.pi * k / max(K - 1, 1)))
+            if K > 1
+            else torch.ones_like(k)
+        )
+        if ramp != 1.0:
+            lw = lw * (1.0 + (ramp - 1.0) * k / max(K - 1, 1))
+        return lw / lw.mean().clamp_min(1e-8)
+    if mode != "uniform":
+        raise ValueError(f"unknown pred_weighting {mode}")
     if ramp == 1.0:
         return None
     lw = 1.0 + (ramp - 1.0) * idx.float() / max(K - 1, 1)
@@ -222,7 +237,7 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
     if B % accum:
         raise ValueError(f"batch {B} not divisible by accum {accum}")
     b, nd, sd = B // accum, len(idx), model.slow_dim
-    lw = lead_weights(idx, K, tc.w_lead_ramp)
+    lw = lead_weights(idx, K, tc.w_lead_ramp, getattr(tc, "pred_weighting", "uniform"))
     amp_on = tc.w_amp > 0 and model.cfg.generator == "block"
     w_back = getattr(tc, "w_back", 0.0)
     w_cos = getattr(tc, "w_cos", 0.0)

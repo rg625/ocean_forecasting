@@ -20,6 +20,7 @@ energy|0|AB_energy|train.w_energy=0.1
 sobt|0|AB_sobt|train.w_sob_t=0.1
 sobx|0|AB_sobx|train.w_sob_x=0.1
 spec|0|AB_spec|train.w_spec=0.1
+cosw|0|AB_cosw|train.pred_weighting=cosine
 nocond|1|AB_nocond|model.film_encoder=false model.film_decoder=false model.cond_generator=false
 dense|1|AB_dense|model.generator=dense
 hurwitz|1|AB_hurwitz|model.generator=hurwitz
@@ -38,6 +39,7 @@ energy|1|AB_energy|train.w_energy=0.1
 sobt|1|AB_sobt|train.w_sob_t=0.1
 sobx|1|AB_sobx|train.w_sob_x=0.1
 spec|1|AB_spec|train.w_spec=0.1
+cosw|1|AB_cosw|train.pred_weighting=cosine
 nocond|2|AB_nocond|model.film_encoder=false model.film_decoder=false model.cond_generator=false
 dense|2|AB_dense|model.generator=dense
 hurwitz|2|AB_hurwitz|model.generator=hurwitz
@@ -56,6 +58,7 @@ energy|2|AB_energy|train.w_energy=0.1
 sobt|2|AB_sobt|train.w_sob_t=0.1
 sobx|2|AB_sobx|train.w_sob_x=0.1
 spec|2|AB_spec|train.w_spec=0.1
+cosw|2|AB_cosw|train.pred_weighting=cosine
 S_rec03|0|AB_rec03|train.w_rec=0.3
 S_rec3|0|AB_rec3|train.w_rec=3.0
 S_pred03|0|AB_pred03|train.w_pred=0.3
