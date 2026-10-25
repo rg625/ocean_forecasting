@@ -7,7 +7,9 @@
 cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
 PY=/home/rg625/anaconda3/envs/samudra/bin/python
 S=../audit_report/scripts
+LOCK=model_outputs_ctkae/ablation_state
 wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 4500 ]; do sleep 60; done; }
+gpu_start () { exec 9>$LOCK/gpu.flock; flock 9; wait_gpu; "$@" & local pid=$!; sleep 90; flock -u 9; exec 9>&-; wait $pid; }
 for f in model_outputs_ctkae/ablation_state/*.done; do
   r=$(cat $f); lab=ctkae_$(basename $r); T=model_outputs_ctkae/da_abl/$lab/df9/tuning.json
   for round in 1 2 3; do
@@ -29,9 +31,8 @@ PYEOF
 )
     [ -z "$G" ] && break
     echo "=== $(date) $lab round $round: edge -> grid $G"
-    wait_gpu
-    DF9_ONLY=1 DF9_SECTIONS="delta_l n_obs sparsity noise" LRS="$G" DA_ROOT=da_abl bash $S/run_da_v2.sh $lab ctkae $r last.pth
-    $PY -W ignore $S/test_score.py $r --no-lsim --lrs $G --json $r/test_score_da.json 2>&1 | grep -v INFO | tail -1 | cut -c1-120
+    DF9_ONLY=1 DF9_SECTIONS="delta_l n_obs sparsity noise" LRS="$G" DA_ROOT=da_abl gpu_start bash $S/run_da_v2.sh $lab ctkae $r last.pth
+    gpu_start $PY -W ignore $S/test_score.py $r --no-lsim --lrs $G --json $r/test_score_da.json > /dev/null 2>&1
     $PY - "$r" <<'PYEOF'
 import json, sys
 from pathlib import Path
