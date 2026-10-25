@@ -40,6 +40,11 @@ LABELS = {
     "sobx": "+ spatial Sobolev (0.1)",
     "spec": "+ spectral loss (0.1)",
     "cosw": "Prediction weighting: cosine over leads (original KAE)",
+    "ndec4": "Supervise 4 random of the 8 leads (first and last always)",
+    "fine": "Random target times on the 0.05 grid within the 0.8 horizon",
+    "manoise": "+ Mach-number noise (s.d. 0.005)",
+    "innoise": "+ input-frame noise (s.d. 0.01, normalised units)",
+    "latnoise": "+ latent noise per step (0.005 x rms z; original disturb_std)",
 }
 GROUPS = [
     ("Reference", ["ref"]),
@@ -52,6 +57,7 @@ GROUPS = [
         "Loss terms of the original KAE (added)",
         ["back", "cos", "energy", "sobt", "sobx", "spec", "cosw"],
     ),
+    ("Regularisation", ["ndec4", "fine", "manoise", "innoise", "latnoise"]),
 ]
 KEYS = [
     ("extrap_mse_all", "Tra_ext MSE"),

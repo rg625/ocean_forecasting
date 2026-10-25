@@ -1,4 +1,19 @@
 # tag|seed|run_name|overrides  (run_ablation.sh; order = priority)
+ndec4|0|AB_ndec4|train.n_dec=4
+fine|0|AB_fine|train.fine_targets=true
+manoise|0|AB_manoise|train.ma_noise=0.005
+innoise|0|AB_innoise|train.input_noise=0.01
+latnoise|0|AB_latnoise|train.latent_noise=0.005
+ndec4|1|AB_ndec4|train.n_dec=4
+fine|1|AB_fine|train.fine_targets=true
+manoise|1|AB_manoise|train.ma_noise=0.005
+innoise|1|AB_innoise|train.input_noise=0.01
+latnoise|1|AB_latnoise|train.latent_noise=0.005
+ndec4|2|AB_ndec4|train.n_dec=4
+fine|2|AB_fine|train.fine_targets=true
+manoise|2|AB_manoise|train.ma_noise=0.005
+innoise|2|AB_innoise|train.input_noise=0.01
+latnoise|2|AB_latnoise|train.latent_noise=0.005
 ref|0|H8_d256|
 ref|1|H8_d256|
 ref|2|H8_d256|

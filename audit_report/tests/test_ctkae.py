@@ -30,7 +30,7 @@ def tiny(gen="block", **kw):
         cond_embed=8,
         generator=gen,
         dense_rank=2,
-        **kw
+        **kw,
     )
     return CTKAE(cfg)
 
@@ -645,3 +645,110 @@ def test_cosine_lead_weights_match_original_kae():
     assert float(lw[-1]) < 1e-6 and float(lw[0]) == float(lw.max())
     with pytest.raises(ValueError):
         train_ctkae.lead_weights(idx, 8, 1.0, "bogus")
+
+
+@pytest.mark.parametrize("stride", [1, 2, 3])
+def test_fine_sampler_times_and_history(stride):
+    """fine=True: same window, K distinct sorted raw offsets in 1..Ks ending at Ks, taus on
+    the raw grid, and each target's history frame is the frame s earlier."""
+    w = _fake_windows()
+    g = torch.Generator().manual_seed(1)
+    for _ in range(50):
+        win, tgt, taus, ma, s, hist = w.sample(4, 2, 5, [stride], g, fine=True)
+        t_now = win[:, -1, 0, 0, 0] % 1000
+        np.testing.assert_allclose(win[:, 0, 0, 0, 0] % 1000, t_now - s)
+        off = (tgt[:, :, 0, 0, 0] % 1000) - t_now[:, None]
+        assert (off == off[:1]).all() and int(off[0, -1]) == 5 * s
+        assert (off[0, 1:] > off[0, :-1]).all() and int(off[0, 0]) >= 1
+        np.testing.assert_allclose(taus, off * DT_RAW, rtol=1e-6)
+        assert hist.shape == (4, 5, 1, 4, 2, 2)
+        np.testing.assert_allclose(hist[:, :, 0, 0, 0, 0], tgt[:, :, 0, 0, 0] - s)
+
+
+def _reg_setup():
+    from types import SimpleNamespace
+
+    tc = SimpleNamespace(
+        amp=False,
+        w_rec=1.0,
+        w_pred=1.0,
+        w_lat=0.1,
+        w_amp=0.1,
+        w_tc=0.0,
+        w_lead_ramp=1.0,
+        tc_starts=[0, 2, 4],
+    )
+    g = torch.Generator().manual_seed(8)
+    win = torch.randn(2, 2, 4, 16, 32, generator=g)
+    tgt = torch.randn(2, 8, 4, 16, 32, generator=g)
+    taus = (torch.arange(1, 9) * 0.1).expand(2, -1)
+    ma = torch.tensor([0.6, 0.8])
+    return tc, win, tgt, taus, ma, torch.ones(16, 32), torch.arange(8)
+
+
+def test_target_history_on_regular_grid_matches_default():
+    """With equally spaced targets, passing their history explicitly (the fine_targets
+    path) gives the same loss terms as building it from [window, targets]."""
+    import train_ctkae
+
+    tc, win, tgt, taus, ma, mask, idx = _reg_setup()
+    full = torch.cat([win, tgt], 1)
+    hist = full[:, 1:9, None]
+    out = []
+    for h in (None, hist):
+        m = tiny("block", fixed_point="none")
+        out.append(
+            train_ctkae.step_backward(
+                m, win, tgt, taus, ma, mask, idx, 8, 2, tc, torch.ones(4), 1, h
+            )
+        )
+    for k in out[0]:
+        assert abs(out[0][k] - out[1][k]) <= 1e-6 * (1 + abs(out[0][k])), k
+    tc.w_sob_t = 0.1
+    with pytest.raises(ValueError):
+        train_ctkae.step_backward(
+            m, win, tgt, taus, ma, mask, idx, 8, 2, tc, torch.ones(4), 1, hist
+        )
+
+
+def test_latent_and_input_noise():
+    """Sequential propagation with negligible latent noise reproduces the one-shot rollout;
+    real latent noise and a perturbed encoder input change the prediction loss, and the
+    reconstruction target stays the clean window."""
+    import train_ctkae
+
+    tc, win, tgt, taus, ma, mask, idx = _reg_setup()
+
+    def run(**kw):
+        m = tiny("block", fixed_point="none")
+        perturb_heads(m)
+        a = dict(vars(tc))
+        a.update(kw.pop("tc", {}))
+        from types import SimpleNamespace
+
+        return train_ctkae.step_backward(
+            m,
+            win,
+            tgt,
+            taus,
+            ma,
+            mask,
+            idx,
+            8,
+            2,
+            SimpleNamespace(**a),
+            torch.ones(4),
+            1,
+            **kw,
+        )
+
+    ref = run()
+    tiny_noise = run(tc={"latent_noise": 1e-9})
+    for k in ("pred", "lat", "amp", "rec"):
+        assert abs(ref[k] - tiny_noise[k]) <= 1e-4 * (1 + abs(ref[k])), k
+    torch.manual_seed(3)
+    assert abs(run(tc={"latent_noise": 0.5})["pred"] - ref["pred"]) > 1e-4
+    same = run(win_enc=win.clone())
+    assert abs(same["loss"] - ref["loss"]) <= 1e-6 * (1 + abs(ref["loss"]))
+    noisy = run(win_enc=win + 0.5 * torch.randn_like(win))
+    assert abs(noisy["pred"] - ref["pred"]) > 1e-4

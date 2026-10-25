@@ -89,6 +89,16 @@ DEFAULTS = OmegaConf.create(
             "w_sob_x": 0.0,
             "w_spec": 0.0,
             "accum": 1,
+            # regularisers (ablations): fine_targets draws the K targets at random raw-grid
+            # times (spacing 0.05) within the same horizon (TraWindows.sample); ma_noise adds
+            # N(0, s^2) to the training Mach numbers (all conditioning paths); input_noise
+            # adds N(0, s^2) to the encoder input window (normalised units; targets clean);
+            # latent_noise injects N(0, (s rms z)^2) before every propagation step, as the
+            # original KAE's disturb_std (absolute there; relative here, z is unnormalised)
+            "fine_targets": False,
+            "ma_noise": 0.0,
+            "input_noise": 0.0,
+            "latent_noise": 0.0,
             "tc_starts": [0, 2, 4],
             "val_every": 1000,
             "log_every": 100,
@@ -217,7 +227,22 @@ LOSS_TERMS = (
 )
 
 
-def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, accum=1):
+def step_backward(
+    model,
+    win,
+    tgt,
+    taus,
+    ma,
+    mask,
+    idx,
+    K,
+    n_frames,
+    tc,
+    w_ch,
+    accum=1,
+    tgt_hist=None,
+    win_enc=None,
+):
     """Forward and backward of one training step on a batch split into ``accum`` equal
     chunks, whose gradients add up to the full-batch gradient (less GPU memory, same
     training). Terms that divide by batch statistics (latent consistency, amplitude,
@@ -232,6 +257,11 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
       cos    1 - cos(z_k, sg E(x_{t+k}))                energy (|z_{k+1}| - |z_k|)^2 / E|z|^2
       sob_t  temporal Sobolev (frame differences)       sob_x  spatial Sobolev (error gradients)
       spec   spectral L1 of Fourier amplitudes
+    ``tgt_hist`` [B, K, n-1, ...] gives the encoder history of each target when the targets
+    are not equally spaced continuations of the window (fine_targets); ``win_enc`` is a
+    perturbed copy of the window fed to the encoder for z0 (input_noise; the reconstruction
+    target stays ``win``). ``tc.latent_noise`` > 0 replaces the one-shot propagation by a
+    sequential one with noise injected before every step (not chunk-invariant).
     Returns the full-batch loss terms."""
     B = win.shape[0]
     if B % accum:
@@ -245,14 +275,22 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
     w_sob_t = getattr(tc, "w_sob_t", 0.0)
     w_sob_x = getattr(tc, "w_sob_x", 0.0)
     w_spec = getattr(tc, "w_spec", 0.0)
+    lat_noise = getattr(tc, "latent_noise", 0.0)
+    if tgt_hist is not None and (
+        tc.w_tc > 0 or w_back > 0 or w_energy > 0 or w_sob_t > 0
+    ):
+        raise ValueError("tc / back / energy / sob_t assume equally spaced targets")
     need_zt = tc.w_lat > 0 or tc.w_amp > 0 or w_back > 0 or w_cos > 0 or w_energy > 0
     zt = den_lat = den_det = den_amp = den_tc = den_en = den_spec = None
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=tc.amp):
         if need_zt:
-            full = torch.cat([win, tgt], 1)
-            wins = torch.stack(
-                [full[:, int(k) + 1 : int(k) + 1 + n_frames] for k in idx], 1
-            )
+            if tgt_hist is not None:
+                wins = torch.cat([tgt_hist[:, idx], tgt[:, idx, None]], 2)
+            else:
+                full = torch.cat([win, tgt], 1)
+                wins = torch.stack(
+                    [full[:, int(k) + 1 : int(k) + 1 + n_frames] for k in idx], 1
+                )
             # normalise by the second moment E|z|^2 (scale-invariant); the variance across
             # samples can be tiny when latents share a common component, which made this
             # term explode (~1e3) and dominate the clipped gradient. Oscillators and (if
@@ -295,8 +333,20 @@ def step_backward(model, win, tgt, taus, ma, mask, idx, K, n_frames, tc, w_ch, a
         zero = torch.zeros((), device=win.device)
         l_lat = l_amp = l_tc = l_back = l_cos = l_en = l_st = l_sx = l_sp = zero
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=tc.amp):
-            z0 = model.encode(w_, mask, m_)
-            zs = model.propagate(z0.float(), ta_, m_)[:, idx]  # [b, n, d]
+            z0 = model.encode(w_ if win_enc is None else win_enc[sl], mask, m_)
+            if lat_noise > 0:
+                rms = (
+                    den_lat if den_lat is not None else z0.float().pow(2).mean()
+                ).sqrt()
+                zc, prev, steps = z0.float(), torch.zeros_like(ta_[:, :1]), []
+                for j in range(ta_.shape[1]):
+                    zc = zc + lat_noise * rms.detach() * torch.randn_like(zc)
+                    zc = model.propagate(zc, ta_[:, j : j + 1] - prev, m_)[:, 0]
+                    prev = ta_[:, j : j + 1]
+                    steps.append(zc)
+                zs = torch.stack(steps, 1)[:, idx]
+            else:
+                zs = model.propagate(z0.float(), ta_, m_)[:, idx]  # [b, n, d]
             x_hat = model.decode(zs, mask, m_.repeat_interleave(nd)).float()
             x_rec = model.decode(z0, mask, m_).float()
             l_pred = weighted_mse(x_hat, t_[:, idx], w_ch, lw)
@@ -483,7 +533,16 @@ def main():
     acc: dict = {}
     for step in range(1, tc.steps + 1):
         K = horizon_at(step, tc)
-        win, tgt, taus, ma, s = train.sample(tc.batch, n_frames, K, list(tc.strides), g)
+        smp = train.sample(
+            tc.batch, n_frames, K, list(tc.strides), g, fine=tc.fine_targets
+        )
+        win, tgt, taus, ma, s = smp[:5]
+        tgt_hist = smp[5] if tc.fine_targets else None
+        win_enc = None
+        if tc.ma_noise > 0:
+            ma = ma + tc.ma_noise * torch.randn(ma.shape, generator=g).to(ma)
+        if tc.input_noise > 0:
+            win_enc = win + tc.input_noise * torch.randn(win.shape, generator=g).to(win)
         n_dec = min(tc.n_dec, K)
         rest = (
             torch.randperm(K - 2, generator=g)[: max(0, n_dec - 2)] + 1
@@ -493,7 +552,20 @@ def main():
         idx = torch.unique(torch.cat([torch.tensor([0, K - 1]), rest])).to(dev)
         opt.zero_grad(set_to_none=True)
         parts = step_backward(
-            model, win, tgt, taus, ma, train.mask, idx, K, n_frames, tc, w_ch, tc.accum
+            model,
+            win,
+            tgt,
+            taus,
+            ma,
+            train.mask,
+            idx,
+            K,
+            n_frames,
+            tc,
+            w_ch,
+            tc.accum,
+            tgt_hist,
+            win_enc,
         )
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), tc.grad_clip)
         opt.step()

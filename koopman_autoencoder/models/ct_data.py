@@ -106,9 +106,16 @@ class TraWindows:
         n_leads: int,
         strides: Sequence[int],
         generator: Optional[torch.Generator] = None,
+        fine: bool = False,
     ):
         """Random windows. Returns window [B, n, C, H, W] (oldest first, frames t-(n-1)s..t),
         targets [B, K, C, H, W] (frames t+s..t+Ks), taus [B, K] in time units, ma [B], s.
+
+        fine=True keeps the window and the horizon Ks but draws the K target frames on the
+        raw grid (spacing DT_RAW): K-1 distinct offsets from 1..Ks-1 plus Ks, shared by the
+        batch. Their encoder windows are then not part of [window, targets], so the n-1
+        history frames of each target (offsets o-(n-1)s..o-s) are returned as a sixth
+        value hist [B, K, n-1, C, H, W].
         """
         s = int(strides[torch.randint(len(strides), (1,), generator=generator).item()])
         span = (n_frames - 1 + n_leads) * s
@@ -118,6 +125,9 @@ class TraWindows:
         )
         offs_in = torch.arange(-(n_frames - 1), 1) * s
         offs_out = torch.arange(1, n_leads + 1) * s
+        if fine:
+            pick = torch.randperm(n_leads * s - 1, generator=generator)[: n_leads - 1]
+            offs_out = torch.cat([torch.sort(pick + 1).values, offs_out[-1:]])
         assert (
             int(t0.max()) + n_leads * s < self.T
             and int(t0.min()) - (n_frames - 1) * s >= 0
@@ -126,6 +136,12 @@ class TraWindows:
         win = self.x[sim_d[:, None], t0_d[:, None] + offs_in.to(self.device)]
         tgt = self.x[sim_d[:, None], t0_d[:, None] + offs_out.to(self.device)]
         taus = (offs_out.float() * DT_RAW).to(self.device).expand(batch, -1)
+        if fine:
+            offs_h = offs_out[:, None] + torch.arange(-(n_frames - 1), 0)[None] * s
+            hist = self.x[
+                sim_d[:, None, None], t0_d[:, None, None] + offs_h.to(self.device)
+            ]
+            return win.float(), tgt.float(), taus, self.ma[sim_d], s, hist.float()
         return win.float(), tgt.float(), taus, self.ma[sim_d], s
 
     def fixed_windows(
