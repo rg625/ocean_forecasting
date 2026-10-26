@@ -61,6 +61,7 @@ LABELS = {
     "latnoise": "+ latent noise per step (0.005 x rms z; original disturb_std)",
     "combo_lm": "+ latent noise + Mach noise",
     "combo_lmn": "+ latent noise + Mach noise + 4 random of 8 leads",
+    "genonly": "Mach conditioning in the generator only (encoder, decoder Mach-free)",
     "hedge": "+ hedged readout (forecast decay separate from the state dynamics)",
     "hedge_back": "+ hedged readout + backward latent consistency (0.1)",
 }
@@ -77,7 +78,7 @@ GROUPS = [
     ),
     ("Regularisation", ["ndec4", "fine", "manoise", "innoise", "latnoise"]),
     ("Regularisation combined", ["combo_lm", "combo_lmn"]),
-    ("Candidate improvements", ["hedge", "hedge_back"]),
+    ("Candidate improvements", ["genonly", "hedge", "hedge_back"]),
 ]
 KEYS = [
     ("extrap_mse_all", "Tra_ext MSE"),

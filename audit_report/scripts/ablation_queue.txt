@@ -5,11 +5,13 @@ combo_lm|1|AB_combo_lm|train.latent_noise=0.005 train.ma_noise=0.005
 combo_lmn|1|AB_combo_lmn|train.latent_noise=0.005 train.ma_noise=0.005 train.n_dec=4
 combo_lm|2|AB_combo_lm|train.latent_noise=0.005 train.ma_noise=0.005
 combo_lmn|2|AB_combo_lmn|train.latent_noise=0.005 train.ma_noise=0.005 train.n_dec=4
-hedge|0|AB_hedge|model.readout_damping=true
+genonly|0|AB_genonly|model.film_encoder=false model.film_decoder=false
+genonly|1|AB_genonly|model.film_encoder=false model.film_decoder=false
+#cut 2026-10-26 (superseded by the mixture readout): hedge|0|AB_hedge|model.readout_damping=true
 hedge_back|0|AB_hedge_back|model.readout_damping=true train.w_back=0.1
-hedge|1|AB_hedge|model.readout_damping=true
+#cut 2026-10-26 (superseded by the mixture readout): hedge|1|AB_hedge|model.readout_damping=true
 hedge_back|1|AB_hedge_back|model.readout_damping=true train.w_back=0.1
-hedge|2|AB_hedge|model.readout_damping=true
+#cut 2026-10-26 (superseded by the mixture readout): hedge|2|AB_hedge|model.readout_damping=true
 ndec4|0|AB_ndec4|train.n_dec=4
 fine|0|AB_fine|train.fine_targets=true
 manoise|0|AB_manoise|train.ma_noise=0.005
