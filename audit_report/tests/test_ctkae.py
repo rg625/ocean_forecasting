@@ -752,3 +752,89 @@ def test_latent_and_input_noise():
     assert abs(same["loss"] - ref["loss"]) <= 1e-6 * (1 + abs(ref["loss"]))
     noisy = run(win_enc=win + 0.5 * torch.randn_like(win))
     assert abs(noisy["pred"] - ref["pred"]) > 1e-4
+
+
+def test_readout_damping_off_is_identity_and_adds_no_parameters():
+    """Without readout_damping, forecast() is propagate() exactly and the state dict is
+    unchanged, so every existing checkpoint loads and evaluates as before."""
+    m = tiny("block")
+    perturb_heads(m)
+    assert not any(k.startswith("gen.h_") for k in m.state_dict())
+    win, mask, ma = batch()
+    taus = torch.tensor([0.1, 0.25, 0.8]).expand(3, -1)
+    with torch.no_grad():
+        z0 = m.encode(win, mask, ma)
+        torch.testing.assert_close(
+            m.forecast(z0, taus, ma), m.propagate(z0, taus, ma), rtol=0, atol=0
+        )
+
+
+@pytest.mark.parametrize("fp", ["none", "conditional"])
+def test_readout_damping_is_an_extra_commuting_decay(fp):
+    """forecast = mu + e^{-h tau} e^{tau A}(z0 - mu) equals propagation under a generator
+    with decay g + h (the readout commutes with each oscillator block), while the state
+    propagation and the generator matrix used by DA do not depend on h."""
+    m = tiny("block", fixed_point=fp, readout_damping=True)
+    perturb_heads(m)
+    win, mask, ma = batch()
+    taus = torch.tensor([0.1, 0.3, 1.7]).expand(3, -1)
+    with torch.no_grad():
+        m.gen.h_raw.add_(torch.linspace(-1, 2, m.gen.h_raw.numel()))
+        z0 = m.encode(win, mask, ma)
+        fc = m.forecast(z0, taus, ma)
+        state = m.propagate(z0, taus, ma)
+        A = m.generator_matrix(ma)
+        e = m.embed_cond(ma)
+        h = m.gen.hedge(e, 3)
+        orig = m.gen.params
+        m.gen.params = lambda e_, b_, cn=None: (
+            orig(e_, b_, cn)[0] + h,
+            orig(e_, b_, cn)[1],
+        )
+        both = m.propagate(z0, taus, ma)
+        m.gen.params = orig
+        torch.testing.assert_close(fc, both, rtol=1e-5, atol=1e-5)
+        assert (fc - state).abs().max() > 1e-3
+        m.gen.h_raw.add_(1.0)
+        torch.testing.assert_close(m.propagate(z0, taus, ma), state, rtol=0, atol=0)
+        torch.testing.assert_close(m.generator_matrix(ma), A, rtol=0, atol=0)
+
+
+def test_readout_damping_trains_only_through_the_pixel_forecast():
+    """h receives gradient from the prediction loss only: with w_pred = 0 it gets none, and
+    changing h leaves the latent terms (lat, amp) unchanged but changes pred."""
+    import train_ctkae
+    from types import SimpleNamespace
+
+    tc, win, tgt, taus, ma, mask, idx = _reg_setup()
+
+    def run(w_pred=1.0, shift=0.0):
+        m = tiny("block", fixed_point="none", readout_damping=True)
+        perturb_heads(m)
+        with torch.no_grad():
+            m.gen.h_raw.add_(shift)
+        a = dict(vars(tc), w_pred=w_pred)
+        parts = train_ctkae.step_backward(
+            m,
+            win,
+            tgt,
+            taus,
+            ma,
+            mask,
+            idx,
+            8,
+            2,
+            SimpleNamespace(**a),
+            torch.ones(4),
+            1,
+        )
+        return m, parts
+
+    m, _ = run(w_pred=0.0)
+    assert m.gen.h_raw.grad is None or m.gen.h_raw.grad.abs().max() == 0
+    m, p0 = run()
+    assert m.gen.h_raw.grad.abs().max() > 0
+    _, p1 = run(shift=2.0)
+    for k in ("lat", "amp", "rec"):
+        assert abs(p0[k] - p1[k]) <= 1e-6 * (1 + abs(p0[k])), k
+    assert abs(p0["pred"] - p1["pred"]) > 1e-6

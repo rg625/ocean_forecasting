@@ -16,6 +16,9 @@ Generators (``generator=``):
   "hurwitz": A(c) = J(c) - R(c),  J skew, R = L L^T + eps I  (contractive), matrix_exp.
   "dense"  : A(c) = skew(W) + sym(D) + low-rank(c), unconstrained (legacy form), matrix_exp.
 
+Optional hedged readout (readout_damping): the point forecast decodes
+mu + e^{-h(c) tau} (z(t + tau) - mu); the state, and so DA, evolves with exp(tau A) alone.
+
 Everything lives in this file so the legacy KoopmanAutoencoder stays the reference.
 """
 
@@ -78,6 +81,14 @@ class CTKAEConfig:
     # floor on the detail decay rate (per time unit; 2.5 = e-folding in 4 frames of 0.1),
     # so the detail latent cannot carry the dynamics beyond the near term
     detail_gamma_min: float = 0.0
+    # Hedged readout (block generator only): the point forecast decodes
+    # mu + e^{-h(c) tau} e^{tau A(c)} (z0 - mu), h_j(c) = softplus(.) >= 0 per oscillator pair,
+    # while the state dynamics (latent consistency terms, DA) use e^{tau A} alone. e^{-h tau}
+    # commutes with every 2x2 block, so the forecast family is that of a generator with decay
+    # g + h: the same model class, but the shrinkage that hedges the pixel forecast against
+    # phase uncertainty no longer has to be built into the dynamics of the encoded state.
+    readout_damping: bool = False
+    readout_damping_init: float = 0.01
 
 
 # ----------------------------------------------------------------------------- utils
@@ -274,6 +285,25 @@ class BlockGenerator(nn.Module):
                 self.head[-1].weight
             )  # starts at the unconditional generator
             nn.init.zeros_(self.head[-1].bias)
+        self.h_head = None
+        if cfg.readout_damping:
+            h0 = torch.full((m,), float(cfg.readout_damping_init))
+            self.h_raw = nn.Parameter(_inv_softplus(h0))
+            if cfg.cond_generator:
+                self.h_head = nn.Sequential(
+                    nn.Linear(cfg.cond_embed, cfg.cond_embed),
+                    nn.SiLU(),
+                    nn.Linear(cfg.cond_embed, m),
+                )
+                nn.init.zeros_(self.h_head[-1].weight)
+                nn.init.zeros_(self.h_head[-1].bias)
+
+    def hedge(self, e: Optional[Tensor], batch: int) -> Tensor:
+        """Readout decay rates h(c) >= 0, [B, m] (readout_damping only)."""
+        h_raw = self.h_raw.expand(batch, -1)
+        if self.h_head is not None and e is not None:
+            h_raw = h_raw + self.h_head(e)
+        return F.softplus(h_raw)
 
     def omega1(self, cn: Optional[Tensor], batch: int) -> Tensor:
         """Base frequency of the harmonic bank, [B]; cn: normalised condition [B, >=1]."""
@@ -517,6 +547,8 @@ class CTKAE(nn.Module):
         self.state_dim = cfg.latent_dim + (
             0 if self.detail is None else self.detail.dim
         )
+        if cfg.readout_damping and cfg.generator != "block":
+            raise ValueError("readout_damping needs the block generator")
         if cfg.generator == "block":
             self.gen: nn.Module = BlockGenerator(cfg)
         elif cfg.generator in ("hurwitz", "dense"):
@@ -616,6 +648,27 @@ class CTKAE(nn.Module):
                 yd = self.detail.propagate(y0[:, self.slow_dim :], taus.to(ty), ee)
                 y = torch.cat([y, yd], -1)
         return mu[:, None] + y
+
+    def readout(self, zs: Tensor, taus: Tensor, c: Optional[Tensor]) -> Tensor:
+        """Latents to decode for the point forecast from state latents zs [B, K, d] at lead
+        times taus [B, K]: mu + e^{-h tau} (zs - mu) on the oscillators (readout_damping);
+        the identity otherwise. The detail latent, if any, is left as it is."""
+        if not self.cfg.readout_damping:
+            return zs
+        B, K = taus.shape
+        e = self.embed_cond(c)
+        mu = self.fixed_point(e, B)[:, None]
+        with torch.autocast(device_type=zs.device.type, enabled=False):
+            h = self.gen.hedge(None if e is None else e.float(), B)  # [B, m]
+            f = torch.exp(-h[:, None] * taus.float()[..., None])  # [B, K, m]
+            y = (zs - mu).float()
+            ys = (y[..., : self.slow_dim].view(B, K, -1, 2) * f[..., None]).flatten(-2)
+            y = torch.cat([ys, y[..., self.slow_dim :]], -1)
+        return mu + y.to(zs.dtype)
+
+    def forecast(self, z0: Tensor, taus: Tensor, c: Optional[Tensor]) -> Tensor:
+        """Point-forecast latents at lead times taus [B, K]: readout(propagate(z0))."""
+        return self.readout(self.propagate(z0, taus, c), taus, c)
 
     def forward(self, window, mask, c, taus):
         z0 = self.encode(window, mask, c)

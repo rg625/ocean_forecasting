@@ -11,6 +11,7 @@ change vs the reference run of the same seed (mean over seeds).
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +61,8 @@ LABELS = {
     "latnoise": "+ latent noise per step (0.005 x rms z; original disturb_std)",
     "combo_lm": "+ latent noise + Mach noise",
     "combo_lmn": "+ latent noise + Mach noise + 4 random of 8 leads",
+    "hedge": "+ hedged readout (forecast decay separate from the state dynamics)",
+    "hedge_back": "+ hedged readout + backward latent consistency (0.1)",
 }
 GROUPS = [
     ("Reference", ["ref"]),
@@ -74,6 +77,7 @@ GROUPS = [
     ),
     ("Regularisation", ["ndec4", "fine", "manoise", "innoise", "latnoise"]),
     ("Regularisation combined", ["combo_lm", "combo_lmn"]),
+    ("Candidate improvements", ["hedge", "hedge_back"]),
 ]
 KEYS = [
     ("extrap_mse_all", "Tra_ext MSE"),
@@ -106,6 +110,11 @@ def collect():
         tag, seed = key.rsplit("_s", 1)
         run = Path(f.read_text().strip())
         run = run if run.is_absolute() else OUT.parent / run
+        if not (run / "test_score.json").exists():
+            print(
+                f"warning: {key}: no test_score.json in {run}, skipped", file=sys.stderr
+            )
+            continue
         ts = json.loads((run / "test_score.json").read_text())
         rec = {k: ts.get(k) for k, _ in KEYS if k != "da"}
         rec["da"] = da_mean(run)

@@ -7,7 +7,9 @@ Objective (all distances channel-weighted, see ct_data.channel_weights):
       + w_pred * mean_{k in S} |D(z_k) - x_{t+k}|^2          z_k exact: mu + e^{tau_k A}(z_0 - mu)
       + w_lat  * mean_{k in S} |z_k - sg(E(x_{t+k-n+1..t+k}))|^2 / E|sg(E)|^2
       + w_amp  * mean_{k in S} (|y_k|_block - |sg(y_k^enc)|_block)^2   (block generator only)
-      (w_pred term optionally weighted linearly over leads, 1 -> w_lead_ramp, mean 1)
+      (w_pred term optionally weighted linearly over leads, 1 -> w_lead_ramp, mean 1; with
+      model.readout_damping it decodes the hedged readout mu + e^{-h tau}(z_k - mu), while
+      every latent term uses the state latent z_k)
       + w_tc   * multistart_consistency (windows starting at tc_starts inside the clip; off by default)
       + optional terms of the original KAE loss, off by default (see step_backward):
         w_back (backward latent consistency), w_cos (directional cosine), w_energy (latent
@@ -347,7 +349,11 @@ def step_backward(
                 zs = torch.stack(steps, 1)[:, idx]
             else:
                 zs = model.propagate(z0.float(), ta_, m_)[:, idx]  # [b, n, d]
-            x_hat = model.decode(zs, mask, m_.repeat_interleave(nd)).float()
+            # the pixel forecast decodes the readout (hedged with readout_damping); every
+            # latent term below compares the state latents zs
+            x_hat = model.decode(
+                model.readout(zs, ta_[:, idx], m_), mask, m_.repeat_interleave(nd)
+            ).float()
             x_rec = model.decode(z0, mask, m_).float()
             l_pred = weighted_mse(x_hat, t_[:, idx], w_ch, lw)
             l_rec = weighted_mse(x_rec, w_[:, -1], w_ch)
@@ -452,7 +458,7 @@ def validate(model, val, n_frames):
     for K, starts in ((60, [100, 300, 500, 700, 860]), (240, [100, 300, 500])):
         win, tgt, taus, ma = val.fixed_windows(n_frames, K, 2, starts)
         z0 = model.encode(win, val.mask, ma)
-        zs = model.propagate(z0, taus, ma)
+        zs = model.forecast(z0, taus, ma)
         err, fe_p, fe_t = [], [], []
         for b in range(win.shape[0]):
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=True):

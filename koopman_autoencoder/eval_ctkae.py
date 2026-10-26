@@ -45,7 +45,9 @@ def rollout(m, x, ma, mask, n_in_stride: int, taus: torch.Tensor, chunk: int = 6
     n = m.cfg.n_frames
     win = x[:, 0 : (n - 1) * n_in_stride + 1 : n_in_stride]
     z0 = m.encode(win, mask, ma)
-    zs = m.propagate(z0, taus.expand(x.shape[0], -1), ma)
+    zs = m.forecast(
+        z0, taus.expand(x.shape[0], -1), ma
+    )  # = propagate without readout_damping
     outs = []
     for s in range(x.shape[0]):
         parts = []
