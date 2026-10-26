@@ -27,7 +27,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "audit_report" / "scripts"))
 from benchmark_suite import load_gt, score, train_climatology  # noqa: E402
 from models.ct_data import load_eval_case, to_acdm_layout  # noqa: E402
-from models.ct_kae import CTKAE, CTKAEConfig  # noqa: E402
+from models.ct_kae import CTKAE, CTKAEConfig, mixture_nodes  # noqa: E402
 
 DATA = HERE / "data/acdm/128_tra"
 
@@ -40,27 +40,39 @@ def load_model(run_dir: Path, ckpt: str, dev):
 
 
 @torch.no_grad()
-def rollout(m, x, ma, mask, n_in_stride: int, taus: torch.Tensor, chunk: int = 60):
-    """x: [S, T, C, H, W]; window = frames ending at index (n-1)*stride with spacing stride."""
+def rollout(
+    m,
+    x,
+    ma,
+    mask,
+    n_in_stride: int,
+    taus: torch.Tensor,
+    chunk: int = 60,
+    mix_sigma: float = 0.0,
+):
+    """x: [S, T, C, H, W]; window = frames ending at index (n-1)*stride with spacing stride.
+    ``mix_sigma`` > 0: time-scale mixture readout (models/ct_kae.mixture_nodes), the weighted
+    average of the decodes at frequency scales s_q; 0 is the single decode."""
     n = m.cfg.n_frames
     win = x[:, 0 : (n - 1) * n_in_stride + 1 : n_in_stride]
     z0 = m.encode(win, mask, ma)
-    zs = m.forecast(
-        z0, taus.expand(x.shape[0], -1), ma
-    )  # = propagate without readout_damping
-    outs = []
-    for s in range(x.shape[0]):
-        parts = []
-        for k in range(0, zs.shape[1], chunk):
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                parts.append(
-                    m.decode(
-                        zs[s, k : k + chunk],
-                        mask,
-                        ma[s : s + 1].expand(min(chunk, zs.shape[1] - k)),
-                    ).float()
-                )
-        outs.append(torch.cat(parts))
+    outs = [0.0] * x.shape[0]
+    for sq, wq in mixture_nodes(mix_sigma):
+        # = propagate without readout_damping
+        zs = m.forecast(z0, taus.expand(x.shape[0], -1), ma, sq)
+        for s in range(x.shape[0]):
+            parts = []
+            for k in range(0, zs.shape[1], chunk):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
+                    parts.append(
+                        m.decode(
+                            zs[s, k : k + chunk],
+                            mask,
+                            ma[s : s + 1].expand(min(chunk, zs.shape[1] - k)),
+                        ).float()
+                    )
+            dec = torch.cat(parts)
+            outs[s] = dec if wq == 1.0 else outs[s] + wq * dec
     return torch.stack(outs)  # [S, K, C, H, W]
 
 
@@ -71,18 +83,28 @@ def main():
     ap.add_argument("--save_npz", action="store_true")
     ap.add_argument("--dt_test", action="store_true")
     ap.add_argument("--ma_sweep", action="store_true")
+    # time-scale mixture readout (models/ct_kae.mixture_nodes); results go to
+    # eval/<ckpt>_mix<sigma>.json so the single-decode evaluation is never overwritten
+    ap.add_argument("--mix_sigma", type=float, default=0.0)
+    ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
-    dev = torch.device("cuda")
+    dev = torch.device(args.device)
+    tag = Path(args.ckpt).stem + (
+        f"_mix{args.mix_sigma:g}" if args.mix_sigma > 0 else ""
+    )
     run = Path(args.run_dir)
     m, ck = load_model(run, args.ckpt, dev)
     out = {"ckpt": str(run / args.ckpt), "step": ck.get("step"), "val": ck.get("val")}
+    out["mix_sigma"] = args.mix_sigma
     clim = train_climatology()
     (run / "eval").mkdir(exist_ok=True)
     for case in ["interp", "extrap", "longer"]:
         x, ma, mask = load_eval_case(str(DATA / f"gt_{case}.nc"), dev)
         S, T = x.shape[:2]
         taus = 0.1 * torch.arange(1, T - 1, device=dev, dtype=torch.float32)
-        pred = rollout(m, x, ma, mask, 1, taus)  # frames 2..T-1
+        pred = rollout(
+            m, x, ma, mask, 1, taus, mix_sigma=args.mix_sigma
+        )  # frames 2..T-1
         full = torch.cat([x[:, :2], pred], 1)  # frames 0,1 = inputs (ACDM convention)
         arr = to_acdm_layout(full, ma)[:, :, :4]
         gt, fluid = load_gt(case)
@@ -100,7 +122,8 @@ def main():
         if args.save_npz:
             ma5 = to_acdm_layout(full, ma)
             np.savez_compressed(
-                run / "eval" / f"{case}.npz", arr_0=ma5[None, None].astype(np.float16)
+                run / "eval" / f"{case}{tag[len(Path(args.ckpt).stem):]}.npz",
+                arr_0=ma5[None, None].astype(np.float16),
             )
     if args.dt_test:
         out["dt_test"] = {}
@@ -153,7 +176,7 @@ def main():
             "Ma sensitivity (rms change vs true Ma):",
             [(a, round(b, 4)) for a, b in sens],
         )
-    (run / "eval" / f"{Path(args.ckpt).stem}.json").write_text(json.dumps(out))
+    (run / "eval" / f"{tag}.json").write_text(json.dumps(out))
 
 
 if __name__ == "__main__":

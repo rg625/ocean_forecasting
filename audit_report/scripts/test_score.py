@@ -37,11 +37,14 @@ ap.add_argument("--ckpt", default="last.pth")
 ap.add_argument("--lrs", type=float, nargs="+", default=[0.3, 1.0, 3.0, 10.0])
 ap.add_argument("--json", default=None)
 ap.add_argument("--no-lsim", action="store_true")
+# forecasting scores of the time-scale mixture readout (eval_ctkae.py --mix_sigma); DA unchanged
+ap.add_argument("--mix-sigma", type=float, default=0.0)
 args = ap.parse_args()
 dev = torch.device("cuda")
 run = Path(args.run_dir)
-ev = json.loads((run / "eval" / f"{Path(args.ckpt).stem}.json").read_text())
-out: dict = {"run": run.name, "ckpt": args.ckpt}
+mix = f"_mix{args.mix_sigma:g}" if args.mix_sigma > 0 else ""
+ev = json.loads((run / "eval" / f"{Path(args.ckpt).stem}{mix}.json").read_text())
+out: dict = {"run": run.name, "ckpt": args.ckpt, "mix_sigma": args.mix_sigma}
 for c in ("interp", "extrap", "longer"):
     out[f"{c}_mse"] = ev[c]["mse_pred"]
     out[f"{c}_mse_all"] = ev[c]["mse_all"]  # ACDM-paper convention (all frames)
@@ -56,7 +59,10 @@ if not args.no_lsim:  # LSiM, ACDM convention (lsim_score.py)
         T = x.shape[1]
         taus = 0.1 * torch.arange(1, T - 1, device=dev, dtype=torch.float32)
         with torch.no_grad():
-            full = torch.cat([x[:, :2], rollout(m, x, ma, mask, 1, taus)], 1)
+            full = torch.cat(
+                [x[:, :2], rollout(m, x, ma, mask, 1, taus, mix_sigma=args.mix_sigma)],
+                1,
+            )
         pred = to_acdm_layout(full, ma)[None, :, :, :4]
         out[f"{c}_lsim"], out[f"{c}_lsim_sd"] = lsim(pred, c)
     del m

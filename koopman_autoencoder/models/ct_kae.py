@@ -328,13 +328,19 @@ class BlockGenerator(nn.Module):
         return F.softplus(g_raw), w
 
     def propagate(
-        self, y: Tensor, taus: Tensor, e: Optional[Tensor], cn: Optional[Tensor] = None
+        self,
+        y: Tensor,
+        taus: Tensor,
+        e: Optional[Tensor],
+        cn: Optional[Tensor] = None,
+        freq_scale: float = 1.0,
     ) -> Tensor:
-        """y: [B, d] (deviation from fixed point); taus: [B, K] -> [B, K, d]."""
+        """y: [B, d] (deviation from fixed point); taus: [B, K] -> [B, K, d].
+        ``freq_scale`` multiplies every frequency (decays unchanged)."""
         B = y.shape[0]
         g, w = self.params(e, B, cn)  # [B, m]
         a = torch.exp(-g[:, None] * taus[..., None])  # [B, K, m]
-        th = w[:, None] * taus[..., None]
+        th = (w * freq_scale)[:, None] * taus[..., None]
         c, s = torch.cos(th) * a, torch.sin(th) * a
         y1, y2 = y[:, 0::2][:, None], y[:, 1::2][:, None]  # [B, 1, m]
         out = torch.stack([c * y1 - s * y2, s * y1 + c * y2], dim=-1)  # [B, K, m, 2]
@@ -409,6 +415,21 @@ class MatrixGenerator(nn.Module):
             return torch.stack(outs, 1)
         E = torch.linalg.matrix_exp(A[:, None] * taus[..., None, None])  # [B, K, d, d]
         return torch.einsum("bkij,bj->bki", E, y)
+
+
+def mixture_nodes(sigma: float, n: int = 5) -> List[Tuple[float, float]]:
+    """Time-scale mixture readout: (s_q, w_q) for s ~ N(1, sigma^2), Gauss-Hermite with n nodes
+    (weights sum to 1). The forecast is sum_q w_q D(z(tau; frequencies x s_q)), an average of
+    decodes of the same exactly linear flow run at time scales s_q: the decoder only sees
+    realisable latents and the average hedges phase uncertainty in pixel space. sigma = 0 is
+    the single decode."""
+    if sigma <= 0:
+        return [(1.0, 1.0)]
+    import numpy as np
+
+    x, w = np.polynomial.hermite_e.hermegauss(n)
+    w = w / w.sum()
+    return [(1.0 + sigma * float(xi), float(wi)) for xi, wi in zip(x, w)]
 
 
 # ------------------------------------------------------------------------- the model
@@ -633,8 +654,15 @@ class CTKAE(nn.Module):
         x = x * mask.to(x.dtype)  # [H, W] static obstacle mask, broadcast
         return x.view(*lead, *x.shape[1:])
 
-    def propagate(self, z0: Tensor, taus: Tensor, c: Optional[Tensor]) -> Tensor:
-        """Exact latent states at lead times taus [B, K] (time units) -> [B, K, d]."""
+    def propagate(
+        self, z0: Tensor, taus: Tensor, c: Optional[Tensor], freq_scale: float = 1.0
+    ) -> Tensor:
+        """Exact latent states at lead times taus [B, K] (time units) -> [B, K, d].
+        ``freq_scale`` != 1 runs the same flow with every oscillator frequency scaled (block
+        generator; used by the time-scale mixture readout, see mixture_nodes)."""
+        if freq_scale != 1.0 and not isinstance(self.gen, BlockGenerator):
+            raise ValueError("freq_scale needs the block generator")
+        kw = {} if freq_scale == 1.0 else {"freq_scale": freq_scale}
         e = self.embed_cond(c)
         mu = self.fixed_point(e, z0.shape[0])
         # latent dynamics always run in >= fp32, outside autocast
@@ -643,7 +671,7 @@ class CTKAE(nn.Module):
             y0 = (z0 - mu).to(ty)
             ee = None if e is None else e.to(ty)
             cn = self.norm_cond(c)
-            y = self.gen.propagate(y0[:, : self.slow_dim], taus.to(ty), ee, cn)
+            y = self.gen.propagate(y0[:, : self.slow_dim], taus.to(ty), ee, cn, **kw)
             if self.detail is not None:
                 yd = self.detail.propagate(y0[:, self.slow_dim :], taus.to(ty), ee)
                 y = torch.cat([y, yd], -1)
@@ -666,9 +694,11 @@ class CTKAE(nn.Module):
             y = torch.cat([ys, y[..., self.slow_dim :]], -1)
         return mu + y.to(zs.dtype)
 
-    def forecast(self, z0: Tensor, taus: Tensor, c: Optional[Tensor]) -> Tensor:
+    def forecast(
+        self, z0: Tensor, taus: Tensor, c: Optional[Tensor], freq_scale: float = 1.0
+    ) -> Tensor:
         """Point-forecast latents at lead times taus [B, K]: readout(propagate(z0))."""
-        return self.readout(self.propagate(z0, taus, c), taus, c)
+        return self.readout(self.propagate(z0, taus, c, freq_scale), taus, c)
 
     def forward(self, window, mask, c, taus):
         z0 = self.encode(window, mask, c)

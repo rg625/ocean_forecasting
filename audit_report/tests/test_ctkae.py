@@ -861,3 +861,76 @@ def test_backward_prediction_matches_its_definition():
         xb = m.decode(m.propagate(z_end, bt, ma), mask, ma.repeat_interleave(4))
         ref = ((xb - torch.cat([tgt[:, idx], win[:, -1:]], 1)) ** 2).mean()
     assert abs(parts["bpred"] - float(ref)) <= 1e-5 * (1 + float(ref))
+
+
+def test_mixture_nodes_are_a_normalised_symmetric_quadrature():
+    from models.ct_kae import mixture_nodes
+
+    assert mixture_nodes(0.0) == [(1.0, 1.0)]
+    nodes = mixture_nodes(0.05, 5)
+    s = np.array([n[0] for n in nodes])
+    w = np.array([n[1] for n in nodes])
+    assert len(nodes) == 5 and abs(w.sum() - 1) < 1e-12
+    assert abs((w * s).sum() - 1) < 1e-12  # mean 1
+    assert abs((w * (s - 1) ** 2).sum() - 0.05**2) < 1e-12  # variance sigma^2
+
+
+def test_freq_scale_scales_only_the_frequencies():
+    """propagate(freq_scale=1) is the default path bit for bit; freq_scale s equals running
+    the generator with every frequency multiplied by s (decays unchanged)."""
+    m = tiny("block", fixed_point="conditional")
+    perturb_heads(m)
+    win, mask, ma = batch()
+    taus = torch.tensor([0.1, 0.4, 1.3]).expand(3, -1)
+    with torch.no_grad():
+        z0 = m.encode(win, mask, ma)
+        ref = m.propagate(z0, taus, ma)
+        torch.testing.assert_close(m.propagate(z0, taus, ma, 1.0), ref, rtol=0, atol=0)
+        fast = m.propagate(z0, taus, ma, 1.07)
+        orig = m.gen.params
+        m.gen.params = lambda e_, b_, cn=None: (
+            orig(e_, b_, cn)[0],
+            1.07 * orig(e_, b_, cn)[1],
+        )
+        torch.testing.assert_close(
+            fast, m.propagate(z0, taus, ma), rtol=1e-5, atol=1e-5
+        )
+        m.gen.params = orig
+    with pytest.raises(ValueError):
+        tiny("dense").propagate(z0, taus, ma, 1.07)
+
+
+def test_mixture_rollout_reduces_to_the_single_decode():
+    """eval_ctkae.rollout with mix_sigma = 0 is unchanged; with sigma > 0 it is the weighted
+    average of the decodes at the quadrature time scales."""
+    import eval_ctkae
+    from models.ct_kae import mixture_nodes
+
+    m = tiny("block").eval()
+    perturb_heads(m)
+    g = torch.Generator().manual_seed(4)
+    x = torch.randn(2, 6, 4, 16, 32, generator=g)
+    mask = torch.ones(16, 32)
+    ma = torch.tensor([0.6, 0.7])
+    taus = 0.1 * torch.arange(1, 5, dtype=torch.float32)
+    single = eval_ctkae.rollout(m, x, ma, mask, 1, taus)
+    torch.testing.assert_close(
+        eval_ctkae.rollout(m, x, ma, mask, 1, taus, mix_sigma=0.0),
+        single,
+        rtol=0,
+        atol=0,
+    )
+    mix = eval_ctkae.rollout(m, x, ma, mask, 1, taus, mix_sigma=0.05)
+    with torch.no_grad():
+        z0 = m.encode(x[:, :2], mask, ma)
+        ref = sum(
+            wq
+            * m.decode(
+                m.forecast(z0, taus.expand(2, -1), ma, sq),
+                mask,
+                ma.repeat_interleave(4),
+            )
+            for sq, wq in mixture_nodes(0.05)
+        )
+    torch.testing.assert_close(mix, ref, rtol=1e-4, atol=1e-5)
+    assert (mix - single).abs().max() > 1e-6
