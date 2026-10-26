@@ -6,11 +6,17 @@ combo_lmn|1|AB_combo_lmn|train.latent_noise=0.005 train.ma_noise=0.005 train.n_d
 combo_lm|2|AB_combo_lm|train.latent_noise=0.005 train.ma_noise=0.005
 combo_lmn|2|AB_combo_lmn|train.latent_noise=0.005 train.ma_noise=0.005 train.n_dec=4
 genonly|0|AB_genonly|model.film_encoder=false model.film_decoder=false
+back003|0|AB_back003|train.w_back=0.03
+back001|0|AB_back001|train.w_back=0.01
 genonly|1|AB_genonly|model.film_encoder=false model.film_decoder=false
-#cut 2026-10-26 (superseded by the mixture readout): hedge|0|AB_hedge|model.readout_damping=true
+back003|1|AB_back003|train.w_back=0.03
+back001|1|AB_back001|train.w_back=0.01
+back003|2|AB_back003|train.w_back=0.03
+back001|2|AB_back001|train.w_back=0.01
 hedge_back|0|AB_hedge_back|model.readout_damping=true train.w_back=0.1
-#cut 2026-10-26 (superseded by the mixture readout): hedge|1|AB_hedge|model.readout_damping=true
 hedge_back|1|AB_hedge_back|model.readout_damping=true train.w_back=0.1
+#cut 2026-10-26 (superseded by the mixture readout): hedge|0|AB_hedge|model.readout_damping=true
+#cut 2026-10-26 (superseded by the mixture readout): hedge|1|AB_hedge|model.readout_damping=true
 #cut 2026-10-26 (superseded by the mixture readout): hedge|2|AB_hedge|model.readout_damping=true
 ndec4|0|AB_ndec4|train.n_dec=4
 fine|0|AB_fine|train.fine_targets=true

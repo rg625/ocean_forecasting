@@ -48,6 +48,8 @@ LABELS = {
     "nolat": "- forward latent consistency",
     "noamp": "- amplitude loss",
     "back": "+ backward latent consistency (0.1)",
+    "back003": "+ backward latent consistency (0.03)",
+    "back001": "+ backward latent consistency (0.01)",
     "cos": "+ directional cosine (0.1)",
     "energy": "+ latent energy (0.1)",
     "sobt": "+ temporal Sobolev (0.1)",
@@ -74,7 +76,7 @@ GROUPS = [
     ("Loss terms used (removed)", ["norec", "nopred", "nolat", "noamp"]),
     (
         "Loss terms of the original KAE (added)",
-        ["back", "cos", "energy", "sobt", "sobx", "spec", "cosw"],
+        ["back", "back003", "back001", "cos", "energy", "sobt", "sobx", "spec", "cosw"],
     ),
     ("Regularisation", ["ndec4", "fine", "manoise", "innoise", "latnoise"]),
     ("Regularisation combined", ["combo_lm", "combo_lmn"]),
