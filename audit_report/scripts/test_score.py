@@ -39,6 +39,7 @@ ap.add_argument("--json", default=None)
 ap.add_argument("--no-lsim", action="store_true")
 # forecasting scores of the time-scale mixture readout (eval_ctkae.py --mix_sigma); DA unchanged
 ap.add_argument("--mix-sigma", type=float, default=0.0)
+ap.add_argument("--no-da", action="store_true")
 args = ap.parse_args()
 dev = torch.device("cuda")
 run = Path(args.run_dir)
@@ -68,6 +69,11 @@ if not args.no_lsim:  # LSiM, ACDM convention (lsim_score.py)
     del m
     torch.cuda.empty_cache()
 
+if args.no_da:
+    print(json.dumps(out))
+    if args.json:
+        Path(args.json).write_text(json.dumps(out, indent=1))
+    sys.exit(0)
 ad = CTKAEAdapter(run, REGIMES["tra"], dev, ckpt=args.ckpt)
 D = REPO / "data/acdm/128_tra"
 val = PhysicalData(D / "gt_extrap.nc", "tra", dev)

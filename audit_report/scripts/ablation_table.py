@@ -106,19 +106,20 @@ def da_mean(run: Path):
     return float(np.mean(vals)) if vals else None
 
 
-def collect():
+def collect(score_file: str = "test_score.json"):
+    """Per tag and seed: forecasting scores from RUN/<score_file> (test_score.json, or
+    test_score_mix.json for the time-scale mixture readout) and DA from da_abl (the DA does
+    not depend on the forecast readout)."""
     rows: dict = {}
     for f in sorted(STATE.glob("*.done")):
         key = f.stem
         tag, seed = key.rsplit("_s", 1)
         run = Path(f.read_text().strip())
         run = run if run.is_absolute() else OUT.parent / run
-        if not (run / "test_score.json").exists():
-            print(
-                f"warning: {key}: no test_score.json in {run}, skipped", file=sys.stderr
-            )
+        if not (run / score_file).exists():
+            print(f"warning: {key}: no {score_file} in {run}, skipped", file=sys.stderr)
             continue
-        ts = json.loads((run / "test_score.json").read_text())
+        ts = json.loads((run / score_file).read_text())
         rec = {k: ts.get(k) for k, _ in KEYS if k != "da"}
         rec["da"] = da_mean(run)
         rows.setdefault(tag, {})[int(seed)] = rec
@@ -169,15 +170,26 @@ def summarise(rows):
                 if s in ref and seeds[s][k] is not None and ref[s][k] is not None
             ]
             o[f"d_{k}"] = float(np.mean(d)) if d and tag != "ref" else None
+            o[f"dse_{k}"] = (
+                float(np.std(d, ddof=1) / np.sqrt(len(d)))
+                if len(d) > 1 and tag != "ref"
+                else None
+            )
         out[tag] = o
     return out
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=str(ROOT / "audit_report/results/ablation_table"))
+    ap.add_argument("--out", default=None)
+    # forecasting columns from the calibrated time-scale mixture readout (mix_postprocess.sh)
+    ap.add_argument("--mix", action="store_true")
     a = ap.parse_args()
-    s = summarise(collect())
+    if a.out is None:
+        a.out = str(ROOT / "audit_report/results/ablation_table") + (
+            "_mix" if a.mix else ""
+        )
+    s = summarise(collect("test_score_mix.json" if a.mix else "test_score.json"))
     dig = {"da": 3}
     md = [
         "| Variant | seeds | " + " | ".join(n for _, n in KEYS) + " |",
@@ -204,7 +216,11 @@ def main():
                 m, sd = o[k]
                 c = fmt(m, sd, dig.get(k, 2))
                 if o.get(f"d_{k}") is not None:
-                    c += f" ({o[f'd_{k}']:+.{dig.get(k, 2)}f})"
+                    dd = dig.get(k, 2)
+                    se = o.get(f"dse_{k}")
+                    c += f" ({o[f'd_{k}']:+.{dd}f}" + (
+                        f" ± {se:.{dd}f})" if se else ")"
+                    )
                 cells.append(c)
             lab = LABELS.get(t, t.replace("S_", "weight: "))
             md.append(f"| {lab} | {o['n']} | " + " | ".join(cells) + " |")
