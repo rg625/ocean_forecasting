@@ -14,6 +14,9 @@ Objective (all distances channel-weighted, see ct_data.channel_weights):
       + optional terms of the original KAE loss, off by default (see step_backward):
         w_back (backward latent consistency), w_cos (directional cosine), w_energy (latent
         norm smoothness), w_sob_t / w_sob_x (temporal / spatial Sobolev), w_spec (spectral)
+      + w_bpred * mean_k |D(e^{-(tau_K - tau_k) A} E(last window)) - x_{t+k}|^2 over the decoded
+        leads and t (backward prediction in pixel space: the past read back from the end of
+        the clip, as 4D-Var reads the analysis back from later observations; off by default)
 With a detail latent (models/ct_kae.DetailLatent) the w_lat term is computed for the
 oscillators and the detail state separately, each normalised by its own E|sg(E)|^2, and
 summed; w_amp applies to the oscillators only.
@@ -90,6 +93,7 @@ DEFAULTS = OmegaConf.create(
             "w_sob_t": 0.0,
             "w_sob_x": 0.0,
             "w_spec": 0.0,
+            "w_bpred": 0.0,
             "accum": 1,
             # regularisers (ablations): fine_targets draws the K targets at random raw-grid
             # times (spacing 0.05) within the same horizon (TraWindows.sample); ma_noise adds
@@ -226,6 +230,7 @@ LOSS_TERMS = (
     "sob_t",
     "sob_x",
     "spec",
+    "bpred",
 )
 
 
@@ -258,7 +263,7 @@ def step_backward(
       tc     multi-start consistency                    back   |e^{-tau A} E(last window) - sg E(.)|^2
       cos    1 - cos(z_k, sg E(x_{t+k}))                energy (|z_{k+1}| - |z_k|)^2 / E|z|^2
       sob_t  temporal Sobolev (frame differences)       sob_x  spatial Sobolev (error gradients)
-      spec   spectral L1 of Fourier amplitudes
+      spec   spectral L1 of Fourier amplitudes      bpred  |D(e^{-tau A} E(last window)) - x|^2
     ``tgt_hist`` [B, K, n-1, ...] gives the encoder history of each target when the targets
     are not equally spaced continuations of the window (fine_targets); ``win_enc`` is a
     perturbed copy of the window fed to the encoder for z0 (input_noise; the reconstruction
@@ -277,11 +282,14 @@ def step_backward(
     w_sob_t = getattr(tc, "w_sob_t", 0.0)
     w_sob_x = getattr(tc, "w_sob_x", 0.0)
     w_spec = getattr(tc, "w_spec", 0.0)
+    w_bpred = getattr(tc, "w_bpred", 0.0)
     lat_noise = getattr(tc, "latent_noise", 0.0)
     if tgt_hist is not None and (
-        tc.w_tc > 0 or w_back > 0 or w_energy > 0 or w_sob_t > 0
+        tc.w_tc > 0 or w_back > 0 or w_energy > 0 or w_sob_t > 0 or w_bpred > 0
     ):
-        raise ValueError("tc / back / energy / sob_t assume equally spaced targets")
+        raise ValueError(
+            "tc / back / energy / sob_t / bpred assume equally spaced targets"
+        )
     need_zt = tc.w_lat > 0 or tc.w_amp > 0 or w_back > 0 or w_cos > 0 or w_energy > 0
     zt = den_lat = den_det = den_amp = den_tc = den_en = den_spec = None
     with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=tc.amp):
@@ -334,6 +342,7 @@ def step_backward(
         w_, t_, ta_, m_ = win[sl], tgt[sl], taus[sl], ma[sl]
         zero = torch.zeros((), device=win.device)
         l_lat = l_amp = l_tc = l_back = l_cos = l_en = l_st = l_sx = l_sp = zero
+        l_bp = zero
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=tc.amp):
             z0 = model.encode(w_ if win_enc is None else win_enc[sl], mask, m_)
             if lat_noise > 0:
@@ -416,6 +425,19 @@ def step_backward(
                 l_sx = sobolev_space(x_hat - t_[:, idx], w_ch)
             if w_spec > 0:
                 l_sp = spectral_l1(x_hat, t_[:, idx], w_ch, den_spec)
+            if w_bpred > 0:
+                # backward prediction: the last window of the clip, propagated back with the
+                # same generator to every decoded lead and to t, decoded and compared
+                full_ = torch.cat([w_, t_], 1)
+                z_end = model.encode(full_[:, -n_frames:], mask, m_).float()
+                t_end = ta_[:, -1:]
+                bt = torch.cat([ta_[:, idx] - t_end, -t_end], 1)
+                xb = model.decode(
+                    model.propagate(z_end, bt, m_),
+                    mask,
+                    m_.repeat_interleave(nd + 1),
+                ).float()
+                l_bp = weighted_mse(xb, torch.cat([t_[:, idx], w_[:, -1:]], 1), w_ch)
             loss = (
                 tc.w_rec * l_rec
                 + tc.w_pred * l_pred
@@ -428,6 +450,7 @@ def step_backward(
                 + w_sob_t * l_st
                 + w_sob_x * l_sx
                 + w_spec * l_sp
+                + w_bpred * l_bp
             )
         (loss / accum).backward()
         for k, v in zip(
@@ -445,6 +468,7 @@ def step_backward(
                 l_st,
                 l_sx,
                 l_sp,
+                l_bp,
             ),
         ):
             tot[k] += float(v) / accum

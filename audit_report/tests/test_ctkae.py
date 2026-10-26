@@ -577,7 +577,7 @@ def test_physics_terms_vanish_on_perfect_prediction_and_are_positive_otherwise()
 
 
 @pytest.mark.parametrize(
-    "term", ["w_back", "w_cos", "w_energy", "w_sob_t", "w_sob_x", "w_spec"]
+    "term", ["w_back", "w_cos", "w_energy", "w_sob_t", "w_sob_x", "w_spec", "w_bpred"]
 )
 def test_each_optional_term_changes_the_gradient(term):
     from types import SimpleNamespace
@@ -627,6 +627,7 @@ def test_each_optional_term_changes_the_gradient(term):
         "w_sob_t": "sob_t",
         "w_sob_x": "sob_x",
         "w_spec": "spec",
+        "w_bpred": "bpred",
     }[term]
     assert parts[key] > 0
     assert not torch.allclose(grads[0], grads[1])
@@ -838,3 +839,25 @@ def test_readout_damping_trains_only_through_the_pixel_forecast():
     for k in ("lat", "amp", "rec"):
         assert abs(p0[k] - p1[k]) <= 1e-6 * (1 + abs(p0[k])), k
     assert abs(p0["pred"] - p1["pred"]) > 1e-6
+
+
+def test_backward_prediction_matches_its_definition():
+    """bpred = channel-weighted MSE between D(e^{-(tau_K - tau_k) A} E(last window)) and the
+    frames at the decoded leads and at t, recomputed here by hand."""
+    import train_ctkae
+    from types import SimpleNamespace
+
+    tc, win, tgt, taus, ma, mask, idx = _reg_setup()
+    idx = torch.tensor([0, 3, 7])
+    m = tiny("block", fixed_point="none")
+    perturb_heads(m)
+    a = dict(vars(tc), w_bpred=1.0)
+    parts = train_ctkae.step_backward(
+        m, win, tgt, taus, ma, mask, idx, 8, 2, SimpleNamespace(**a), torch.ones(4), 1
+    )
+    with torch.no_grad():
+        z_end = m.encode(torch.cat([win, tgt], 1)[:, -2:], mask, ma)
+        bt = torch.cat([taus[:, idx] - taus[:, -1:], -taus[:, -1:]], 1)
+        xb = m.decode(m.propagate(z_end, bt, ma), mask, ma.repeat_interleave(4))
+        ref = ((xb - torch.cat([tgt[:, idx], win[:, -1:]], 1)) ** 2).mean()
+    assert abs(parts["bpred"] - float(ref)) <= 1e-5 * (1 + float(ref))
