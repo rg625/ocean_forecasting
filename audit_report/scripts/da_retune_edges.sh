@@ -10,7 +10,9 @@ S=../audit_report/scripts
 LOCK=model_outputs_ctkae/ablation_state
 wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 4500 ]; do sleep 60; done; }
 gpu_start () { exec 9>$LOCK/gpu.flock; flock 9; wait_gpu; "$@" & local pid=$!; sleep 90; flock -u 9; exec 9>&-; wait $pid; }
-for f in model_outputs_ctkae/ablation_state/*.done; do
+# usage: da_retune_edges.sh [TAG ...]   (default: every finished job)
+if [ $# -gt 0 ]; then FILES=$(for t in "$@"; do ls $LOCK/${t}_s*.done 2>/dev/null; done); else FILES=$(ls $LOCK/*.done); fi
+for f in $FILES; do
   r=$(cat $f); lab=ctkae_$(basename $r); T=model_outputs_ctkae/da_abl/$lab/df9/tuning.json
   for round in 1 2 3; do
     [ -f $T ] || break
