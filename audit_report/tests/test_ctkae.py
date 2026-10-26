@@ -633,6 +633,45 @@ def test_each_optional_term_changes_the_gradient(term):
     assert not torch.allclose(grads[0], grads[1])
 
 
+@pytest.mark.parametrize("norm", ["l1", "l2"])
+def test_rec_norm_matches_its_definition(norm):
+    from types import SimpleNamespace
+
+    import train_ctkae
+
+    a, b = torch.randn(2, 3, 4, 8, 8), torch.randn(2, 3, 4, 8, 8)
+    w = torch.tensor([1.0, 2.0, 0.5, 1.0])
+    d = (a - b).abs() if norm == "l1" else (a - b) ** 2
+    ref = (d.mean(dim=(-1, -2)) * w).mean()
+    assert torch.allclose(train_ctkae.weighted_mse(a, b, w, norm=norm), ref)
+    # the reconstruction term of a training step uses that distance
+    g = torch.Generator().manual_seed(3)
+    win = torch.randn(2, 2, 4, 16, 32, generator=g)
+    tgt = torch.randn(2, 4, 4, 16, 32, generator=g)
+    taus = (torch.arange(1, 5) * 0.1).expand(2, -1)
+    ma, mask, wch = torch.tensor([0.6, 0.8]), torch.ones(16, 32), torch.ones(4)
+    tc = SimpleNamespace(
+        amp=False,
+        w_rec=1.0,
+        w_pred=1.0,
+        w_lat=0.0,
+        w_amp=0.0,
+        w_tc=0.0,
+        w_lead_ramp=1.0,
+        tc_starts=[0],
+        rec_norm=norm,
+        pred_norm=norm,
+    )
+    m = tiny("block", fixed_point="none")
+    parts = train_ctkae.step_backward(
+        m, win, tgt, taus, ma, mask, torch.arange(4), 4, 2, tc, wch, 1
+    )
+    with torch.no_grad():
+        x_rec = m.decode(m.encode(win, mask, ma), mask, ma)
+    want = train_ctkae.weighted_mse(x_rec, win[:, -1], wch, norm=norm)
+    assert abs(float(parts["rec"]) - float(want)) < 1e-5
+
+
 def test_cosine_lead_weights_match_original_kae():
     import train_ctkae
 

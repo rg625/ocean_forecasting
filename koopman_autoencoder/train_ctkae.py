@@ -3,7 +3,7 @@
     python train_ctkae.py --config configs/ctkae/base.yaml [key=value ...]
 
 Objective (all distances channel-weighted, see ct_data.channel_weights):
-    L = w_rec  * |D(E(x_t)) - x_t|^2
+    L = w_rec  * |D(E(x_t)) - x_t|^2                  (rec_norm / pred_norm = l1: |.| instead)
       + w_pred * mean_{k in S} |D(z_k) - x_{t+k}|^2          z_k exact: mu + e^{tau_k A}(z_0 - mu)
       + w_lat  * mean_{k in S} |z_k - sg(E(x_{t+k-n+1..t+k}))|^2 / E|sg(E)|^2
       + w_amp  * mean_{k in S} (|y_k|_block - |sg(y_k^enc)|_block)^2   (block generator only)
@@ -85,6 +85,11 @@ DEFAULTS = OmegaConf.create(
             "w_amp": 0.0,
             "w_tc": 0.0,
             "w_lead_ramp": 1.0,
+            # pixel distance of the rec / pred terms: l2 (squared error) | l1 (absolute error;
+            # the original KAE on TRA used l1 for the reconstruction, squared error for the
+            # rollout prediction)
+            "rec_norm": "l2",
+            "pred_norm": "l2",
             "pred_weighting": "uniform",  # uniform | cosine (original KAE, see lead_weights)
             # optional terms of the original KAE formulation, off by default (ablations)
             "w_back": 0.0,
@@ -127,9 +132,13 @@ def horizon_at(step: int, tc) -> int:
     return int(round(tc.k_start + (tc.k_max - tc.k_start) * frac))
 
 
-def weighted_mse(a, b, w, lead_w=None):
-    """Channel-weighted MSE; ``lead_w`` [n] (mean 1) weights the lead axis of [B, n, C, H, W]."""
-    e = ((a - b) ** 2).mean(dim=(-1, -2)) * w
+def weighted_mse(a, b, w, lead_w=None, norm="l2"):
+    """Channel-weighted MSE; ``lead_w`` [n] (mean 1) weights the lead axis of [B, n, C, H, W].
+    ``norm="l1"``: mean absolute error instead."""
+    if norm not in ("l1", "l2"):
+        raise ValueError(f"unknown norm {norm}")
+    d = (a - b).abs() if norm == "l1" else (a - b) ** 2
+    e = d.mean(dim=(-1, -2)) * w
     if lead_w is not None:
         e = e * lead_w[:, None]
     return e.mean()
@@ -284,6 +293,8 @@ def step_backward(
     w_spec = getattr(tc, "w_spec", 0.0)
     w_bpred = getattr(tc, "w_bpred", 0.0)
     lat_noise = getattr(tc, "latent_noise", 0.0)
+    rec_norm = getattr(tc, "rec_norm", "l2")
+    pred_norm = getattr(tc, "pred_norm", "l2")
     if tgt_hist is not None and (
         tc.w_tc > 0 or w_back > 0 or w_energy > 0 or w_sob_t > 0 or w_bpred > 0
     ):
@@ -364,8 +375,8 @@ def step_backward(
                 model.readout(zs, ta_[:, idx], m_), mask, m_.repeat_interleave(nd)
             ).float()
             x_rec = model.decode(z0, mask, m_).float()
-            l_pred = weighted_mse(x_hat, t_[:, idx], w_ch, lw)
-            l_rec = weighted_mse(x_rec, w_[:, -1], w_ch)
+            l_pred = weighted_mse(x_hat, t_[:, idx], w_ch, lw, pred_norm)
+            l_rec = weighted_mse(x_rec, w_[:, -1], w_ch, norm=rec_norm)
             if zt is not None:
                 ztc = zt[sl]
                 l_lat = ((zs[..., :sd] - ztc[..., :sd]) ** 2).mean() / den_lat

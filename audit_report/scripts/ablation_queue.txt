@@ -13,6 +13,12 @@ back003|1|AB_back003|train.w_back=0.03
 back001|1|AB_back001|train.w_back=0.01
 back003|2|AB_back003|train.w_back=0.03
 back001|2|AB_back001|train.w_back=0.01
+l1|0|AB_l1|train.rec_norm=l1 train.pred_norm=l1
+l1rec|0|AB_l1rec|train.rec_norm=l1
+l1|1|AB_l1|train.rec_norm=l1 train.pred_norm=l1
+l1rec|1|AB_l1rec|train.rec_norm=l1
+l1|2|AB_l1|train.rec_norm=l1 train.pred_norm=l1
+l1rec|2|AB_l1rec|train.rec_norm=l1
 #cut 2026-10-26 (mixture readout on AB_back shows its ext/int cost is not lost hedging): hedge_back|0|AB_hedge_back|model.readout_damping=true train.w_back=0.1
 #cut 2026-10-26 (mixture readout on AB_back shows its ext/int cost is not lost hedging): hedge_back|1|AB_hedge_back|model.readout_damping=true train.w_back=0.1
 #cut 2026-10-26 (superseded by the mixture readout): hedge|0|AB_hedge|model.readout_damping=true
