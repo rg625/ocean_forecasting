@@ -59,6 +59,8 @@ LABELS = {
     "manoise": "+ Mach-number noise (s.d. 0.005)",
     "innoise": "+ input-frame noise (s.d. 0.01, normalised units)",
     "latnoise": "+ latent noise per step (0.005 x rms z; original disturb_std)",
+    "combo_lm": "+ latent noise + Mach noise",
+    "combo_lmn": "+ latent noise + Mach noise + 4 random of 8 leads",
 }
 GROUPS = [
     ("Reference", ["ref"]),
@@ -72,6 +74,7 @@ GROUPS = [
         ["back", "cos", "energy", "sobt", "sobx", "spec", "cosw"],
     ),
     ("Regularisation", ["ndec4", "fine", "manoise", "innoise", "latnoise"]),
+    ("Regularisation combined", ["combo_lm", "combo_lmn"]),
 ]
 KEYS = [
     ("extrap_mse_all", "Tra_ext MSE"),

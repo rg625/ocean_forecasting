@@ -1,4 +1,10 @@
 # tag|seed|run_name|overrides  (run_ablation.sh; order = priority)
+combo_lm|0|AB_combo_lm|train.latent_noise=0.005 train.ma_noise=0.005
+combo_lmn|0|AB_combo_lmn|train.latent_noise=0.005 train.ma_noise=0.005 train.n_dec=4
+combo_lm|1|AB_combo_lm|train.latent_noise=0.005 train.ma_noise=0.005
+combo_lmn|1|AB_combo_lmn|train.latent_noise=0.005 train.ma_noise=0.005 train.n_dec=4
+combo_lm|2|AB_combo_lm|train.latent_noise=0.005 train.ma_noise=0.005
+combo_lmn|2|AB_combo_lmn|train.latent_noise=0.005 train.ma_noise=0.005 train.n_dec=4
 ndec4|0|AB_ndec4|train.n_dec=4
 fine|0|AB_fine|train.fine_targets=true
 manoise|0|AB_manoise|train.ma_noise=0.005
