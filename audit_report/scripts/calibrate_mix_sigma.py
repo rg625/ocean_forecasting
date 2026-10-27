@@ -2,8 +2,12 @@
 TRAINING simulations only: 58-lead rollouts (stride 2, dt 0.1, the test-case length) from two
 windows per training simulation of train.nc, MSE in physical units (x1e-3) for each sigma of a
 grid; the minimiser is written to RUN/mix_sigma.json. No test file is read.
+--leads 238 --starts 300 500 --out mix_sigma_long.json calibrates for the Tra_long horizon
+(238 leads) instead; the training data then stay on the CPU and windows go to the GPU in
+chunks, so memory does not grow with the horizon.
 
-    python calibrate_mix_sigma.py RUN_DIR [--ckpt last.pth] [--device cuda]
+    python calibrate_mix_sigma.py RUN_DIR [--ckpt last.pth] [--device cuda] [--leads K]
+        [--starts S ...] [--out FILE]
 """
 
 import argparse
@@ -26,6 +30,27 @@ K = 58
 
 @torch.no_grad()
 def mixture_mse(m, win, tgt, taus, ma, mask, sigma, chunk=256):
+    """Mean squared error (physical units, x1e-3) of the mixture forecast; win / tgt may live
+    on the CPU (they are moved to the model's device in groups of 8 windows)."""
+    dev = next(m.parameters()).device
+    num, cnt = 0.0, 0
+    for i in range(0, len(win), 8):
+        sl = slice(i, i + 8)
+        e = _mixture_se(
+            m,
+            win[sl].to(dev),
+            tgt[sl].to(dev),
+            taus[sl].to(dev),
+            ma[sl].to(dev),
+            mask.to(dev),
+            sigma,
+            chunk,
+        )
+        num, cnt = num + e[0], cnt + e[1]
+    return num / cnt * 1e3
+
+
+def _mixture_se(m, win, tgt, taus, ma, mask, sigma, chunk):
     z0 = torch.cat(
         [
             m.encode(win[i : i + 64], mask, ma[i : i + 64])
@@ -41,7 +66,8 @@ def mixture_mse(m, win, tgt, taus, ma, mask, sigma, chunk=256):
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=zs.is_cuda):
                 dec.append(m.decode(zs[i : i + chunk], mask, mk[i : i + chunk]).float())
         pred = pred + wq * torch.cat(dec).view(*tgt.shape)
-    return float(((denormalise(pred) - denormalise(tgt)) ** 2).mean() * 1e3)
+    se = (denormalise(pred) - denormalise(tgt)) ** 2
+    return float(se.double().sum()), se.numel()
 
 
 def main():
@@ -49,12 +75,20 @@ def main():
     ap.add_argument("run_dir")
     ap.add_argument("--ckpt", default="last.pth")
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--leads", type=int, default=K)
+    ap.add_argument("--starts", type=int, nargs="+", default=STARTS)
+    ap.add_argument("--out", default="mix_sigma.json")
     a = ap.parse_args()
     dev = torch.device(a.device)
     run = Path(a.run_dir)
     m, _ = load_model(run, a.ckpt, dev)
-    tw = TraWindows(str(REPO / "data/acdm/128_tra/train.nc"), None, dev)
-    win, tgt, taus, ma = tw.fixed_windows(m.cfg.n_frames, K, 2, STARTS)
+    big = a.leads > K  # long horizon: keep the data on the CPU
+    tw = TraWindows(
+        str(REPO / "data/acdm/128_tra/train.nc"),
+        None,
+        torch.device("cpu") if big else dev,
+    )
+    win, tgt, taus, ma = tw.fixed_windows(m.cfg.n_frames, a.leads, 2, a.starts)
     mse = [mixture_mse(m, win, tgt, taus, ma, tw.mask, s) for s in GRID]
     best = GRID[min(range(len(GRID)), key=mse.__getitem__)]
     out = {
@@ -62,10 +96,15 @@ def main():
         "grid": GRID,
         "train_mse": mse,
         "ckpt": a.ckpt,
-        "windows": {"n": len(win), "starts_raw": STARTS, "leads": K, "stride": 2},
+        "windows": {
+            "n": len(win),
+            "starts_raw": a.starts,
+            "leads": a.leads,
+            "stride": 2,
+        },
         "note": "calibrated on train.nc rollouts only; no test data",
     }
-    (run / "mix_sigma.json").write_text(json.dumps(out, indent=1))
+    (run / a.out).write_text(json.dumps(out, indent=1))
     print(
         json.dumps(
             {"run": run.name, "sigma": best, "train_mse": [round(v, 3) for v in mse]}
