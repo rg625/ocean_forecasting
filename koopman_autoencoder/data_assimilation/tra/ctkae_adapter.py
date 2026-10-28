@@ -47,7 +47,12 @@ class CTKAEAdapter:
     is_diffusion = False
 
     def __init__(
-        self, run_dir: str | Path, regime: Regime, device="cuda", ckpt: str = "best.pth"
+        self,
+        run_dir: str | Path,
+        regime: Regime,
+        device="cuda",
+        ckpt: str = "best.pth",
+        mirror: bool = False,
     ):
         import xarray as xr
 
@@ -75,6 +80,18 @@ class CTKAEAdapter:
         ).to(self.dev)
         self._norm = self._fit_normalizer()
         self._par: Optional[torch.Tensor] = None
+        # mirror: the model run in the vertically mirrored frame (y -> -y, v_y -> -v_y), so
+        # 4D-Var with this adapter solves the mirrored problem and returns its analysis
+        # mirrored back; averaging it with the plain analysis is the mirror readout
+        self.mirror = mirror
+        self._vy = self.vars.index("v_y")
+        # the obstacle as the model sees it (mirrored in the mirrored frame)
+        self._mmask = self.mask.flip(-2) if mirror else self.mask
+
+    def _flip(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.flip(-2).clone()
+        x[..., self._vy, :, :] *= -1
+        return x
 
     # -- normalisation (identical constants to KAEAdapter / the training pipeline) ---
     def _fit_normalizer(self):
@@ -115,8 +132,10 @@ class CTKAEAdapter:
     ) -> torch.Tensor:
         """Physical window [B, k, C, H, W] -> shifted latent y0 = E - mu [B, D]."""
         par = self._remember(param_phys)
-        x = self.to_model(window_phys) * self.mask
-        return self.model.encode(x, self.mask, par) - self._mu(par)
+        if self.mirror:
+            window_phys = self._flip(window_phys)
+        x = self.to_model(window_phys) * self._mmask
+        return self.model.encode(x, self._mmask, par) - self._mu(par)
 
     def generator(self, param_phys: torch.Tensor):
         """A(Ma) [B, D, D]: the exactly linear generator of the shifted latent. With a
@@ -156,12 +175,13 @@ class CTKAEAdapter:
                     f"decode batch {y.shape[0]} does not match the remembered parameter "
                     f"batch {par.shape[0]}"
                 )
-        x = self.model.decode(self._mu(par) + y, self.mask, par)
-        return self.to_physical(x)
+        x = self.to_physical(self.model.decode(self._mu(par) + y, self._mmask, par))
+        return self._flip(x) if self.mirror else x
 
     def __repr__(self):
         return (
             f"CTKAEAdapter(latent={self.latent_dim}, k={self.n_control_frames}, "
             f"generator={self.model.cfg.generator}, fixed_point={self.model.fixed_point_mode}, "
+            f"mirror={self.mirror}, "
             f"ckpt={self.ckpt})"
         )

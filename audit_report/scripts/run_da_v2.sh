@@ -4,7 +4,7 @@
 # df9 are now passed explicitly; (b) the CT-KAE's learning-rate search ended at the top of
 # its grid, so the grid is widened to 0.03-1.0 for every model (still tuned on gt_extrap).
 # Memory-hungry sweeps (n_obs, joint_sparsity) run last.
-#   usage: [LRS="..."] [DA_ROOT=da_v2] [DF9_ONLY=1] run_da_v2.sh LABEL KIND RUN_DIR [CKPT]
+#   usage: [LRS="..."] [DA_ROOT=da_v2] [DF9_ONLY=1] [KAE_EXTRA="--kae-mirror ..."] run_da_v2.sh LABEL KIND RUN_DIR [CKPT]
 # LRS overrides the tuning grid; DF9_ONLY=1 runs only tune + repr check + the df9 sweeps
 # (DF9_SECTIONS selects which).
 set -u
@@ -16,7 +16,7 @@ LRS=${LRS:-"0.03 0.1 0.3 1.0"}; DF9_ONLY=${DF9_ONLY:-0}
 OUT=model_outputs_ctkae/${DA_ROOT:-da_v2}/$LABEL; mkdir -p $OUT/df9 $OUT/df1
 LOG=$OUT/run.log
 CK=${CKPT:+--kae-ckpt $CKPT}
-M="--methods KAE --kae-kind $KIND --kae-run $RUN $CK --regime test"
+M="--methods KAE --kae-kind $KIND --kae-run $RUN $CK --regime test ${KAE_EXTRA:-}"
 run () { local label=$1; shift; echo "=== $label $(date -Is)" >> $LOG; $PY -m data_assimilation.tra.exp_tra $M "$@" >> $LOG 2>&1; echo "--- $label exit=$? $(date -Is)" >> $LOG; }
 run tune --out-dir $OUT/df9 --sections tune --tune-iters 400 --n-tune 6 --lrs $LRS
 cp $OUT/df9/tuning.json $OUT/df1/tuning.json

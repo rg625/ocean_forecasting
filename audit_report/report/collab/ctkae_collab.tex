@@ -1,0 +1,202 @@
+\documentclass[10pt]{article}
+\usepackage[margin=2cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,multirow}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage[hidelinks]{hyperref}
+\captionsetup{font=small,labelfont=bf}
+\makeatletter\let\inputrows\@@input\makeatother
+\setlength{\parskip}{3pt}\setlength{\parindent}{0pt}
+
+\title{\textbf{CT-KAE on transonic flow: reference and back001}}
+\date{28 October 2026}
+\author{}
+
+\begin{document}
+\maketitle
+\vspace{-2.5em}
+
+\section*{Models}
+Both are the same continuous-time Koopman autoencoder. A CNN encoder maps two input frames
+($\Delta t=0.1$) and the Mach number to $z\in\mathbb R^{256}$. The latent evolves exactly linearly,
+$z(\tau)=e^{\tau A(\mathrm{Ma})}z_0$, with $A$ block-diagonal: 128 damped oscillators, decay
+$\gamma\ge0$. A FiLM-conditioned CNN decoder maps $z$ back to the four fields. 24.7\,M parameters;
+trained 20k steps on the 33 training simulations to reconstruct and to predict 8 frames ahead,
+with latent consistency. \textbf{back001} adds backward latent consistency at weight 0.01. Three
+seeds each; every number below is a mean over seeds or a 3-seed average, as stated.
+
+\section*{Main results}
+\begin{table}[h]
+\centering\scriptsize
+\caption{Forecasting (MSE $\times10^{-3}$, all frames; LSiM $\times10^{-1}$), data assimilation
+(relative $L_2$ of the analysis at $t_0$; df1 headline: 12 problems, 2000 iterations; sweeps: mean
+over the points of six sweeps that every method was run on, 31 at $\delta_f=1$ and 37 at
+$\delta_f=9$), and inference cost (Tra\_long,
+240 steps, batch 1, RTX 4090). Lower is better throughout. Post-processing is described in the next
+section; its effect on DA is in Table~\ref{tab:dapp}. Original KAE: final checkpoint; the published DA numbers used a checkpoint selected on the
+DA test set.}
+\label{tab:main}
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lccccccccccc}
+\toprule
+ & \multicolumn{3}{c}{MSE} & \multicolumn{3}{c}{LSiM} & \multicolumn{3}{c}{DA error} & ms per\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+ & ext & int & long & ext & int & long & df1 head. & df1 sweeps & df9 sweeps & step\\
+\midrule
+\inputrows tab_main.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}\itemsep1pt
+\item \textbf{Long rollouts:} at 240 steps both CT-KAEs have 27--47\% lower MSE than ACDM and the
+  U-Nets and 13--36\% lower than the original KAE, and stay correlated with the truth over 1000
+  steps (Fig.~\ref{fig:long}).
+\item \textbf{Data assimilation:} both are at least 2$\times$ more accurate than the U-Net and FNO at
+  every lead. ACDM\,+\,SDA wins at $\delta_f\le2$. Against the original KAE, back001 is equal at
+  short leads and better from $\delta_f=8$; the reference is worse at short leads (Fig.~\ref{fig:da}).
+\item \textbf{Short horizon:} with post-processing the reference is the best model on ext; the
+  U-Nets remain best on int.
+\item \textbf{back001 vs reference:} back001 is better on DA, int and long, worse on ext.
+  Post-processing removes most of the forecasting differences; the DA advantage remains.
+\item \textbf{LSiM} favours the baselines throughout, and post-processing makes it worse.
+\end{itemize}
+
+\section*{Post-processing}
+All steps act at inference on a trained model. Settings were fixed before the test sets were
+scored: mixture width and shrinkage on training rollouts, mirror averaging and the choice of steps
+on two proxy models trained with Mach 0.53--0.54 and 0.73--0.77 held out.
+\begin{itemize}\itemsep1pt
+\item \textbf{Mixture readout.} Average of 5 decodes of the same latent flow run at time scales
+  $1+\sigma\xi_q$ (Gauss--Hermite, $\sigma\approx0.04$). Hedges the phase drift of the wake.
+\item \textbf{Mirror averaging.} The flow is (nearly) symmetric about the centre line: flip the
+  input vertically with $v_y\to-v_y$, forecast, flip back, average with the plain forecast.
+\item \textbf{Climatology shrinkage.} Per lead and field, pull the forecast towards the
+  Mach-interpolated training mean by a factor fitted on training rollouts. Affects long leads only.
+\item \textbf{Seed averaging.} Average the forecasts of three independently trained seeds.
+\item \textbf{Cost.} The full pipeline is 30 decodes per step: 7.7\,ms per step against 0.27 for a
+  single decode, about the cost of a U-Net and 18$\times$ cheaper than ACDM. Peak memory 0.9\,GB.
+\item \textbf{Tested and rejected} on the proxies: test-time refinement of $z_0$ on the input frames
+  (always worse), a mixture over neighbouring Mach numbers (no effect), lead-dependent mixture width,
+  Wiener filtering by wavenumber (no better than one factor per lead and field).
+\end{itemize}
+
+\begin{table}[h]
+\centering\scriptsize
+\caption{Each post-processing step added in turn: MSE $\times10^{-3}$ (rows 1--4: mean over the 3
+seeds; row 5: one 3-seed average), decoder calls per predicted step and wall clock per step.}
+\label{tab:pp}
+\begin{tabular}{llccccc}
+\toprule
+ & & ext & int & long & decodes/step & ms/step\\
+\midrule
+\inputrows tab_pp.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{In data assimilation} only mirror averaging applies: 4D-Var is run once in the plain frame and
+once in the mirrored frame, and the two analyses are averaged. It cuts the analysis error by 10--16\% for both models at twice the cost
+(Table~\ref{tab:dapp}).
+
+\begin{table}[h]
+\centering\scriptsize
+\caption{Mirror averaging in 4D-Var: analysis error, seed 2 of each model, same problems as
+Table~\ref{tab:main}.}
+\label{tab:dapp}
+\begin{tabular}{llccc}
+\toprule
+ & & df1 head. & df1 sweeps & df9 sweeps\\
+\midrule
+\inputrows tab_da_pp.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[height=4.2cm]{fig_da.pdf}
+\caption{Analysis error against the lead $\delta_f$ to the first observation, transonic flow,
+$\delta_l=25$, 5 observations, 500 iterations, 8 problems per point.}
+\label{fig:da}
+\end{figure}
+
+\section*{The paper's transonic experiments, re-run}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{fig_long.pdf}
+\caption{1000-step rollout (Tra\_long simulations, 0.05\,s per frame, 2 trajectories). Top: $v_x$
+spatial correlation and relative $L_2$ error per frame. Bottom: pressure, first trajectory.
+Post-processing here is the 3-seed average of mixture + mirror, without shrinkage.}
+\label{fig:long}
+\end{figure}
+
+\begin{table}[h]
+\centering\scriptsize
+\begin{minipage}[t]{0.55\linewidth}\centering
+\caption{The latent ODE $\dot y=Ay$ integrated numerically instead of $e^{\tau A}$ (seed 0, single
+decode). MSE $\times10^{-3}$.}
+\label{tab:solvers}
+\begin{tabular}{llccc}
+\toprule
+ & integrator & ext & int & long\\
+\midrule
+\inputrows tab_solvers.tex
+\bottomrule
+\end{tabular}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.42\linewidth}\centering
+\caption{Unseen time step: MSE at leads on the training grid (0.1\,s) and at the half-steps
+between them (0.05\,s, never trained on). Mean over 3 seeds.}
+\label{tab:dt}
+\begin{tabular}{lcccc}
+\toprule
+ & \multicolumn{2}{c}{ext} & \multicolumn{2}{c}{int}\\
+ & 0.1 & 0.05 & 0.1 & 0.05\\
+\midrule
+\inputrows tab_dt.tex
+\bottomrule
+\end{tabular}
+\end{minipage}
+\end{table}
+
+\begin{table}[h]
+\centering\scriptsize
+\caption{Spectrum of $|v|$: relative error in the low ($k\le4$), mid (5--12) and high (13--32)
+wavenumber bands and the fitted mid-band slope.}
+\label{tab:spec}
+\begin{tabular}{lcccccccc}
+\toprule
+ & \multicolumn{4}{c}{Tra\_int (60 steps)} & \multicolumn{4}{c}{Tra\_long (240 steps)}\\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+ & low & mid & high & slope & low & mid & high & slope\\
+\midrule
+\inputrows tab_spectral.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\linewidth]{fig_eigen.pdf}
+\caption{Generator eigenvalues $\lambda=-\gamma\pm i\omega$ for Mach 0.45--0.95 (seed 0).}
+\label{fig:eigen}
+\end{figure}
+
+\textbf{Findings.}
+\begin{itemize}\itemsep1pt
+\item \textbf{Integrators.} RK4 matches the exact exponential up to $\Delta t=0.3$; explicit Euler
+  diverges on long rollouts (from $\Delta t=0.05$ for back001), as the oscillators are almost undamped.
+\item \textbf{Unseen time step.} Forecasts between the training time steps are as accurate as on
+  them (Table~\ref{tab:dt}).
+\item \textbf{Spectra.} The CT-KAE spectra are too shallow and its band errors are 3--7$\times$
+  those of ACDM and the U-Net (but well below FNO's on long rollouts); post-processing worsens them. The CT-KAE's MSE advantage on long
+  rollouts comes from tracking phase, not from resolving small scales.
+\item \textbf{Not re-run:} the original KAE's loss and LoRA ablations need retraining; the CT-KAE's
+  own ablation study (in the full report) replaces them.
+\end{itemize}
+
+\end{document}

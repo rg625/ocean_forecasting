@@ -1,0 +1,120 @@
+{
+ "protocol": {
+  "steps": 240,
+  "batch": 1,
+  "warmup": 2,
+  "reps": 5,
+  "statistic": "median",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "testset": "longer (transonic Ma 0.64-0.65)",
+  "decode": "bf16 autocast, 32 frames per decoder call",
+  "vram": "peak allocated, all loaded models included",
+  "weights_MB_per_model": 94.17579650878906,
+  "runs": [
+   "model_outputs_ctkae/H8_d256_s0_20261021_012013",
+   "model_outputs_ctkae/H8_d256_s1_20261021_163431",
+   "model_outputs_ctkae/H8_d256_s2_20261021_174342"
+  ],
+  "sigma": 0.04
+ },
+ "rows": [
+  {
+   "readout": "single decode",
+   "decodes_per_step": 1,
+   "rollout_ms": 63.82371139526367,
+   "ms_per_step": 0.2659321308135986,
+   "peak_vram_MB": 801.91845703125,
+   "all_ms": [
+    65.16754913330078,
+    64.9686050415039,
+    63.809600830078125,
+    63.75423812866211,
+    63.82371139526367
+   ]
+  },
+  {
+   "readout": "mixture",
+   "decodes_per_step": 5,
+   "rollout_ms": 308.2158203125,
+   "ms_per_step": 1.2842325846354166,
+   "peak_vram_MB": 831.91845703125,
+   "all_ms": [
+    308.2158203125,
+    307.9147644042969,
+    307.9126892089844,
+    317.7594909667969,
+    330.95269775390625
+   ]
+  },
+  {
+   "readout": "mixture + mirror",
+   "decodes_per_step": 10,
+   "rollout_ms": 613.6455078125,
+   "ms_per_step": 2.5568562825520833,
+   "peak_vram_MB": 861.04443359375,
+   "all_ms": [
+    613.2015380859375,
+    652.7518310546875,
+    613.2978515625,
+    613.6873168945312,
+    613.6455078125
+   ]
+  },
+  {
+   "readout": "mixture + mirror + shrink",
+   "decodes_per_step": 10,
+   "rollout_ms": 613.6849365234375,
+   "ms_per_step": 2.557020568847656,
+   "peak_vram_MB": 861.04443359375,
+   "all_ms": [
+    613.6849365234375,
+    613.6115112304688,
+    613.900390625,
+    613.7354125976562,
+    613.6412353515625
+   ]
+  },
+  {
+   "readout": "3 seeds, single decode",
+   "decodes_per_step": 3,
+   "rollout_ms": 186.12940979003906,
+   "ms_per_step": 0.7755392074584961,
+   "peak_vram_MB": 861.91845703125,
+   "all_ms": [
+    186.1045684814453,
+    186.12940979003906,
+    186.11978149414062,
+    186.24998474121094,
+    186.26661682128906
+   ]
+  },
+  {
+   "readout": "3 seeds, mixture",
+   "decodes_per_step": 15,
+   "rollout_ms": 921.4781494140625,
+   "ms_per_step": 3.8394922892252605,
+   "peak_vram_MB": 891.91845703125,
+   "all_ms": [
+    921.2733154296875,
+    921.4781494140625,
+    921.7089233398438,
+    921.6377563476562,
+    921.4402465820312
+   ]
+  },
+  {
+   "readout": "3 seeds, mixture + mirror + shrink",
+   "decodes_per_step": 30,
+   "rollout_ms": 1842.797607421875,
+   "ms_per_step": 7.678323364257812,
+   "peak_vram_MB": 891.91943359375,
+   "all_ms": [
+    1840.8038330078125,
+    1841.600341796875,
+    1842.797607421875,
+    1842.87841796875,
+    1842.91015625
+   ]
+  }
+ ]
+}

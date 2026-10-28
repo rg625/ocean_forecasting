@@ -1,0 +1,206 @@
+{
+ "ref": {
+  "exact": {
+   "extrap": 1.614423468708992,
+   "interp": 3.3197090961039066,
+   "longer": 16.658972948789597
+  },
+  "euler@0.05": {
+   "extrap": 2.275014529004693,
+   "interp": 3.759816288948059,
+   "longer": 24.81626905500889
+  },
+  "euler@0.1": {
+   "extrap": 6.943106185644865,
+   "interp": 6.1094569973647594,
+   "longer": Infinity
+  },
+  "euler@0.15": {
+   "extrap": 12.217064388096333,
+   "interp": 10.926407761871815,
+   "longer": Infinity
+  },
+  "euler@0.3": {
+   "extrap": Infinity,
+   "interp": 20.28167061507702,
+   "longer": Infinity
+  },
+  "euler@0.5": {
+   "extrap": Infinity,
+   "interp": 30.736729502677917,
+   "longer": Infinity
+  },
+  "euler@1": {
+   "extrap": 25.584623217582703,
+   "interp": 32.82102569937706,
+   "longer": Infinity
+  },
+  "midpoint@0.05": {
+   "extrap": 1.6300667775794864,
+   "interp": 3.3539007417857647,
+   "longer": 16.752878203988075
+  },
+  "midpoint@0.1": {
+   "extrap": 1.770203118212521,
+   "interp": 3.4890235401690006,
+   "longer": 17.09687151014805
+  },
+  "midpoint@0.15": {
+   "extrap": 2.296352759003639,
+   "interp": 3.799477592110634,
+   "longer": 17.665451392531395
+  },
+  "midpoint@0.3": {
+   "extrap": 11.629720218479633,
+   "interp": 7.001845631748438,
+   "longer": Infinity
+  },
+  "midpoint@0.5": {
+   "extrap": Infinity,
+   "interp": 21.23730257153511,
+   "longer": Infinity
+  },
+  "midpoint@1": {
+   "extrap": Infinity,
+   "interp": Infinity,
+   "longer": Infinity
+  },
+  "rk4@0.05": {
+   "extrap": 1.6144323162734509,
+   "interp": 3.3196674194186926,
+   "longer": 16.658971086144447
+  },
+  "rk4@0.1": {
+   "extrap": 1.6144659603014588,
+   "interp": 3.3192248083651066,
+   "longer": 16.657721251249313
+  },
+  "rk4@0.15": {
+   "extrap": 1.6145671252161264,
+   "interp": 3.315269248560071,
+   "longer": 16.623036935925484
+  },
+  "rk4@0.3": {
+   "extrap": 1.628776197321713,
+   "interp": 3.2829665578901768,
+   "longer": 16.336625441908836
+  },
+  "rk4@0.5": {
+   "extrap": 1.9164830446243286,
+   "interp": 3.2226950861513615,
+   "longer": 14.583324082195759
+  },
+  "rk4@1": {
+   "extrap": Infinity,
+   "interp": Infinity,
+   "longer": Infinity
+  },
+  "dopri5": {
+   "extrap": 1.614416134543717,
+   "interp": 3.319712122902274,
+   "longer": 16.658965498209
+  }
+ },
+ "back001": {
+  "exact": {
+   "extrap": 1.9765247125178576,
+   "interp": 2.9092738404870033,
+   "longer": 14.570280909538269
+  },
+  "euler@0.05": {
+   "extrap": 2.6068624574691057,
+   "interp": 3.7112957797944546,
+   "longer": Infinity
+  },
+  "euler@0.1": {
+   "extrap": 8.809154853224754,
+   "interp": 12.365803122520447,
+   "longer": Infinity
+  },
+  "euler@0.15": {
+   "extrap": 13.957015238702297,
+   "interp": 19.132252782583237,
+   "longer": Infinity
+  },
+  "euler@0.3": {
+   "extrap": Infinity,
+   "interp": 24.80916678905487,
+   "longer": Infinity
+  },
+  "euler@0.5": {
+   "extrap": Infinity,
+   "interp": Infinity,
+   "longer": Infinity
+  },
+  "euler@1": {
+   "extrap": 24.933626875281334,
+   "interp": 31.864460557699203,
+   "longer": Infinity
+  },
+  "midpoint@0.05": {
+   "extrap": 1.9702482968568802,
+   "interp": 2.923264866694808,
+   "longer": 14.584780670702457
+  },
+  "midpoint@0.1": {
+   "extrap": 2.023970242589712,
+   "interp": 3.00533976405859,
+   "longer": 14.713062904775143
+  },
+  "midpoint@0.15": {
+   "extrap": 2.349438378587365,
+   "interp": 3.262215293943882,
+   "longer": 15.390983782708645
+  },
+  "midpoint@0.3": {
+   "extrap": 14.194519259035587,
+   "interp": 17.488611862063408,
+   "longer": Infinity
+  },
+  "midpoint@0.5": {
+   "extrap": Infinity,
+   "interp": Infinity,
+   "longer": Infinity
+  },
+  "midpoint@1": {
+   "extrap": Infinity,
+   "interp": Infinity,
+   "longer": Infinity
+  },
+  "rk4@0.05": {
+   "extrap": 1.976558705791831,
+   "interp": 2.9092233162373304,
+   "longer": 14.57027904689312
+  },
+  "rk4@0.1": {
+   "extrap": 1.9767044577747583,
+   "interp": 2.908831462264061,
+   "longer": 14.570305123925209
+  },
+  "rk4@0.15": {
+   "extrap": 1.9774772226810455,
+   "interp": 2.9055860359221697,
+   "longer": 14.554370194673538
+  },
+  "rk4@0.3": {
+   "extrap": 2.003032946959138,
+   "interp": 2.899733604863286,
+   "longer": 14.462189748883247
+  },
+  "rk4@0.5": {
+   "extrap": 2.291725482791662,
+   "interp": 2.9748668894171715,
+   "longer": 14.172011986374855
+  },
+  "rk4@1": {
+   "extrap": Infinity,
+   "interp": Infinity,
+   "longer": Infinity
+  },
+  "dopri5": {
+   "extrap": 1.9765449687838554,
+   "interp": 2.909270813688636,
+   "longer": 14.570297673344612
+  }
+ }
+}

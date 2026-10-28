@@ -111,6 +111,10 @@ class Bench:
     ) -> Dict:
         if init is None:
             init = self.tuning.get(name, {}).get("init", "climatology")
+        if name == "KAE" and self._kae_members():
+            return self._solve_kae_avg(
+                ad, data, prob, iters=iters, lr=lr, seed=seed, init=init
+            )
         fn = solve_kae if name == "KAE" else solve_autoregressive
         return fn(
             ad,
@@ -122,6 +126,60 @@ class Bench:
             track_every=track_every,
             init=init,
         )
+
+    # -- averaged CT-KAE analyses (mirror readout, seed ensembles) ------------------
+    def _kae_members(self) -> List:
+        """(run, mirror) for every CT-KAE analysis averaged with the primary one."""
+        a = self.a
+        if getattr(a, "kae_kind", "legacy") != "ctkae":
+            return []
+        runs = [a.kae_run] + list(getattr(a, "kae_ensemble", []) or [])
+        mirrors = [False, True] if getattr(a, "kae_mirror", False) else [False]
+        return [(r, m) for r in runs for m in mirrors][1:]
+
+    def _solve_kae_avg(self, ad, data, prob, *, iters, lr, seed, init) -> Dict:
+        """4D-Var once per member (each its own latent control), analyses averaged in
+        physical space; the error is that of the average."""
+        from data_assimilation.tra.ctkae_adapter import CTKAEAdapter
+
+        rs = [solve_kae(ad, data, prob, iters=iters, lr=lr, seed=seed, init=init)]
+        for run, mirror in self._kae_members():
+            key = f"kae:{run}:{mirror}"
+            if key not in self._cache:
+                self._cache[key] = CTKAEAdapter(
+                    run,
+                    self.regime,
+                    self.dev,
+                    ckpt=self.a.kae_ckpt or "best.pth",
+                    mirror=mirror,
+                )
+            rs.append(
+                solve_kae(
+                    self._cache[key],
+                    data,
+                    prob,
+                    iters=iters,
+                    lr=lr,
+                    seed=seed,
+                    init=init,
+                )
+            )
+        analysis = np.mean([r["analysis"] for r in rs], 0)
+        sim = torch.as_tensor(prob.sim, device=self.dev)
+        t0 = torch.as_tensor(prob.t0, device=self.dev)
+        with torch.no_grad():
+            rel = rel_l2(
+                torch.as_tensor(analysis, device=self.dev),
+                data.frames(sim, t0),
+                data.mask_for(sim),
+            )
+        return {
+            **rs[0],
+            "rel": rel.cpu().numpy(),
+            "analysis": analysis,
+            "wall_s": sum(r["wall_s"] for r in rs),
+            "members": len(rs),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -2566,6 +2624,17 @@ def main():
         default=None,
         help="checkpoint file name: in the run dir for ctkae (default best.pth), in "
         "RUN/checkpoints for legacy (default best_model.pth)",
+    )
+    ap.add_argument(
+        "--kae-mirror",
+        action="store_true",
+        help="ctkae: average the analysis with that of the vertically mirrored problem",
+    )
+    ap.add_argument(
+        "--kae-ensemble",
+        nargs="*",
+        default=[],
+        help="ctkae: further run dirs whose analyses are averaged with --kae-run's",
     )
     ap.add_argument("--sections", nargs="+", default=["tune", "headline"])
     ap.add_argument(
