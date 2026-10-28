@@ -28,7 +28,7 @@ with latent consistency. \textbf{back001} adds backward latent consistency at we
 seeds each; every number below is a mean over seeds or a 3-seed average, as stated.
 
 \section*{Main results}
-\begin{table}[h]
+\begin{table}[!htbp]
 \centering\scriptsize
 \caption{Forecasting (MSE $\times10^{-3}$, all frames; LSiM $\times10^{-1}$), data assimilation
 (relative $L_2$ of the analysis at $t_0$; df1 headline: 12 problems, 2000 iterations; sweeps: mean
@@ -51,17 +51,19 @@ DA test set.}
 \end{table}
 
 \begin{itemize}\itemsep1pt
-\item \textbf{Long rollouts:} at 240 steps both CT-KAEs have 27--47\% lower MSE than ACDM and the
-  U-Nets and 13--36\% lower than the original KAE, and stay correlated with the truth over 1000
-  steps (Fig.~\ref{fig:long}).
+\item \textbf{Long rollouts:} at 240 steps both CT-KAEs, without post-processing, have 27--33\% lower
+  MSE than ACDM and the U-Nets and 13--18\% lower than the original KAE (46--47\% and 35--36\% with
+  it), and stay correlated with the truth over 1000 steps (Fig.~\ref{fig:long}).
 \item \textbf{Data assimilation:} both are at least 2$\times$ more accurate than the U-Net and FNO at
   every lead. ACDM\,+\,SDA wins at $\delta_f\le2$. Against the original KAE, back001 is equal at
   short leads and better from $\delta_f=8$; the reference is worse at short leads (Fig.~\ref{fig:da}).
-\item \textbf{Short horizon:} with post-processing the reference is the best model on ext; the
-  U-Nets remain best on int.
+\item \textbf{Short horizon:} without post-processing the U-Nets are best on ext and int. With it the
+  reference is best on ext; the U-Nets remain best on int.
 \item \textbf{back001 vs reference:} back001 is better on DA, int and long, worse on ext.
   Post-processing removes most of the forecasting differences; the DA advantage remains.
-\item \textbf{LSiM} favours the baselines throughout, and post-processing makes it worse.
+\item \textbf{Sharpness:} even without post-processing the CT-KAE is smoother than the baselines
+  (worse LSiM, spectra too shallow). Post-processing improves MSE by blurring further
+  (Table~\ref{tab:sharp}). The rows without post-processing are the fair comparison.
 \end{itemize}
 
 \section*{Post-processing}
@@ -78,12 +80,15 @@ on two proxy models trained with Mach 0.53--0.54 and 0.73--0.77 held out.
 \item \textbf{Seed averaging.} Average the forecasts of three independently trained seeds.
 \item \textbf{Cost.} The full pipeline is 30 decodes per step: 7.7\,ms per step against 0.27 for a
   single decode, about the cost of a U-Net and 18$\times$ cheaper than ACDM. Peak memory 0.9\,GB.
+\item \textbf{Cost in sharpness.} Every step is an average, which MSE rewards and sharpness does
+  not: LSiM and the spectral band errors get worse at every scale (Table~\ref{tab:sharp}). Use it
+  when the target is MSE, not realistic fields.
 \item \textbf{Tested and rejected} on the proxies: test-time refinement of $z_0$ on the input frames
   (always worse), a mixture over neighbouring Mach numbers (no effect), lead-dependent mixture width,
   Wiener filtering by wavenumber (no better than one factor per lead and field).
 \end{itemize}
 
-\begin{table}[h]
+\begin{table}[!htbp]
 \centering\scriptsize
 \caption{Each post-processing step added in turn: MSE $\times10^{-3}$ (rows 1--4: mean over the 3
 seeds; row 5: one 3-seed average), decoder calls per predicted step and wall clock per step.}
@@ -97,35 +102,55 @@ seeds; row 5: one 3-seed average), decoder calls per predicted step and wall clo
 \end{tabular}
 \end{table}
 
-\textbf{In data assimilation} only mirror averaging applies: 4D-Var is run once in the plain frame and
-once in the mirrored frame, and the two analyses are averaged. It cuts the analysis error by 10--16\% for both models at twice the cost
-(Table~\ref{tab:dapp}).
-
-\begin{table}[h]
+\begin{table}[!htbp]
 \centering\scriptsize
-\caption{Mirror averaging in 4D-Var: analysis error, seed 2 of each model, same problems as
-Table~\ref{tab:main}.}
-\label{tab:dapp}
-\begin{tabular}{llccc}
+\caption{What post-processing costs in sharpness. MSE $\times10^{-3}$ on Tra\_long; LSiM
+$\times10^{-1}$; relative error of the $|v|$ spectrum on Tra\_long (240 steps) in the low ($k\le4$),
+mid (5--12) and high (13--32) bands, and its mid-band slope. Lower is better except the slope, which
+should match the ground truth.}
+\label{tab:sharp}
+\begin{tabular}{lcccccccc}
 \toprule
- & & df1 head. & df1 sweeps & df9 sweeps\\
+ & MSE & \multicolumn{3}{c}{LSiM} & \multicolumn{4}{c}{spectrum, Tra\_long}\\
+\cmidrule(lr){3-5}\cmidrule(lr){6-9}
+ & long & ext & int & long & low & mid & high & slope\\
 \midrule
-\inputrows tab_da_pp.tex
+\inputrows tab_sharp.tex
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{figure}[h]
+\textbf{In data assimilation} only mirror averaging applies: 4D-Var is run once in the plain frame and
+once in the mirrored frame, and the two analyses are averaged. It cuts the analysis error by 10--16\% for both models at twice the cost
+(Table~\ref{tab:dapp}).
+
+\begin{figure}[!htbp]
 \centering
-\includegraphics[height=4.2cm]{fig_da.pdf}
-\caption{Analysis error against the lead $\delta_f$ to the first observation, transonic flow,
-$\delta_l=25$, 5 observations, 500 iterations, 8 problems per point.}
+\begin{minipage}[b]{0.56\linewidth}\centering
+\includegraphics[width=\linewidth]{fig_da.pdf}
+\captionof{figure}{Analysis error against the lead $\delta_f$ to the first observation, transonic
+flow, $\delta_l=25$, 5 observations, 500 iterations, 8 problems per point.}
 \label{fig:da}
+\end{minipage}\hfill
+\begin{minipage}[b]{0.41\linewidth}\centering\scriptsize
+\captionof{table}{Mirror averaging in 4D-Var: analysis error, seed 2 of each model, same problems
+as Table~\ref{tab:main}.}
+\label{tab:dapp}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llccc}
+\toprule
+ & & df1 & df1 & df9\\
+ & & head. & sweeps & sweeps\\
+\midrule
+\inputrows tab_da_pp.tex
+\bottomrule
+\end{tabular}
+\end{minipage}
 \end{figure}
 
 \section*{The paper's transonic experiments, re-run}
 
-\begin{table}[h]
+\begin{table}[!htbp]
 \centering\scriptsize
 \caption{MSE ($\times10^{-3}$, all fields) at $t=15,30,45,60$ of the 60-step rollouts. CT-KAE
 rows without post-processing: mean over 3 seeds. Best per column in bold.}
@@ -141,9 +166,9 @@ $t$ & 15 & 30 & 45 & 60 & 15 & 30 & 45 & 60\\
 \end{tabular}
 \end{table}
 
-\begin{figure}[h]
+\begin{figure}[!htbp]
 \centering
-\includegraphics[width=\linewidth]{fig_short.pdf}
+\includegraphics[width=0.85\linewidth]{fig_short.pdf}
 \caption{Pressure at $t=15,30,45,60$, first sequence of each test set (paper layout). CT-KAE rows
 without post-processing: seed 0.}
 \label{fig:short}
@@ -153,7 +178,7 @@ without post-processing: seed 0.}
 from $t=45$. On int the U-Net$_{ut}$ stays best; at $t=60$ the post-processed CT-KAEs are second
 (5.6--5.7 against 4.9), ahead of ACDM (8.5) and the original KAE (15.8).
 
-\begin{figure}[h]
+\begin{figure}[!htbp]
 \centering
 \includegraphics[width=\linewidth]{fig_long.pdf}
 \caption{1000-step rollout (Tra\_long simulations, 0.05\,s per frame, 2 trajectories). Top: $v_x$
@@ -162,7 +187,7 @@ Post-processing here is the 3-seed average of mixture + mirror, without shrinkag
 \label{fig:long}
 \end{figure}
 
-\begin{table}[h]
+\begin{table}[!htbp]
 \centering\scriptsize
 \begin{minipage}[t]{0.55\linewidth}\centering
 \caption{The latent ODE $\dot y=Ay$ integrated numerically instead of $e^{\tau A}$ (seed 0, single
@@ -191,7 +216,7 @@ between them (0.05\,s, never trained on). Mean over 3 seeds.}
 \end{minipage}
 \end{table}
 
-\begin{table}[h]
+\begin{table}[!htbp]
 \centering\scriptsize
 \caption{Spectrum of $|v|$: relative error in the low ($k\le4$), mid (5--12) and high (13--32)
 wavenumber bands and the fitted mid-band slope.}
@@ -207,7 +232,7 @@ wavenumber bands and the fitted mid-band slope.}
 \end{tabular}
 \end{table}
 
-\begin{figure}[h]
+\begin{figure}[!htbp]
 \centering
 \includegraphics[width=0.9\linewidth]{fig_eigen.pdf}
 \caption{Generator eigenvalues $\lambda=-\gamma\pm i\omega$ for Mach 0.45--0.95 (seed 0).}

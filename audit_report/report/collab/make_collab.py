@@ -378,6 +378,66 @@ def tab_paper():
     (HERE / "tab_spectral.tex").write_text("\n".join(rows) + "\n")
 
 
+def tab_sharp():
+    """what the post-processing costs in sharpness: long MSE, LSiM, long-rollout spectrum"""
+    from ablation_table import baselines
+
+    bl = dict(baselines())
+    sp = {
+        x["model"]: x
+        for x in json.loads((PC / "spectral.json").read_text())["longer"]["rows"]
+        if x["window"] == "0-240"
+    }
+    rows = []
+    for lab, mse, lsim, sk in [
+        (
+            "ACDM",
+            bl["ACDM (official, r20)"]["longer_mse_all"],
+            [bl["ACDM (official, r20)"][f"{c}_lsim"] for c in CASES],
+            "ACDM",
+        ),
+        (
+            "U-Net$_{ut}$",
+            bl["U-Net_ut (official, unrolled 8)"]["longer_mse_all"],
+            [bl["U-Net_ut (official, unrolled 8)"][f"{c}_lsim"] for c in CASES],
+            "U-Net-ut",
+        ),
+    ] + [
+        (lab, mse, lsim, sk)
+        for t, name in (("ref", "Reference"), ("back001", "back001"))
+        for lab, mse, lsim, sk in (
+            (
+                name,
+                ABL["single"][t]["longer_mse_all"][0],
+                [ABL["single"][t][f"{c}_lsim"][0] for c in CASES],
+                t,
+            ),
+            (
+                name + " + post-proc.",
+                PP2[f"mirror+tr|longer|{t}_ens"],
+                [LSIM[f"{t}+pp"][c] for c in CASES],
+                t + "+pp",
+            ),
+        )
+    ]:
+        r = sp[sk]
+        cells = (
+            [f(mse)]
+            + [f(v) for v in lsim]
+            + [f(r[k]) for k in ("err_low", "err_mid", "err_high", "slope_pred")]
+        )
+        rows.append(
+            f"{lab} & "
+            + " & ".join(cells)
+            + r"\\"
+            + (r" \midrule" if lab.startswith("U-Net") else "")
+        )
+    rows.append(
+        f"\\emph{{Ground truth}} & & & & & & & & {f(next(iter(sp.values()))['slope_gt'])}\\\\"
+    )
+    (HERE / "tab_sharp.tex").write_text("\n".join(rows) + "\n")
+
+
 # ------------------------------------------------------------------------- figures
 def fig_da():
     fig, ax = plt.subplots(1, 1, figsize=(3.6, 2.4))
@@ -508,6 +568,7 @@ if __name__ == "__main__":
     tab_pp()
     tab_da_pp()
     tab_paper()
+    tab_sharp()
     fig_da()
     fig_long()
     fig_eigen()
