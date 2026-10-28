@@ -1,0 +1,9 @@
+ACDM (official, r20) & 2.14 & 2.92 & 22.63 & 1.29 & 1.38 & 3.83 & 0.258\\
+U-Net$_{ut}$ (official, unrolled 8) & 1.60 & 1.48 & 22.18 & 1.09 & 0.95 & 3.81 & 0.270\\
+U-Net$_{tn}$ (official, train noise 0.01) & 1.37 & 1.77 & 22.38 & 1.05 & 1.05 & 3.92 & --\\
+Original KAE, final checkpoint (ep.\ 199) & 2.05 & 11.05 & 18.47 & -- & -- & -- & 0.103\\
+Original KAE, selected checkpoint (ep.\ 40)$^\ast$ & -- & -- & -- & -- & -- & -- & 0.090\\ \midrule
+CT-KAE reference, single decode & 1.91$\pm$0.30 & 3.37$\pm$0.14 & 16.08$\pm$0.59 & 1.41$\pm$0.03 & 1.71$\pm$0.04 & 4.06$\pm$0.05 & 0.095$\pm$0.003\\
+CT-KAE reference + mixture & 1.77$\pm$0.23 & 3.16$\pm$0.09 & 13.03$\pm$0.19 & 1.72$\pm$0.09 & 1.87$\pm$0.07 & 5.74$\pm$0.12 & 0.095$\pm$0.003\\
+back001, single decode & 2.03$\pm$0.21 & 3.04$\pm$0.14 & 15.11$\pm$0.99 & 1.49$\pm$0.08 & 1.71$\pm$0.04 & 4.88$\pm$0.38 & 0.088$\pm$0.006\\
+\textbf{back001 + mixture} & 1.88$\pm$0.19 & 2.89$\pm$0.11 & 13.45$\pm$0.26 & 1.81$\pm$0.04 & 1.83$\pm$0.04 & 6.09$\pm$0.43 & 0.088$\pm$0.006\\

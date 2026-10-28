@@ -1,0 +1,36 @@
+\emph{Reference (absolute)} & 3 & 1.77 & 3.16 & 13.03 & 1.72 & 1.87 & 5.74 & 0.096\\ \midrule
+\multicolumn{9}{l}{\emph{Architecture and training}}\\
+- Mach conditioning (encoder, decoder, generator) & 2 & +8.78$\pm$2.88$^\dagger$ & +9.68$\pm$1.41$^\dagger$ & +7.21$\pm$2.42$^\dagger$ & +2.25$\pm$0.04$^\dagger$ & +2.32$\pm$0.39$^\dagger$ & +0.44$\pm$0.42 & +0.096$\pm$0.008$^\dagger$\\
+Latent 128 & 2 & +0.15$\pm$0.07$^\dagger$ & +0.44$\pm$0.07$^\dagger$ & +0.28$\pm$0.14 & +0.09$\pm$0.17 & +0.19$\pm$0.07$^\dagger$ & +0.32$\pm$0.04$^\dagger$ & +0.012$\pm$0.005$^\dagger$\\
+Latent 512 & 2 & -0.05$\pm$0.11 & -0.20$\pm$0.32 & +1.12$\pm$1.06 & +0.14$\pm$0.06$^\dagger$ & +0.01$\pm$0.16 & -0.02$\pm$0.21 & +0.010$\pm$0.005$^\dagger$\\
+1 input frame (no history) & 2 & +0.88$\pm$0.05$^\dagger$ & +0.33$\pm$0.08$^\dagger$ & +0.09$\pm$0.18 & +0.18$\pm$0.04$^\dagger$ & +0.03$\pm$0.04 & -0.04$\pm$0.08 & +0.005$\pm$0.002$^\dagger$\\
+One-step training (2 $\to$ 1) & 2 & +1.72$\pm$0.02$^\dagger$ & +2.34$\pm$0.21$^\dagger$ & +1.84$\pm$0.45$^\dagger$ & +1.61$\pm$0.16$^\dagger$ & +0.97$\pm$0.04$^\dagger$ & +0.09$\pm$0.13 & +0.007$\pm$0.006\\
++ conditional fixed point $\mu$(Ma) & 2 & +0.31$\pm$0.00$^\dagger$ & \textbf{-0.22$\pm$0.10} & +0.33$\pm$0.08$^\dagger$ & -0.02$\pm$0.05 & +0.01$\pm$0.07 & -0.12$\pm$0.14 & -0.002$\pm$0.002\\
+\multicolumn{9}{l}{\emph{Loss terms used (removed)}}\\
+- reconstruction loss & 2 & +0.05$\pm$0.09 & +0.27$\pm$0.19 & +0.89$\pm$0.46 & +0.16$\pm$0.00$^\dagger$ & +0.08$\pm$0.11 & -0.02$\pm$0.29 & +0.025$\pm$0.003$^\dagger$\\
+- prediction loss & 2 & +2.37$\pm$0.08$^\dagger$ & +4.00$\pm$0.54$^\dagger$ & +5.94$\pm$0.94$^\dagger$ & +1.54$\pm$0.20$^\dagger$ & +1.43$\pm$0.16$^\dagger$ & \textbf{-0.51$\pm$0.16} & +0.013$\pm$0.006$^\dagger$\\
+- forward latent consistency & 2 & +4.98$\pm$0.34$^\dagger$ & +7.85$\pm$1.07$^\dagger$ & +12.12$\pm$2.53$^\dagger$ & +2.89$\pm$0.29$^\dagger$ & +2.33$\pm$0.28$^\dagger$ & +0.86$\pm$0.39$^\dagger$ & +0.049$\pm$0.002$^\dagger$\\
+- amplitude loss & 2 & +0.19$\pm$0.19 & -0.00$\pm$0.28 & \textbf{-0.05$\pm$0.01} & +0.11$\pm$0.04$^\dagger$ & +0.07$\pm$0.08 & +0.25$\pm$0.04$^\dagger$ & +0.005$\pm$0.000$^\dagger$\\
+\multicolumn{9}{l}{\emph{Loss terms of the original KAE (added)}}\\
++ backward latent consistency (0.1) & 2 & +1.06$\pm$0.21$^\dagger$ & +0.72$\pm$0.09$^\dagger$ & +1.30$\pm$0.63$^\dagger$ & +1.16$\pm$0.20$^\dagger$ & +0.59$\pm$0.12$^\dagger$ & +0.33$\pm$0.17 & \textbf{-0.018$\pm$0.003}\\
++ backward latent consistency (0.03) & 3 & +0.26$\pm$0.06$^\dagger$ & -0.06$\pm$0.04 & +0.65$\pm$0.16$^\dagger$ & +0.38$\pm$0.09$^\dagger$ & +0.08$\pm$0.08 & +0.32$\pm$0.02$^\dagger$ & \textbf{-0.013$\pm$0.003}\\
++ backward latent consistency (0.01) & 3 & +0.11$\pm$0.20 & \textbf{-0.27$\pm$0.10} & +0.42$\pm$0.12$^\dagger$ & +0.08$\pm$0.04$^\dagger$ & -0.03$\pm$0.02 & +0.34$\pm$0.21 & \textbf{-0.008$\pm$0.004}\\
++ directional cosine (0.1) & 2 & +0.12$\pm$0.02$^\dagger$ & +0.16$\pm$0.13 & +0.22$\pm$0.27 & \textbf{-0.13$\pm$0.05} & -0.07$\pm$0.06 & \textbf{-0.27$\pm$0.00} & +0.007$\pm$0.005\\
++ latent energy (0.1) & 1 & +0.47 & -0.00 & -0.17 & +0.08 & +0.01 & -0.00 & +0.001\\
++ temporal Sobolev (0.1) & 2 & +0.05$\pm$0.07 & -0.15$\pm$0.12 & \textbf{-0.06$\pm$0.01} & -0.03$\pm$0.04 & \textbf{-0.06$\pm$0.01} & +0.08$\pm$0.05 & +0.002$\pm$0.003\\
++ spatial Sobolev (0.1) & 1 & +0.27 & -0.18 & -0.22 & +0.03 & -0.01 & -0.04 & +0.004\\
++ spectral loss (0.1) & 1 & +0.05 & +0.08 & -0.25 & +0.14 & +0.16 & +0.39 & +0.012\\
+Prediction weighting: cosine over leads (original KAE) & 1 & +0.29 & +0.21 & +0.01 & +0.18 & +0.23 & +0.63 & +0.002\\
+\multicolumn{9}{l}{\emph{Regularisation}}\\
+Supervise 4 random of the 8 leads (first and last always) & 3 & +0.14$\pm$0.11 & \textbf{-0.18$\pm$0.05} & -0.05$\pm$0.18 & -0.07$\pm$0.05 & \textbf{-0.09$\pm$0.02} & -0.05$\pm$0.13 & +0.005$\pm$0.002$^\dagger$\\
+Random target times on the 0.05 grid within the 0.8 horizon & 3 & +0.03$\pm$0.19 & -0.06$\pm$0.11 & -0.01$\pm$0.15 & +0.00$\pm$0.03 & -0.01$\pm$0.03 & +0.26$\pm$0.10$^\dagger$ & +0.010$\pm$0.001$^\dagger$\\
++ Mach-number noise (s.d. 0.005) & 3 & +0.05$\pm$0.09 & -0.06$\pm$0.07 & -0.13$\pm$0.09 & +0.07$\pm$0.04 & +0.01$\pm$0.04 & +0.42$\pm$0.20$^\dagger$ & +0.006$\pm$0.002$^\dagger$\\
++ input-frame noise (s.d. 0.01, normalised units) & 3 & +0.08$\pm$0.17 & -0.08$\pm$0.09 & +0.20$\pm$0.26 & +0.01$\pm$0.08 & +0.01$\pm$0.10 & +0.04$\pm$0.38 & +0.006$\pm$0.004\\
++ latent noise per step (0.005 $\times$ rms z; original disturb\_std) & 3 & +0.05$\pm$0.09 & -0.04$\pm$0.08 & +0.03$\pm$0.12 & +0.01$\pm$0.07 & -0.00$\pm$0.01 & +0.18$\pm$0.05$^\dagger$ & +0.003$\pm$0.002$^\dagger$\\
+\multicolumn{9}{l}{\emph{Regularisation combined}}\\
++ latent noise + Mach noise & 3 & +0.14$\pm$0.10 & -0.06$\pm$0.16 & +0.01$\pm$0.05 & -0.03$\pm$0.05 & \textbf{-0.05$\pm$0.02} & +0.12$\pm$0.12 & +0.010$\pm$0.002$^\dagger$\\
++ latent noise + Mach noise + 4 random of 8 leads & 3 & +0.04$\pm$0.12 & +0.03$\pm$0.13 & -0.19$\pm$0.21 & -0.06$\pm$0.07 & \textbf{-0.04$\pm$0.02} & +0.33$\pm$0.01$^\dagger$ & +0.009$\pm$0.001$^\dagger$\\
+\multicolumn{9}{l}{\emph{Candidate improvements}}\\
+Mach conditioning in the generator only (encoder, decoder Mach-free) & 2 & +0.22$\pm$0.02$^\dagger$ & +0.27$\pm$0.07$^\dagger$ & +0.39$\pm$0.20 & +0.44$\pm$0.03$^\dagger$ & +0.07$\pm$0.01$^\dagger$ & +0.51$\pm$0.16$^\dagger$ & +0.005$\pm$0.000$^\dagger$\\
+L1 pixel distance (rec and pred) & 3 & +0.94$\pm$0.15$^\dagger$ & +1.78$\pm$0.40$^\dagger$ & +1.89$\pm$0.74$^\dagger$ & +1.64$\pm$0.43$^\dagger$ & +0.86$\pm$0.20$^\dagger$ & +0.67$\pm$0.12$^\dagger$ & +0.027$\pm$0.006$^\dagger$\\
+L1 reconstruction, L2 prediction (original KAE) & 3 & +0.28$\pm$0.12$^\dagger$ & +0.44$\pm$0.17$^\dagger$ & +0.24$\pm$0.26 & +0.64$\pm$0.11$^\dagger$ & +0.22$\pm$0.04$^\dagger$ & +0.56$\pm$0.03$^\dagger$ & +0.013$\pm$0.003$^\dagger$\\
