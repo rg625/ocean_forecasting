@@ -1,0 +1,38 @@
+== ref (3 seeds): all-frames MSE x1e-3, mean over seeds [paired d vs mix +- SE] | ref 3-seed ensemble
+  single           | ext   1.91 [+0.14±0.04] ens 1.65 | int   3.37 [+0.22±0.03] ens 3.08 | lon  16.08 [+3.04±0.31] ens 15.28
+  mix              | ext   1.77 [+0.00±0.00] ens 1.58 | int   3.16 [+0.00±0.00] ens 2.93 | lon  13.03 [+0.00±0.00] ens 12.67
+  mixlead          | ext   1.77 [+0.00±0.00] ens 1.58 | int   3.16 [+0.00±0.00] ens 2.93 | lon  13.14 [+0.11±0.03] ens 12.78
+  mix+sself        | ext   1.77 [+0.00±0.00] ens 1.59 | int   3.15 [-0.00±0.00] ens 2.93 | lon  12.77 [-0.26±0.02] ens 12.48
+  mix+wself        | ext   1.77 [-0.00±0.00] ens 1.59 | int   3.14 [-0.02±0.00] ens 2.92 | lon  12.68 [-0.36±0.01] ens 12.43
+  mix+sclim        | ext   1.76 [-0.01±0.00] ens 1.58 | int   3.14 [-0.01±0.01] ens 2.92 | lon  12.13 [-0.90±0.05] ens 11.97
+  mix+wclim        | ext   1.76 [-0.01±0.00] ens 1.58 | int   3.13 [-0.02±0.01] ens 2.91 | lon  12.16 [-0.88±0.07] ens 12.01
+  mixlead+sself    | ext   1.77 [+0.00±0.00] ens 1.59 | int   3.16 [-0.00±0.00] ens 2.93 | lon  12.83 [-0.20±0.02] ens 12.54
+  mixlead+wself    | ext   1.77 [-0.00±0.00] ens 1.59 | int   3.14 [-0.02±0.00] ens 2.92 | lon  12.75 [-0.28±0.04] ens 12.5
+  mixlead+wclim    | ext   1.76 [-0.01±0.00] ens 1.58 | int   3.13 [-0.02±0.01] ens 2.91 | lon  12.23 [-0.80±0.10] ens 12.07
+  single+wself     | ext   1.79 [+0.03±0.01] ens 1.59 | int   3.18 [+0.02±0.01] ens 2.94 | lon  13.01 [-0.03±0.12] ens 12.72
+
+== back001 (3 seeds): all-frames MSE x1e-3, mean over seeds [paired d vs mix +- SE] | back001 3-seed ensemble
+  single           | ext   2.03 [+0.15±0.01] ens 1.77 | int   3.04 [+0.15±0.01] ens 2.77 | lon  15.11 [+1.65±0.45] ens 14.15
+  mix              | ext   1.88 [+0.00±0.00] ens 1.69 | int   2.89 [+0.00±0.00] ens 2.67 | lon  13.45 [+0.00±0.00] ens 12.95
+  mixlead          | ext   1.88 [+0.00±0.00] ens 1.69 | int   2.89 [+0.00±0.00] ens 2.67 | lon  13.48 [+0.02±0.02] ens 12.96
+  mix+sself        | ext   1.88 [-0.00±0.00] ens 1.69 | int   2.88 [-0.01±0.00] ens 2.66 | lon  12.89 [-0.56±0.02] ens 12.55
+  mix+wself        | ext   1.87 [-0.00±0.00] ens 1.69 | int   2.87 [-0.02±0.01] ens 2.66 | lon  12.73 [-0.72±0.01] ens 12.43
+  mix+sclim        | ext   1.87 [-0.01±0.01] ens 1.69 | int   2.87 [-0.02±0.01] ens 2.66 | lon  12.22 [-1.23±0.05] ens 12.04
+  mix+wclim        | ext   1.87 [-0.01±0.01] ens 1.69 | int   2.86 [-0.03±0.01] ens 2.65 | lon  12.21 [-1.25±0.04] ens 12.03
+  mixlead+sself    | ext   1.88 [-0.00±0.00] ens 1.69 | int   2.88 [-0.01±0.00] ens 2.66 | lon  12.90 [-0.55±0.02] ens 12.56
+  mixlead+wself    | ext   1.87 [-0.00±0.00] ens 1.69 | int   2.87 [-0.02±0.01] ens 2.66 | lon  12.74 [-0.71±0.02] ens 12.45
+  mixlead+wclim    | ext   1.87 [-0.01±0.01] ens 1.69 | int   2.86 [-0.03±0.01] ens 2.65 | lon  12.22 [-1.23±0.03] ens 12.04
+  single+wself     | ext   1.91 [+0.03±0.00] ens 1.71 | int   2.89 [+0.00±0.00] ens 2.67 | lon  12.86 [-0.59±0.07] ens 12.55
+
+== ensemble of all 6 checkpoints
+  single           | ext   1.65 | int   2.84 | lon  14.40
+  mix              | ext   1.59 | int   2.73 | lon  12.68
+  mixlead          | ext   1.59 | int   2.73 | lon  12.74
+  mix+sself        | ext   1.59 | int   2.73 | lon  12.44
+  mix+wself        | ext   1.60 | int   2.73 | lon  12.36
+  mix+sclim        | ext   1.59 | int   2.73 | lon  11.97
+  mix+wclim        | ext   1.59 | int   2.72 | lon  11.97
+  mixlead+sself    | ext   1.59 | int   2.73 | lon  12.47
+  mixlead+wself    | ext   1.60 | int   2.73 | lon  12.40
+  mixlead+wclim    | ext   1.59 | int   2.72 | lon  12.01
+  single+wself     | ext   1.60 | int   2.74 | lon  12.56

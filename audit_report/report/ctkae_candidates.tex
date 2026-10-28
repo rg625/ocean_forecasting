@@ -7,6 +7,8 @@
 \usepackage{enumitem}
 \usepackage[hidelinks]{hyperref}
 \usepackage{caption}
+\usepackage{pdflscape}
+\usepackage{placeins}
 \captionsetup{font=small,labelfont=bf}
 \setlist{itemsep=2pt,topsep=3pt}
 % \input is not expandable inside tabular; the TeX primitive is
@@ -20,7 +22,7 @@
 \title{\textbf{CT-KAE: the two candidate models}\\[2pt]
 \large Reference and back001, mixture readout, ablations, data assimilation and post-processing}
 \author{Prepared for R.~Grozavescu}
-\date{28 October 2026 \quad(draft; sections marked \emph{Pending} are filled in when the runs finish)}
+\date{28 October 2026}
 
 \begin{document}
 \maketitle
@@ -46,8 +48,12 @@ ACDM (official)                      & 2.14 & 2.92 & 22.63 & 0.258\\
 U-Net$_{ut}$ (official)               & 1.60 & \textbf{1.48} & 22.18 & 0.270\\
 U-Net$_{tn}$ (official)               & \textbf{1.37} & 1.77 & 22.38 & --\\
 Original KAE (final checkpoint)       & 2.05 & 11.05 & 18.47 & 0.103\\
-CT-KAE reference + mixture (3 seeds)  & 1.77 & 3.16 & \textbf{13.03} & 0.095\\
-back001 + mixture (3 seeds)           & 1.88 & 2.89 & 13.45 & \textbf{0.088}\\
+CT-KAE reference + mixture (mean of 3 seeds)  & 1.77 & 3.16 & 13.03 & 0.095\\
+back001 + mixture (mean of 3 seeds)           & 1.88 & 2.89 & 13.45 & \textbf{0.088}\\
+\midrule
+\multicolumn{5}{l}{\emph{With post-processing (\S\ref{sec:pp}; forecasts only, train-calibrated)}}\\
+reference, 3-seed average + mixture + shrink  & 1.58 & 2.92 & \textbf{11.97} & --\\
+back001, 3-seed average + mixture + shrink    & 1.69 & 2.66 & 12.04 & --\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -64,12 +70,20 @@ back001 + mixture (3 seeds)           & 1.88 & 2.89 & 13.45 & \textbf{0.088}\\
   rule (lower DA \emph{and} no worse on ext/int/long) on long only.
 \item \textbf{LSiM} gets worse with the mixture readout for both models (it softens long-lead
   fields); on LSiM the baselines win throughout.
+\item \textbf{Post-processing} (\S\ref{sec:pp}): averaging the three seeds is the largest gain
+  (ext $-10\%$, int $-8\%$, long $-3$ to $-4\%$), and shrinking the long-lead forecast towards a
+  Mach-matched training climatology adds a further 6--9\% on long. Together they take the
+  reference to 1.58 / 2.92 / 11.97 and back001 to 1.69 / 2.66 / 12.04. Both cost LSiM.
 \end{itemize}
 
-\callout{\textbf{Recommendation (draft).} Keep both. Use \textbf{back001 + mixture} where
-data assimilation and short/medium-range accuracy matter (it is the DA model of the paper), and
-report the reference + mixture alongside it as the best long-rollout model. The post-processing
-study (\S\ref{sec:pp}) may change the forecasting numbers of both.}
+\callout{\textbf{Recommendation.} Keep both. Use \textbf{back001 + mixture} where data
+assimilation and short/medium-range accuracy matter (it is the DA model of the paper), and the
+reference + mixture as the best long-rollout model. For the best forecasting numbers, report each
+as a \textbf{3-seed average} with the mixture readout and \textbf{climatology shrinkage}: every
+member stays an exact linear model, everything is calibrated on training data, and the cost is
+3$\times$ inference. Report the single-model numbers alongside, and LSiM for both, since the
+post-processing lowers MSE by smoothing. With shrinkage, back001's long-rollout deficit against
+the reference drops from 0.42 to 0.09 (single-seed means).}
 
 \tableofcontents
 
@@ -312,9 +326,11 @@ the paired change against the reference run of the same seed (mean over seeds $\
 paired change). Bold: improvement beyond 2 SE; $\dagger$: deterioration beyond 2 SE (2-seed
 SEs are rough).
 
-\pending{The last six seed-2 runs (generator, latent size, input frames, one-step, fixed point)
-are training; both tables are regenerated when they finish, around 10:00 on 28 October.}
+Tables~\ref{tab:abl1} and~\ref{tab:abl2} are on landscape pages at the end of this section.
+DA learning rates were re-tuned wherever the optimum sat at the edge of the grid; every row's
+optimum is now interior.
 
+\begin{landscape}
 \begin{table}[p]
 \centering\scriptsize
 \caption{Ablations, \textbf{single decode}. MSE $\times10^{-3}$ (all frames), LSiM $\times10^{-1}$,
@@ -334,7 +350,8 @@ Variant & seeds & ext MSE & int MSE & long MSE & ext LSiM & int LSiM & long LSiM
 \begin{table}[p]
 \centering\scriptsize
 \caption{Ablations, \textbf{mixture readout} (each checkpoint with its own train-calibrated
-$\sigma$). DA is identical to Table~\ref{tab:abl1}.}
+$\sigma$). DA is identical to Table~\ref{tab:abl1}. The dense and Hurwitz generators are absent:
+the mixture rescales oscillator frequencies, which only the block generator has.}
 \label{tab:abl2}
 \resizebox{\linewidth}{!}{%
 \begin{tabular}{lcccccccc}
@@ -345,6 +362,7 @@ Variant & seeds & ext MSE & int MSE & long MSE & ext LSiM & int LSiM & long LSiM
 \bottomrule
 \end{tabular}}
 \end{table}
+\end{landscape}
 
 \textbf{What the ablations show} (single decode unless stated):
 \begin{itemize}
@@ -352,7 +370,13 @@ Variant & seeds & ext MSE & int MSE & long MSE & ext LSiM & int LSiM & long LSiM
   $+0.096$). Conditioning only the generator (encoder and decoder Mach-free) is also worse
   (int $+0.31$, DA $+0.005$).
 \item \textbf{The structured generator matters}: a dense unconstrained generator blows up long
-  rollouts (long $+18$); a Hurwitz generator costs DA ($+0.041$).
+  rollouts (long $+18$) and costs DA ($+0.024$); a Hurwitz generator costs DA ($+0.041$).
+\item \textbf{Latent size 256 is right}: 128 is worse on int ($+0.45$) and DA ($+0.013$); 512
+  is no better anywhere and worse on long with the mixture ($+2.27$).
+\item \textbf{Two input frames matter}: one frame costs ext ($+0.77$) and int ($+0.25$).
+\item \textbf{A Mach-dependent fixed point $\mu(\mathrm{Ma})$} helps int ($-0.31\pm0.11$; with the
+  mixture $-0.26$) and leaves DA unchanged ($-0.001\pm0.001$), but costs ext and long slightly
+  (with the mixture $+0.19$, $+0.36$). Not adopted; a candidate to combine with back001.
 \item \textbf{Multi-step training and latent consistency are essential}; one-step training and
   removing the latent-consistency or prediction loss are worse on almost everything.
 \item \textbf{Backward latent consistency is the only term that improves DA}, with a trade-off
@@ -399,9 +423,109 @@ so train-calibrated corrections are conservative. The training Mach numbers skip
 (where int and long sit) and stop at 0.53 (ext is 0.50--0.52), so the climatology anchor must be
 interpolated or extrapolated.
 
-\pending{Results (expected 28 October, morning): table of every variant for both candidates,
-paired against the current mixture readout, with ensembles and LSiM for the shortlisted
-variants, and a recommendation.}
+\subsection{Results}
+
+Lab: 238-lead rollouts from two windows of each training simulation give the calibration
+statistics for nine mixture widths; the test forecasts of all widths are stored once and
+combined offline (\texttt{scripts/postproc/}). The plain mixture reproduces the stored test
+scores exactly (reference seed 0: 1.534 / 3.124 / 13.214).
+
+\begin{table}[h]
+\centering\scriptsize
+\caption{Post-processing variants, paired against the mixture readout of the same checkpoint (mean
+over 3 seeds $\pm$ SE). First row: absolute all-frames MSE $\times10^{-3}$ of the mixture. Bold:
+improvement beyond 2 SE; $\dagger$: deterioration beyond 2 SE. ``Own mean'': the forecast's mean
+over leads 1--58; ``climatology'': Mach-interpolated time-mean of the training simulations.}
+\label{tab:pp}
+\begin{tabular}{lcccccc}
+\toprule
+ & \multicolumn{3}{c}{Reference} & \multicolumn{3}{c}{back001}\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Variant & ext & int & long & ext & int & long\\
+\midrule
+\inputrows tab_pp_delta.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering\scriptsize
+\caption{Seed ensembles: the field average of the 3 seeds of a model, or of all 6 checkpoints;
+each member uses the variant named in the row. All-frames MSE $\times10^{-3}$.}
+\label{tab:ppens}
+\begin{tabular}{lccccccccc}
+\toprule
+ & \multicolumn{3}{c}{Reference, 3 seeds} & \multicolumn{3}{c}{back001, 3 seeds} &
+   \multicolumn{3}{c}{All 6 checkpoints}\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+Members & ext & int & long & ext & int & long & ext & int & long\\
+\midrule
+\inputrows tab_pp_ens.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering\scriptsize
+\caption{LSiM $\times10^{-1}$ (lower is better) for the shortlisted variants: mean over the 3
+seeds, and of the 3-seed average.}
+\label{tab:pplsim}
+\begin{tabular}{llcccccc}
+\toprule
+ & & \multicolumn{2}{c}{ext} & \multicolumn{2}{c}{int} & \multicolumn{2}{c}{long}\\
+\cmidrule(lr){3-4}\cmidrule(lr){5-6}\cmidrule(lr){7-8}
+Model & Variant & seeds & average & seeds & average & seeds & average\\
+\midrule
+Reference & mixture            & 1.72 & 1.75 & 1.87 & 1.86 & 5.74 & 6.07\\
+          & + shrink to clim.  & 1.78 & 1.81 & 1.91 & 1.91 & 7.00 & 7.10\\
+          & + Wiener to clim.  & 1.80 & 1.82 & 1.91 & 1.91 & 6.85 & 6.97\\
+\midrule
+back001   & mixture            & 1.81 & 1.85 & 1.83 & 1.82 & 6.09 & 6.50\\
+          & + shrink to clim.  & 1.86 & 1.90 & 1.87 & 1.85 & 7.23 & 7.35\\
+          & + Wiener to clim.  & 1.89 & 1.93 & 1.86 & 1.85 & 7.04 & 7.20\\
+\midrule
+\multicolumn{2}{l}{\emph{Single decode, one seed (for reference)}} & 1.41 & -- & 1.71 & -- & 4.06 & --\\
+\multicolumn{2}{l}{\emph{ACDM / U-Net$_{ut}$}} & 1.29 / 1.09 & & 1.38 / 0.95 & & 3.83 / 3.81 & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\FloatBarrier
+\textbf{What works.}
+\begin{itemize}
+\item \textbf{Seed averaging is the largest gain.} The 3-seed average of the mixture forecasts
+  lowers ext by 0.19 (both models), int by 0.22--0.23 and long by 0.36 (reference) and 0.50
+  (back001) against the single-seed mean. The reference's 3-seed average (1.58) is ahead of
+  U-Net$_{ut}$ on ext (1.60); back001's (2.67) is ahead of ACDM on int (2.92). Averaging all six
+  checkpoints is no better than the better 3-seed average on any case.
+\item \textbf{Climatology shrinkage helps long only}: $-0.90\pm0.05$ (reference) and
+  $-1.23\pm0.05$ (back001), paired; on the 3-seed averages $-0.70$ and $-0.91$. The calibrated
+  gains stay close to 1 up to lead 58, so ext and int barely move ($\le0.03$). It helps back001
+  more, which nearly closes back001's long deficit (12.22 vs 12.13, single-seed means).
+\item \textbf{Scale dependence adds nothing}: the per-wavenumber Wiener filter and one scalar per
+  lead and channel are within 0.03 of each other; the scalar is the simpler choice.
+\end{itemize}
+
+\textbf{What does not.}
+\begin{itemize}
+\item \textbf{A lead-dependent mixture width} is no better (reference long $+0.11\pm0.03$): the
+  train-optimal width is 0.02 for the first leads and close to the calibrated one after lead 30,
+  and the first leads carry little error.
+\item \textbf{Shrinking towards the forecast's own mean} gives 30--60\% of the climatology gain
+  ($-0.26$ to $-0.72$ on long). Applied to the single decode instead of the mixture, it is worse
+  on ext and int ($+0.02$ to $+0.03$ against the mixture) and only matches it on long for the
+  reference.
+\end{itemize}
+
+\textbf{Costs.} All of it lowers LSiM quality: shrinkage adds 0.95--1.26 ($\times10^{-1}$) on
+long and 0.03--0.08 on ext and int, and seed averaging adds a little more on ext and long, because both reduce the
+fluctuation energy of uncertain forecasts. Seed averaging triples inference. Neither changes the
+data assimilation, which uses the latent model of one checkpoint; DA with a seed ensemble (three
+independent 4D-Var analyses, averaged) has not been run.
+
+\callout{\textbf{Post-processing to report.} Primary: 3-seed average + mixture + scalar
+climatology shrinkage, calibrated on training rollouts. Report single-model numbers and LSiM
+alongside it.}
 
 %======================================================================
 \section{Findings from the investigation}\label{sec:findings}
@@ -426,9 +550,10 @@ variants, and a recommendation.}
 %======================================================================
 \section{Open items}
 \begin{itemize}
-\item Post-processing results and final ablation tables (above).
-\item DA learning-rate re-tuning for rows whose optimum sits at the edge of the grid
-  (\texttt{da\_retune\_edges.sh}), then a final table rebuild.
+\item DA with a seed ensemble (average of three 4D-Var analyses), to see whether the ensemble
+  gain carries over to DA.
+\item back001 combined with the conditional fixed point $\mu(\mathrm{Ma})$ (both help int; neither
+  hurts DA).
 \item Next candidates, not yet run: a POD-backbone decoder (attacks the generalisation gap);
   leave-block-out Mach conditioning; training with the mixture readout inside the loss;
   test-time refinement of $z_0$ on the input frames; a tied quadrature multiplet.

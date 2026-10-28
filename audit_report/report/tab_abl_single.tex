@@ -2,12 +2,12 @@
 \multicolumn{9}{l}{\emph{Architecture and training}}\\
 - Mach conditioning (encoder, decoder, generator) & 3 & +8.89$\pm$2.30$^\dagger$ & +9.64$\pm$1.46$^\dagger$ & +4.61$\pm$1.83$^\dagger$ & +2.18$\pm$0.26$^\dagger$ & +2.07$\pm$0.17$^\dagger$ & +2.01$\pm$0.29$^\dagger$ & +0.096$\pm$0.005$^\dagger$\\
 Generator: dense, unconstrained & 3 & -0.09$\pm$0.13 & +0.03$\pm$0.05 & +18.13$\pm$1.65$^\dagger$ & +0.06$\pm$0.03$^\dagger$ & +0.06$\pm$0.04 & +2.63$\pm$0.13$^\dagger$ & +0.024$\pm$0.004$^\dagger$\\
-Generator: Hurwitz (J - R) & 2 & +0.23$\pm$0.03$^\dagger$ & +0.10$\pm$0.09 & +0.51$\pm$1.34 & -0.02$\pm$0.05 & \textbf{-0.03$\pm$0.01} & -0.14$\pm$0.12 & +0.041$\pm$0.002$^\dagger$\\
-Latent 128 & 2 & +0.16$\pm$0.09 & +0.49$\pm$0.10$^\dagger$ & \textbf{-0.97$\pm$0.10} & +0.02$\pm$0.06 & +0.14$\pm$0.02$^\dagger$ & +0.43$\pm$0.38 & +0.012$\pm$0.005$^\dagger$\\
-Latent 512 & 2 & -0.07$\pm$0.12 & -0.22$\pm$0.34 & +0.74$\pm$0.35$^\dagger$ & -0.04$\pm$0.08 & -0.05$\pm$0.08 & +0.26$\pm$0.53 & +0.010$\pm$0.005$^\dagger$\\
-1 input frame (no history) & 2 & +0.94$\pm$0.05$^\dagger$ & +0.30$\pm$0.07$^\dagger$ & -0.22$\pm$0.41 & +0.20$\pm$0.07$^\dagger$ & +0.04$\pm$0.03 & +0.04$\pm$0.08 & +0.005$\pm$0.002$^\dagger$\\
-One-step training (2 $\to$ 1) & 2 & +1.53$\pm$0.09$^\dagger$ & +2.49$\pm$0.19$^\dagger$ & +0.64$\pm$1.65 & +1.39$\pm$0.16$^\dagger$ & +0.81$\pm$0.05$^\dagger$ & +0.68$\pm$0.19$^\dagger$ & +0.007$\pm$0.006\\
-+ conditional fixed point $\mu$(Ma) & 2 & +0.37$\pm$0.04$^\dagger$ & \textbf{-0.23$\pm$0.11} & +0.09$\pm$0.17 & +0.03$\pm$0.04 & +0.02$\pm$0.06 & -0.15$\pm$0.19 & -0.002$\pm$0.002\\
+Generator: Hurwitz (J - R) & 3 & +0.06$\pm$0.17 & +0.07$\pm$0.06 & +0.14$\pm$0.86 & -0.01$\pm$0.03 & -0.02$\pm$0.01 & +0.04$\pm$0.19 & +0.041$\pm$0.001$^\dagger$\\
+Latent 128 & 3 & +0.04$\pm$0.13 & +0.45$\pm$0.07$^\dagger$ & -0.19$\pm$0.79 & +0.07$\pm$0.07 & +0.15$\pm$0.01$^\dagger$ & +0.38$\pm$0.23 & +0.013$\pm$0.003$^\dagger$\\
+Latent 512 & 3 & -0.18$\pm$0.12 & +0.11$\pm$0.39 & +1.71$\pm$0.99 & -0.06$\pm$0.05 & +0.09$\pm$0.15 & +0.22$\pm$0.31 & +0.006$\pm$0.005\\
+1 input frame (no history) & 3 & +0.77$\pm$0.17$^\dagger$ & +0.25$\pm$0.07$^\dagger$ & -0.16$\pm$0.24 & +0.18$\pm$0.04$^\dagger$ & +0.07$\pm$0.04 & +0.13$\pm$0.10 & +0.003$\pm$0.002\\
+One-step training (2 $\to$ 1) & 3 & +1.37$\pm$0.16$^\dagger$ & +2.73$\pm$0.27$^\dagger$ & +0.57$\pm$0.95 & +1.43$\pm$0.10$^\dagger$ & +0.96$\pm$0.16$^\dagger$ & +0.95$\pm$0.29$^\dagger$ & +0.007$\pm$0.003$^\dagger$\\
++ conditional fixed point $\mu$(Ma) & 3 & +0.22$\pm$0.15 & \textbf{-0.31$\pm$0.11} & -0.13$\pm$0.24 & +0.04$\pm$0.03 & +0.02$\pm$0.04 & +0.03$\pm$0.21 & -0.001$\pm$0.001\\
 \multicolumn{9}{l}{\emph{Loss terms used (removed)}}\\
 - reconstruction loss & 2 & +0.05$\pm$0.08 & +0.37$\pm$0.22 & +0.77$\pm$0.52 & +0.03$\pm$0.11 & +0.05$\pm$0.03 & +0.17$\pm$0.49 & +0.025$\pm$0.003$^\dagger$\\
 - prediction loss & 2 & +2.56$\pm$0.22$^\dagger$ & +4.33$\pm$0.46$^\dagger$ & +6.09$\pm$1.91$^\dagger$ & +0.77$\pm$0.08$^\dagger$ & +1.05$\pm$0.12$^\dagger$ & +0.21$\pm$0.16 & +0.013$\pm$0.006$^\dagger$\\
