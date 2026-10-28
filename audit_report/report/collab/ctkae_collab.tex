@@ -125,6 +125,34 @@ $\delta_l=25$, 5 observations, 500 iterations, 8 problems per point.}
 
 \section*{The paper's transonic experiments, re-run}
 
+\begin{table}[h]
+\centering\scriptsize
+\caption{MSE ($\times10^{-3}$, all fields) at $t=15,30,45,60$ of the 60-step rollouts. CT-KAE
+rows without post-processing: mean over 3 seeds. Best per column in bold.}
+\label{tab:lead}
+\begin{tabular}{lcccccccc}
+\toprule
+ & \multicolumn{4}{c}{Tra\_ext} & \multicolumn{4}{c}{Tra\_int}\\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+$t$ & 15 & 30 & 45 & 60 & 15 & 30 & 45 & 60\\
+\midrule
+\inputrows tab_lead.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{fig_short.pdf}
+\caption{Pressure at $t=15,30,45,60$, first sequence of each test set (paper layout). CT-KAE rows
+without post-processing: seed 0.}
+\label{fig:short}
+\end{figure}
+
+\textbf{Short horizon.} The U-Nets are best up to $t=30$. On ext the post-processed reference is best
+from $t=45$. On int the U-Net$_{ut}$ stays best; at $t=60$ the post-processed CT-KAEs are second
+(5.6--5.7 against 4.9), ahead of ACDM (8.5) and the original KAE (15.8).
+
 \begin{figure}[h]
 \centering
 \includegraphics[width=\linewidth]{fig_long.pdf}
