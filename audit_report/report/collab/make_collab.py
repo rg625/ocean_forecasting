@@ -11,6 +11,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+import torch  # noqa: E402
+
+AUTOREG_RES = Path("/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/results")
 
 HERE = Path(__file__).parent
 IMPL = HERE.parents[2]
@@ -487,8 +490,8 @@ def fig_da():
 def fig_long():
     d = json.loads((PC / "long1000.json").read_text())["models"]
     sn = np.load(PC / "long1000_pressure_snapshots.npz")
-    fig = plt.figure(figsize=(7.2, 6.4))
-    gs = fig.add_gridspec(2, 1, height_ratios=[1, 2.0], hspace=0.3)
+    fig = plt.figure(figsize=(7.2, 8.0))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1, 2.8], hspace=0.25)
     top = gs[0].subgridspec(1, 2, wspace=0.25)
     sty = {
         "ACDM": (MUTED, "--"),
@@ -528,14 +531,38 @@ def fig_long():
         ("ACDM", "ACDM"),
         ("Original KAE", "Orig. KAE"),
         ("ref", "Reference"),
+        ("ref+pp", "Reference + pp"),
+        ("back001", "back001"),
         ("back001+pp", "back001 + pp"),
     ]
     bot = gs[1].subgridspec(len(rows), 4, wspace=0.03, hspace=0.06)
     vmin, vmax = np.percentile(sn["truth"], [1, 99])
+    fluid = (
+        torch.load(AUTOREG_RES / "longer/groundTruth.dict", weights_only=False)[
+            "obsMask"
+        ][0].numpy()
+        > 0.5
+    )
+    mse = {
+        k: ((sn[k] - sn["truth"]) ** 2 * fluid).mean((-1, -2)) * 1e3 for k, _ in rows
+    }
     for r, (k, nm) in enumerate(rows):
         for c, st in enumerate(sn["steps"]):
             ax = fig.add_subplot(bot[r, c])
             ax.imshow(sn[k][c].T, origin="lower", cmap="RdBu_r", vmin=vmin, vmax=vmax)
+            if k != "truth":
+                v, best = mse[k][c], min(mse[q][c] for q, _ in rows[1:])
+                ax.text(
+                    0.98,
+                    0.05,
+                    f"{v:.1f}",
+                    transform=ax.transAxes,
+                    ha="right",
+                    va="bottom",
+                    fontsize=5.5,
+                    fontweight="bold" if round(v, 1) == round(best, 1) else "normal",
+                    bbox=dict(facecolor="white", alpha=0.75, edgecolor="none", pad=0.8),
+                )
             ax.set_xticks([]), ax.set_yticks([])
             ax.grid(False)
             if c == 0:

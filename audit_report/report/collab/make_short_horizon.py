@@ -126,6 +126,21 @@ def tab_lead(m):
     (HERE / "tab_lead.tex").write_text("\n".join(rows) + "\n")
 
 
+def mse_label(ax, v, best):
+    """pressure MSE x1e-3 of this panel, bold for the best model in the column"""
+    ax.text(
+        0.97,
+        0.04,
+        f"{v:.2f}",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=5.5,
+        fontweight="bold" if round(v, 2) == round(best, 2) else "normal",
+        bbox=dict(facecolor="white", alpha=0.75, edgecolor="none", pad=0.8),
+    )
+
+
 def gallery():
     rows = [
         "Simulation",
@@ -149,20 +164,31 @@ def gallery():
         src["Reference"] = (FIELDS / case / "ref.npz", False)
         src["back001"] = (FIELDS / case / "back001.npz", False)
         cmap, norm = getColormapAndNorm(case, "pres")
-        for i, lab in enumerate(rows):
-            a = (
-                gt[None]
+        frames = {
+            lab: (
+                gt[0, [t - 1 for t in TS], P]
                 if lab == "Simulation"
-                else load(src[lab][0], S, T, src[lab][1]) * fluid
+                else (load(src[lab][0], S, T, src[lab][1]) * fluid)[
+                    0, 0, [t - 1 for t in TS], P
+                ]
             )
+            for lab in rows
+        }
+        mse = {
+            lab: ((v - frames["Simulation"]) ** 2).mean((-1, -2)) * 1e3
+            for lab, v in frames.items()
+        }
+        for i, lab in enumerate(rows):
             for j, t in enumerate(TS):
                 ax = axs[i, 5 * k + j]
                 ax.imshow(
-                    a[0, 0, t - 1, P, 6:70, 0:64].T,
+                    frames[lab][j, 6:70, 0:64].T,
                     cmap=cmap,
                     norm=norm,
                     interpolation="nearest",
                 )
+                if lab != "Simulation":
+                    mse_label(ax, mse[lab][j], min(mse[r][j] for r in rows[1:]))
                 ax.set_xticks([])
                 ax.set_yticks([])
                 if i == 0:

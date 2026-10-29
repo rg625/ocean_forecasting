@@ -170,7 +170,8 @@ $t$ & 15 & 30 & 45 & 60 & 15 & 30 & 45 & 60\\
 \centering
 \includegraphics[width=0.85\linewidth]{fig_short.pdf}
 \caption{Pressure at $t=15,30,45,60$, first sequence of each test set (paper layout). CT-KAE rows
-without post-processing: seed 0.}
+without post-processing: seed 0. Number in each panel: pressure MSE ($\times10^{-3}$) of that
+frame over the whole domain; bold is the best model in the column.}
 \label{fig:short}
 \end{figure}
 
@@ -183,7 +184,8 @@ from $t=45$. On int the U-Net$_{ut}$ stays best; at $t=60$ the post-processed CT
 \includegraphics[width=\linewidth]{fig_long.pdf}
 \caption{1000-step rollout (Tra\_long simulations, 0.05\,s per frame, 2 trajectories). Top: $v_x$
 spatial correlation and relative $L_2$ error per frame. Bottom: pressure, first trajectory.
-Post-processing here is the 3-seed average of mixture + mirror, without shrinkage.}
+Post-processing here is the 3-seed average of mixture + mirror, without shrinkage. Number in each
+panel: pressure MSE ($\times10^{-3}$) of that frame; bold is the best in the column.}
 \label{fig:long}
 \end{figure}
 
