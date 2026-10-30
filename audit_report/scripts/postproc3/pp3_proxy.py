@@ -110,9 +110,12 @@ def qmap(a, singles, fluid):
 
 
 def spec_metrics(gt, p):
+    """|v| spectrum metrics; gt is obstacle-zeroed and p is masked the same way (the CT-KAE
+    fields carry the normalisation mean in the obstacle, a spurious step at its edge)"""
     T = gt.shape[1]
+    fluid = (np.abs(gt).sum((0, 1, 2)) > 0).astype(np.float32)
     k, sg = spectrum(velocity_magnitude(torch.from_numpy(gt[:, 2:T])))
-    _, sp = spectrum(velocity_magnitude(torch.from_numpy(p[:, 2:T])))
+    _, sp = spectrum(velocity_magnitude(torch.from_numpy(p[:, 2:T] * fluid)))
     n = min(len(sg), len(sp))
     k, sg, sp = k[:n], sg[:n], sp[:n]
     out = {}

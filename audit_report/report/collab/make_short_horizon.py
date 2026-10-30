@@ -58,6 +58,8 @@ def sources(case):
         "back001 + post-proc.": (FIELDS / case / "back001+pp.npz", False),
         "Reference + sharp. mirror": (FIELDS / case / "ref+sharp.npz", False),
         "back001 + sharp. mirror": (FIELDS / case / "back001+sharp.npz", False),
+        "Reference + LPM mirror": (FIELDS / case / "ref+lpm.npz", False),
+        "back001 + LPM mirror": (FIELDS / case / "back001+lpm.npz", False),
     }
 
 
@@ -109,9 +111,11 @@ def tab_lead(m):
         "Reference",
         "Reference + post-proc.",
         "Reference + sharp. mirror",
+        "Reference + LPM mirror",
         "back001",
         "back001 + post-proc.",
         "back001 + sharp. mirror",
+        "back001 + LPM mirror",
     ]
     rows = []
     for k in order:
@@ -153,14 +157,16 @@ def gallery():
         "Reference",
         "Reference + post-proc.",
         "Reference + sharp. mirror",
+        "Reference + LPM mirror",
         "back001",
         "back001 + post-proc.",
         "back001 + sharp. mirror",
+        "back001 + LPM mirror",
     ]
     fig, axs = plt.subplots(
         len(rows),
         9,
-        figsize=(7.0, 7.2),
+        figsize=(7.0, 8.6),
         gridspec_kw={"width_ratios": [1] * 4 + [0.12] + [1] * 4},
     )
     for k, case in enumerate(CASES):

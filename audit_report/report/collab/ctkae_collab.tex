@@ -1,7 +1,7 @@
 \documentclass[10pt]{article}
 \usepackage[margin=2cm]{geometry}
 \usepackage{amsmath,amssymb}
-\usepackage{booktabs,multirow}
+\usepackage{booktabs,multirow,array}
 \usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{caption}
@@ -35,7 +35,7 @@ seeds each; every number below is a mean over seeds or a 3-seed average, as stat
 over the points of six sweeps that every method was run on, 31 at $\delta_f=1$ and 37 at
 $\delta_f=9$), and inference cost (Tra\_long,
 240 steps, batch 1, RTX 4090). Lower is better throughout. Post-processing (MSE-optimal averaging)
-and the sharpened mirror average (non-blurring) are described in the next two sections; the effect
+and the sharpened and LPM mirror averages (non-blurring) are described in the next two sections; the effect
 of post-processing on DA is in Table~\ref{tab:dapp}. Original KAE: final checkpoint; the published DA numbers used a checkpoint selected on the
 DA test set.}
 \label{tab:main}
@@ -59,15 +59,17 @@ DA test set.}
   every lead. ACDM\,+\,SDA wins at $\delta_f\le2$. Against the original KAE, back001 is equal at
   short leads and better from $\delta_f=8$; the reference is worse at short leads (Fig.~\ref{fig:da}).
 \item \textbf{Short horizon:} without post-processing the U-Nets are best on ext and int. With it the
-  reference is best on ext; the U-Nets remain best on int. The sharpened mirror average gives
+  reference is best on ext; the U-Nets remain best on int. The LPM mirror average gives
   almost the same MSE without blurring: on ext the reference has lower MSE than every baseline
-  (1.34) and better LSiM than ACDM (1.20 against 1.29); the U-Nets keep the best LSiM.
+  (1.33) and better LSiM than ACDM (1.18 against 1.29); the U-Nets keep the best LSiM.
 \item \textbf{back001 vs reference:} back001 is better on DA, int and long, worse on ext.
   Post-processing removes most of the forecasting differences; the DA advantage remains.
-\item \textbf{Sharpness:} even without post-processing the CT-KAE is smoother than the baselines
-  (worse LSiM, spectra too shallow). Post-processing improves MSE by blurring further
-  (Table~\ref{tab:sharp}). The sharpened mirror average does not blur: LSiM improves on ext and int,
-  and on long it stays at the single decode's level (Table~\ref{tab:pp3}).
+\item \textbf{Sharpness:} without post-processing the CT-KAE has worse LSiM than the baselines. Its
+  spectrum matches the truth on ext and int and loses mid-band power on long rollouts
+  (Table~\ref{tab:spec}; an earlier version reported too-shallow spectra everywhere, an artefact of
+  scoring unmasked fields). Post-processing improves MSE by blurring further
+  (Table~\ref{tab:sharp}). The LPM and sharpened mirror averages do not blur: LSiM improves on ext
+  and int, and on long it stays at or below the single decode's level (Table~\ref{tab:pp3}).
 \end{itemize}
 
 \section*{Post-processing}
@@ -110,7 +112,7 @@ seeds; row 5: one 3-seed average), decoder calls per predicted step and wall clo
 \centering\scriptsize
 \caption{What post-processing costs in sharpness. MSE $\times10^{-3}$ on Tra\_long; LSiM
 $\times10^{-1}$; relative error of the $|v|$ spectrum on Tra\_long (240 steps) in the low ($k\le4$),
-mid (5--12) and high (13--32) bands, and its mid-band slope. Lower is better except the slope, which
+mid (5--12) and high (13--32) bands, and its mid-band slope; prediction and truth masked alike. Lower is better except the slope, which
 should match the ground truth.}
 \label{tab:sharp}
 \begin{tabular}{lcccccccc}
@@ -124,49 +126,47 @@ should match the ground truth.}
 \end{tabular}
 \end{table}
 
-\section*{Non-blurring post-processing: sharpened mirror average}
-The aim is to lower the error without blurring.
+\section*{Non-blurring post-processing}
+The aim is to lower the error without blurring. Two readouts qualify; both start from the mirror
+average of single decodes (no mixture) and restore what averaging removes.
 \begin{itemize}\itemsep1pt
-\item \textbf{Readout.} Per seed, average the single decode and the mirrored single decode (no
-  mixture). Then rescale the anomaly of the average about the Mach-interpolated training mean, per
-  frame, field and radial wavenumber, to the mean band power of the two single decodes. The phases of
-  the average are kept and the gain is clipped to $[1,5]$; on the proxies the clip never binds within 58 leads. With 3 seeds, all
-  6 single decodes are averaged and their mean power is the target. Cost: 6 decodes per step and one
-  FFT pair per frame.
-\item \textbf{Selection.} Candidates were scored on the proxies' held-out Mach numbers (7
-  simulations; 28 windows of 58 leads and 7 of 238): the mirror, mixture and mixture\,+\,mirror
-  averages; the latent average of the mixture nodes; re-sharpening of the mirror and mixture\,+\,mirror averages
-  (gain exponent 0.5 or 1, clip 2 or 5); Fourier amplitude averaging with the phase of the mean; and
-  rank-preserving quantile mapping. The rule was fixed before scoring: LSiM no worse than the single
-  decode and band power at most 0.05\,dex lower, on both proxies and both horizons; then lowest MSE.
-  Strictly, no candidate passes, because at 238 leads every average raises LSiM. The sharpened mirror
-  average is the only one within 1.4\,SE everywhere (reference proxy, long: LSiM $+0.07\pm0.05$). At 58 leads it
-  lowers MSE by 9\% and LSiM by 0.10--0.11 on both proxies. The proxies have one seed, so seed
-  averaging is not validated there.
-\item \textbf{Test} (Table~\ref{tab:pp3}; per seed, paired against the single decode, SE over 3 seeds).
-  On ext and int, MSE falls by 10--23\% per seed (15--30\% with the 3-seed average) and LSiM by
-  0.10--0.16; the high-band power ratio stays within 0.03\,dex of the single decode. On long, MSE falls
-  by 0.19--0.26 (1--2 SE) and LSiM rises by 0.05 (within 1 SE). Over 1000 steps the mean $v_x$ correlation is 0.705 (reference) and 0.699 (back001), against 0.691
-  and 0.682 for the single decode and 0.730 and 0.722 for post-processing (Fig.~\ref{fig:long}).
-\item \textbf{Against post-processing} (3 seeds, reference): MSE 1.34 / 2.57 / 15.81 against
-  1.31 / 2.45 / 11.87 (ext / int / long); LSiM 1.20 / 1.53 / 4.07 against 1.73 / 1.86 / 7.24. Use the
-  sharpened mirror average when realistic fields matter. The long-horizon MSE gain of post-processing
+\item \textbf{Sharpened mirror average} (round 3). Rescale the anomaly of the average about the
+  Mach-interpolated training mean, per frame, field and radial wavenumber, to the mean band power of
+  the single decodes; phases kept, gain clipped to $[1,5]$. One FFT pair per frame.
+\item \textbf{LPM mirror average} (round 4). Localized probability-matched mean (Ebert 2001; Clark
+  2017; Snook et al.\ 2020): in $16\times16$ patches (stride 8, Hann-weighted overlap) the fluid
+  values of the average are replaced, rank for rank, by the pooled values of the single decodes.
+  The average sets where structures are, the members set their amplitudes. No parameters fitted.
+\item \textbf{Selection.} Every candidate was scored on the proxies' held-out Mach numbers (7
+  simulations; 28 windows of 58 leads and 7 of 238) with a rule fixed before scoring: LSiM no worse
+  than the single decode and band power at most 0.05\,dex lower, on both proxies and both horizons;
+  then lowest MSE. Round 3 had no admissible candidate (the sharpened mirror average missed only on
+  the reference proxy at 238 leads, LSiM $+0.07\pm0.05$). In round 4 the LPM mirror average is the
+  only admissible candidate: MSE $-10\%$ and LSiM $-0.12$ at 58 leads, MSE $-3$ to $0\%$ and LSiM
+  $-0.09$ to $-0.23$ at 238 leads. The proxies have one seed, so seed averaging is not validated there.
+\item \textbf{Test} (Table~\ref{tab:pp3}; per seed, paired against the single decode, SE over 3
+  seeds). LPM: on ext and int MSE falls by 11--23\% and LSiM by 0.12--0.18; on long MSE falls by 3\%
+  (2--3\,SE) and LSiM by 0.01--0.08 (within 1.5\,SE). It is the only readout that lowers both at
+  every horizon. The sharpened average has slightly higher MSE and, on long, LSiM $+0.05$, but keeps
+  the high band better: $\le0.015$\,dex from the single decode against 0.01--0.025\,dex for LPM, and a
+  high-band spectral error of 0.07--0.09 against 0.10--0.12 on ext and int (Table~\ref{tab:spec}).
+  Over 1000 steps the mean $v_x$ correlation is 0.716 / 0.713 (reference / back001) with LPM, 0.705 /
+  0.699 sharpened, 0.691 / 0.682 for the single decode and 0.730 / 0.722 with post-processing
+  (Fig.~\ref{fig:long}). Late in that rollout, where the members disagree, LPM leaves patch-scale
+  speckle in the far wake (frames 750 and 997).
+\item \textbf{Against post-processing} (3 seeds, reference): LPM gives MSE 1.33 / 2.55 / 15.41 against
+  1.31 / 2.45 / 11.87 (ext / int / long), LSiM 1.18 / 1.52 / 4.04 against 1.73 / 1.86 / 7.24. Use
+  the LPM mirror average when realistic fields matter. The long-horizon MSE gain of post-processing
   comes only from blurring.
-\item \textbf{Rejected.} The latent average of the mixture nodes equals the single decode at 58 leads
-  and blurs at 238. Sharpening the
-  mixture\,+\,mirror average keeps the mixture's loss at long leads. Fourier amplitude averaging is
-  close to sharpening but slightly worse. Quantile mapping fixes amplitudes, not scales, so the high band
-  still loses power. In an earlier test-set screen, $x$-shift-aligned averaging and the medoid member gained
-  nothing. Refinement with the trained ACDM (SDEdit) was not run: each frame would need part of
-  ACDM's sampler (142\,ms per step in full), up to $\sim$500$\times$ a single decode.
 \end{itemize}
 
 \begin{table}[!htbp]
 \centering\scriptsize
-\caption{Sharpened mirror average, each step added in turn. MSE $\times10^{-3}$, LSiM $\times10^{-1}$,
-and the mean $\log_{10}$ power ratio (prediction / truth) of the $|v|$ spectrum in the high band
-(13--32; 0 is exact, negative is smoother). Rows 1--3: mean over 3 seeds; row 4: one 3-seed average;
-row 5: paired change of row 3 against row 1, $\pm$ SE over seeds.}
+\caption{Non-blurring readouts, each step added in turn. MSE $\times10^{-3}$, LSiM $\times10^{-1}$,
+and the mean $\log_{10}$ power ratio (prediction / truth) of the fluid-masked $|v|$ spectrum in the
+high band (13--32; 0 is exact, negative is smoother). Step rows: mean over 3 seeds, or one 3-seed
+average; \emph{vs single}: paired change of the per-seed readout against the single decode,
+$\pm$ SE over seeds. LPM replaces sharpening; it is not applied on top.}
 \label{tab:pp3}
 \setlength{\tabcolsep}{3pt}
 \resizebox{\linewidth}{!}{%
@@ -181,9 +181,46 @@ row 5: paired change of row 3 against row 1, $\pm$ SE over seeds.}
 \end{tabular}}
 \end{table}
 
+\textbf{Literature coverage.} Table~\ref{tab:lit} lists the post-processing families tried, from
+NWP statistical post-processing, ensemble summaries, spectral and stochastic methods, and generative
+refinement (the survey, with references, is \texttt{results/\allowbreak postproc3/\allowbreak literature\_survey.md}). All were
+scored like the two readouts above. The perception--distortion theorem (Blau \& Michaeli 2018)
+bounds what any of them can do: no estimator has both the MSE of the posterior mean and the true
+spectrum; MSE-fitted combinations reach low MSE by blurring, and methods that restore the truth's
+spectrum pay in MSE (Freirich et al.\ 2021).
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\caption{Post-processing families tested. Proxy: change against the single decode on the
+held-out Mach numbers at 58 / 238 leads (MSE ratio; LSiM change $\times10^{-1}$), mean of the two
+proxies. Fitted weights use leave-one-simulation-out cross-validation.}
+\label{tab:lit}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.0cm}>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{4.4cm}>{\raggedright\arraybackslash}p{5.3cm}}
+\toprule
+Family & References & Tested as & Result\\
+\midrule
+Averaging (ensemble mean, test-time augmentation) & Puny et al.\ 2022; Shanmugam et al.\ 2021 & mixture, mirror, seeds (adopted post-processing) & MSE 0.89 / 0.93 (mixture\,+\,mirror); blurs, LSiM $+0.08$ / $+1.7$\\
+MOS, superensemble, per-band stacking & Glahn \& Lowry 1972; Krishnamurti et al.\ 1999; Bowler et al.\ 2006 & least-squares weights on 4 members, one per field or per field and wavenumber, 3 lead bins & MSE 0.85--0.86 / 0.90--0.92; LSiM $+0.18$--$0.20$ / $+1.2$--$1.5$: blurs; re-sharpened, the MSE gain is lost\\
+Member-by-member blend & Van Schaeybroeck \& Vannitsem 2015 & $\tfrac12$(mixture\,+\,mirror) $+ \tfrac12$ single & MSE 0.89 / 0.93; LSiM $+0.02$ / $+0.75$\\
+Spectral rescaling (perception--distortion transport) & Blau \& Michaeli 2018; Freirich et al.\ 2021 & to the single-decode power (sharpen); partial transport, $\alpha\in[0.25,1]$, to the truth's training power & sharpen: selected in round 3; full transport to the truth: MSE $+22$ to $+46\%$; half transport of the mirror average: best long LSiM ($-0.34$) at MSE $+12\%$\\
+Probability matching & Ebert 2001; Clark 2017; Snook et al.\ 2019, 2020 & global quantile mapping; LPM of mirror, of mixture\,+\,mirror, of the sharpened or stacked average & global: high band still lost; \textbf{LPM mirror: selected}; LPM after sharpening: best long LSiM, slightly less MSE gain\\
+Field alignment, morphing & Ravela et al.\ 2007; Beezley \& Mandel 2008; Lee et al.\ 2025 & dense optical flow (Farneback) aligned averages; integer $x$-shift & no better than the plain average\\
+Scale-selective blending, spectral nudging & von Storch et al.\ 2000; Seed 2003 & mixture\,+\,mirror for $k\le2$ or 4, sharpened mirror above & no better than sharpening; $k\le4$ blurs on long\\
+Fourier amplitude averaging & -- & mean amplitude, phase of the mean & slightly worse than sharpening\\
+Stochastic backscatter & Leith 1990; Shutts 2005 & random-phase noise up to the single or true band power & no gain at best; MSE $+13$ to $+110\%$ when the mixture average is filled up\\
+Latent averaging & -- & average of the mixture nodes' latents & equals the single decode at 58 leads, blurs at 238\\
+Generative refinement (SDEdit) & Meng et al.\ 2022; Shu et al.\ 2023 & trained ACDM, noise level $t_0\in\{1,\dots,12\}$ of 20, one sample, on test & ext, int: MSE $-1$ to $-3\%$, LSiM $+0.02$ to $-0.12$; long: MSE $+0$ to $+2\%$; $t_0\le5$ doubles the high-band error; $(t_0{+}1)$ ACDM calls per frame\\
+\midrule
+\multicolumn{4}{p{16.6cm}}{\emph{Not tested.} Need new training: learned combiners with sharpness-aware losses (AMSE, Subich et al.\ 2025; Grönquist et al.\ 2021), residual or corrective diffusion (CorrDiff, Mardani et al.\ 2025), posterior-mean rectified flow (Ohayon et al.\ 2025), GAN correction (Harris et al.\ 2022). Not a point forecast: ensemble copula coupling and the Schaake shuffle (Schefzik et al.\ 2013; Clark et al.\ 2004). Marginal distributions only: QDM, MBCn (Cannon et al.\ 2015; Cannon 2018). Analogs (Delle Monache et al.\ 2013) and Wasserstein barycenters (Agueh \& Carlier 2011): no route to lower MSE than a member for signed velocity fields.}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \textbf{In data assimilation} only mirror averaging applies: 4D-Var is run once in the plain frame and
 once in the mirrored frame, and the two analyses are averaged. It cuts the analysis error by 10--16\% for both models at twice the cost
-(Table~\ref{tab:dapp}).
+(Table~\ref{tab:dapp}). Re-mapping the averaged analysis by LPM onto the two member analyses gives the
+same headline gain ($-12\%$ and $-15\%$ against $-13\%$ and $-16\%$); the sweeps are still running.
 
 \begin{figure}[!htbp]
 \centering
@@ -231,7 +268,7 @@ $t$ & 15 & 30 & 45 & 60 & 15 & 30 & 45 & 60\\
 \centering
 \includegraphics[width=0.85\linewidth]{fig_short.pdf}
 \caption{Pressure at $t=15,30,45,60$, first sequence of each test set (paper layout). CT-KAE rows
-without post-processing: seed 0; post-processing and sharpened mirror: 3-seed average. Number in each panel: pressure MSE ($\times10^{-3}$) of that
+without post-processing: seed 0; post-processing, sharpened and LPM mirror: 3-seed average. Number in each panel: pressure MSE ($\times10^{-3}$) of that
 frame over the whole domain; bold is the best model in the column.}
 \label{fig:short}
 \end{figure}
@@ -245,8 +282,8 @@ from $t=45$. On int the U-Net$_{ut}$ stays best; at $t=60$ the post-processed CT
 \includegraphics[width=\linewidth]{fig_long.pdf}
 \caption{1000-step rollout (Tra\_long simulations, 0.05\,s per frame, 2 trajectories). Top: $v_x$
 spatial correlation and relative $L_2$ error per frame. Bottom: pressure, first trajectory.
-Post-processing here is the 3-seed average of mixture + mirror, without shrinkage; ``sharp'' is the
-3-seed sharpened mirror average. Number in each panel: pressure MSE ($\times10^{-3}$) of that frame; bold is the best in the column.}
+Post-processing here is the 3-seed average of mixture + mirror, without shrinkage; ``sharp'' and
+``LPM'' are the 3-seed sharpened and LPM mirror averages. Number in each panel: pressure MSE ($\times10^{-3}$) of that frame; bold is the best in the column.}
 \label{fig:long}
 \end{figure}
 
@@ -282,7 +319,10 @@ between them (0.05\,s, never trained on). Mean over 3 seeds.}
 \begin{table}[!htbp]
 \centering\scriptsize
 \caption{Spectrum of $|v|$: relative error in the low ($k\le4$), mid (5--12) and high (13--32)
-wavenumber bands and the fitted mid-band slope.}
+wavenumber bands and the fitted mid-band slope. Prediction and truth are both multiplied by the
+fluid mask, as for MSE and LSiM. Without it the CT-KAE fields, which carry the normalisation mean
+inside the cylinder, show a spurious step at its edge; the earlier version of this table was
+computed that way.}
 \label{tab:spec}
 \begin{tabular}{lcccccccc}
 \toprule
@@ -308,9 +348,14 @@ wavenumber bands and the fitted mid-band slope.}
   diverges on long rollouts (from $\Delta t=0.05$ for back001), as the oscillators are almost undamped.
 \item \textbf{Unseen time step.} Forecasts between the training time steps are as accurate as on
   them (Table~\ref{tab:dt}).
-\item \textbf{Spectra.} The CT-KAE spectra are too shallow and its band errors are 3--7$\times$
-  those of ACDM and the U-Net (but well below FNO's on long rollouts); post-processing worsens them. The CT-KAE's MSE advantage on long
-  rollouts comes from tracking phase, not from resolving small scales.
+\item \textbf{Spectra.} On Tra\_int the CT-KAE slope matches the truth ($-3.34$ against $-3.33$) and its
+  band errors are about 1.5--3$\times$ those of ACDM and the U-Net, well below FNO's. On Tra\_long the
+  mid-band error is 0.35--0.40 against 0.08--0.11 and grows with the lead: the CT-KAE loses
+  small-scale structure late in the rollout. Post-processing roughly doubles or triples the band
+  errors. The sharpened mirror average raises them by at most 10\%, except int's high band ($+50\%$);
+  LPM raises the high-band error by 6--100\% (int 0.12 against 0.06), a third or less of what
+  post-processing adds. The CT-KAE's MSE advantage on long rollouts
+  comes from tracking phase, not from resolving small scales.
 \item \textbf{Not re-run:} the original KAE's loss and LoRA ablations need retraining; the CT-KAE's
   own ablation study (in the full report) replaces them.
 \end{itemize}

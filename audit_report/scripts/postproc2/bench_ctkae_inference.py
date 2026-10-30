@@ -7,9 +7,10 @@ Readouts: single decode; mixture (5 decodes per step); mixture + mirror (10); an
 the 3-seed average (3 models, run one after another). Climatology shrinkage is one fused
 multiply-add per frame and is included where named. Round 3: mirror average of single decodes,
 optionally re-sharpened (postproc3/sharp.py: band powers of every single decode, one FFT pair
-on the average).
+on the average). Round 4: mirror average re-mapped by the localized probability-matched mean
+onto the single decodes (sharp.lpm, on the GPU).
 
-    python bench_ctkae_inference.py OUT.json RUN_s0 RUN_s1 RUN_s2
+    python bench_ctkae_inference.py OUT.json RUN_s0 RUN_s1 RUN_s2 [--only SUBSTRING]
 """
 
 import json
@@ -22,7 +23,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parents[1] / "postproc3"))
 from pp2_lab import REPO, dev, forecast, mirror  # noqa: E402
-from sharp import band_power, radial_bins, sharpen  # noqa: E402
+from sharp import band_power, lpm, radial_bins, sharpen  # noqa: E402
 
 from eval_ctkae import load_model  # noqa: E402
 from models.ct_data import load_eval_case  # noqa: E402
@@ -30,10 +31,10 @@ from models.ct_data import load_eval_case  # noqa: E402
 STEPS, WARMUP, REPS = 240, 2, 5
 
 
-def run_once(models, x2, ma, mask, sigma, use_mirror, shrink, sharp=False):
+def run_once(models, x2, ma, mask, sigma, use_mirror, shrink, post=None):
     taus = 0.1 * torch.arange(1, STEPS + 1, device=dev, dtype=torch.float32)[None]
     mmask = mask.flip(-2)
-    out, e = 0.0, 0.0
+    out, e, singles = 0.0, 0.0, []
     clim = torch.zeros_like(x2[:, :1])
     H, W = mask.shape[-2:]
     rb = radial_bins(H, W, dev)
@@ -44,21 +45,25 @@ def run_once(models, x2, ma, mask, sigma, use_mirror, shrink, sharp=False):
             if use_mirror:
                 zm = m.encode(mirror(x2), mmask, ma)
                 pm = mirror(forecast(m, zm, taus, ma, mmask, sigma)) * mask
-                if sharp:
+                if post == "sharp":
                     e = e + band_power(p, clim, rb) + band_power(pm, clim, rb)
+                if post == "lpm":
+                    singles += [p, pm]
                 p = 0.5 * (p + pm)
             out = out + p / len(models)
         if shrink is not None:
             g, clim = shrink
             out = clim + g * (out - clim)
-        if sharp:
+        if post == "sharp":
             out = sharpen(out, e / (2 * len(models)), clim, mask, rb)
+        if post == "lpm":
+            out = lpm(out, singles, mask.reshape(H, W))
     return out
 
 
-def time_cfg(models, x2, ma, mask, sigma, use_mirror, shrink, sharp=False):
+def time_cfg(models, x2, ma, mask, sigma, use_mirror, shrink, post=None):
     for _ in range(WARMUP):
-        run_once(models, x2, ma, mask, sigma, use_mirror, shrink, sharp)
+        run_once(models, x2, ma, mask, sigma, use_mirror, shrink, post)
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()
     ms = []
@@ -68,7 +73,7 @@ def time_cfg(models, x2, ma, mask, sigma, use_mirror, shrink, sharp=False):
         )
         torch.cuda.synchronize()
         a.record()
-        run_once(models, x2, ma, mask, sigma, use_mirror, shrink, sharp)
+        run_once(models, x2, ma, mask, sigma, use_mirror, shrink, post)
         b.record()
         torch.cuda.synchronize()
         ms.append(a.elapsed_time(b))
@@ -85,7 +90,13 @@ def time_cfg(models, x2, ma, mask, sigma, use_mirror, shrink, sharp=False):
 
 
 def main():
-    out, runs = sys.argv[1], sys.argv[2:]
+    args = sys.argv[1:]
+    only = None
+    if "--only" in args:
+        i = args.index("--only")
+        only = args[i + 1]
+        args = args[:i] + args[i + 2 :]
+    out, runs = args[0], args[1:]
     models = []
     for r in runs:
         m, _ = load_model(
@@ -111,16 +122,20 @@ def main():
         ("3 seeds, mixture", models, sig, False, None),
         ("3 seeds, mixture + mirror + shrink", models, sig, True, shrink),
         ("mirror", models[:1], 0.0, True, None),
-        ("mirror + sharpen", models[:1], 0.0, True, None, True),
+        ("mirror + sharpen", models[:1], 0.0, True, None, "sharp"),
         ("3 seeds, mirror", models, 0.0, True, None),
-        ("3 seeds, mirror + sharpen", models, 0.0, True, None, True),
+        ("3 seeds, mirror + sharpen", models, 0.0, True, None, "sharp"),
+        ("mirror + lpm", models[:1], 0.0, True, None, "lpm"),
+        ("3 seeds, mirror + lpm", models, 0.0, True, None, "lpm"),
     ]
+    if only:
+        cfgs = [c for c in cfgs if only in c[0]]
     rows = []
     for name, ms_, sg, mir, sh, *shp in cfgs:
         row = {
             "readout": name,
             "decodes_per_step": len(ms_) * (5 if sg > 0 else 1) * (2 if mir else 1),
-            **time_cfg(ms_, x2, ma, mask, sg, mir, sh, bool(shp)),
+            **time_cfg(ms_, x2, ma, mask, sg, mir, sh, shp[0] if shp else None),
         }
         rows.append(row)
         print(

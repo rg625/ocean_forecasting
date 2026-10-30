@@ -167,6 +167,10 @@ class Bench:
         analysis = np.mean([r["analysis"] for r in rs], 0)
         sim = torch.as_tensor(prob.sim, device=self.dev)
         t0 = torch.as_tensor(prob.t0, device=self.dev)
+        if getattr(self.a, "kae_avg", "mean") == "lpm":
+            analysis = self._lpm(
+                analysis, [r["analysis"] for r in rs], data.mask_for(sim)
+            )
         with torch.no_grad():
             rel = rel_l2(
                 torch.as_tensor(analysis, device=self.dev),
@@ -180,6 +184,32 @@ class Bench:
             "wall_s": sum(r["wall_s"] for r in rs),
             "members": len(rs),
         }
+
+    @staticmethod
+    def _lpm(avg, members, mask):
+        """localized probability-matched mean of the averaged analysis onto the member
+        analyses, per problem (audit_report/scripts/postproc3/sharp.py)"""
+        import sys
+
+        sys.path.insert(
+            0,
+            str(Path(__file__).resolve().parents[3] / "audit_report/scripts/postproc3"),
+        )
+        from sharp import lpm
+
+        out = np.empty_like(avg)
+        for i in range(len(avg)):
+            m = (
+                torch.ones(avg.shape[-2:])
+                if mask is None
+                else mask[i].float().cpu().reshape(avg.shape[-2:])
+            )
+            out[i] = lpm(
+                torch.from_numpy(avg[i]).double(),
+                [torch.from_numpy(x[i]).double() for x in members],
+                m.double(),
+            ).numpy()
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -2629,6 +2659,13 @@ def main():
         "--kae-mirror",
         action="store_true",
         help="ctkae: average the analysis with that of the vertically mirrored problem",
+    )
+    ap.add_argument(
+        "--kae-avg",
+        default="mean",
+        choices=["mean", "lpm"],
+        help="ctkae: how the member analyses (--kae-mirror, --kae-ensemble) are combined: "
+        "their mean, or the mean re-mapped by the localized probability-matched mean",
     )
     ap.add_argument(
         "--kae-ensemble",

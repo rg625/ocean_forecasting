@@ -8,6 +8,7 @@ simulations, windows of one simulation averaged first), log10 power ratio per ba
 
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -20,7 +21,7 @@ def per_sim(vals, ma):
 
 
 def main():
-    runs = {p.split("PX3_")[-1].split(".")[0]: json.load(open(p)) for p in sys.argv[1:]}
+    runs = {Path(p).stem.split("_", 1)[-1]: json.load(open(p)) for p in sys.argv[1:]}
     names = list(next(iter(runs.values()))["sets"]["short"]["stats"])
     summ: dict = {n: {"ok": True, "mse_ratio": []} for n in names}
     for model, r in runs.items():

@@ -32,11 +32,14 @@ ABL = {
 PP2 = json.loads((RES / "postproc2/pp2_test_results.json").read_text())
 LSIM = json.loads((PC / "lsim_fields.json").read_text())
 SHARP = json.loads((PC / "sharp_fields.json").read_text())  # round 3: '+sharp' readout
+LPM = json.loads((PC / "lpm_fields.json").read_text())  # round 4: '+lpm' readout
+# per-seed test scores of rounds 3-4 (fluid-masked spectra; postproc3/pp3_test.py --tag pp4_test)
 PP3 = {
-    t: json.loads((RES / f"postproc3/pp3_test_{t}.json").read_text())
+    t: json.loads((RES / f"postproc3/pp4_test_{t}.json").read_text())
     for t in ("ref", "back001")
 }
 SHARP_KEY = "sharp(mirror,a1,c5)"
+LPM_KEY = "lpm(mirror)"
 CASES = ["extrap", "interp", "longer"]
 SWEEPS = [
     "G4_delta_l",
@@ -73,12 +76,18 @@ def f(v, d=2):
 
 
 def load_timing():
-    """readout -> row; the round-3 re-timing (all readouts, one session) if present"""
+    """readout -> row; the round-3 re-timing (all readouts, one session) if present, plus the
+    round-4 LPM readouts (timed separately, same protocol)"""
+    out: dict = {}
     for fn in ("timing_pp3.json", "timing.json"):
         tp = PC / fn
         if tp.exists():
-            return {r["readout"]: r for r in json.loads(tp.read_text())["rows"]}
-    return {}
+            out = {r["readout"]: r for r in json.loads(tp.read_text())["rows"]}
+            break
+    tp = PC / "timing_lpm.json"
+    if tp.exists():
+        out.update({r["readout"]: r for r in json.loads(tp.read_text())["rows"]})
+    return out
 
 
 # ------------------------------------------------------------------------- DA helpers
@@ -86,6 +95,8 @@ def da_dir(model, variant, seed=None):
     """model: ref | back001; variant: plain | mirror | ens"""
     if variant == "ens":
         return DA / f"da_v4/ens_mirror_{model}"
+    if variant == "lpm":
+        return DA / f"da_v5/lpm_{model}_s{seed}"
     if variant == "plain" and seed == 0:
         return (
             DA
@@ -247,6 +258,14 @@ def tab_main():
             [None] * 3,
             f(tm),
         )
+        tm = timing.get("3 seeds, mirror + lpm", {}).get("ms_per_step")
+        row(
+            f"{names[t]} + LPM mirror",
+            [LPM[f"{t}+lpm"][c]["mse_all"] for c in CASES],
+            [LPM[f"{t}+lpm"][c]["lsim"] for c in CASES],
+            [None] * 3,
+            f(tm),
+        )
     (HERE / "tab_main.tex").write_text("\n".join(rows) + "\n")
 
 
@@ -299,72 +318,83 @@ def tab_pp():
 
 
 def tab_pp3():
-    """round 3, non-blurring readout: each step in turn; MSE, LSiM, high-band log power ratio.
-    Rows 1-3 mean over seeds, row 4 one 3-seed average; last row paired change of row 3 vs row 1
-    +- SE over seeds"""
+    """rounds 3-4, non-blurring readouts: each step in turn; MSE, LSiM, high-band log power
+    ratio (fluid-masked). Step rows: mean over seeds, or one 3-seed average; paired rows: change
+    against the single decode +- SE over seeds"""
     timing = load_timing()
     rows = []
+    keys = ("mse", "lsim", "log_high")
     for t in ("ref", "back001"):
         r = PP3[t]
         steps = [
-            ("single decode", "single", "single decode"),
-            ("+ mirror", "mirror", "mirror"),
-            ("+ sharpen", SHARP_KEY, "mirror + sharpen"),
-            ("+ 3-seed average", None, "3 seeds, mirror + sharpen"),
+            ("single decode", "single", False, "single decode"),
+            ("+ mirror", "mirror", False, "mirror"),
+            ("+ sharpen", SHARP_KEY, False, "mirror + sharpen"),
+            ("+ 3-seed average", SHARP_KEY, True, "3 seeds, mirror + sharpen"),
+            (None, SHARP_KEY, None, None),
+            ("+ mirror, LPM", LPM_KEY, False, "mirror + lpm"),
+            ("+ 3-seed average", LPM_KEY, True, "3 seeds, mirror + lpm"),
+            (None, LPM_KEY, None, None),
         ]
-        for i, (lab, key, tk) in enumerate(steps):
-            if key is None:
-                q = {
-                    k: [r[c]["ens3"][SHARP_KEY][k] for c in CASES]
-                    for k in ("mse", "lsim", "log_high")
-                }
-            else:
-                q = {
-                    k: [np.mean([x[k] for x in r[c]["per_seed"][key]]) for c in CASES]
-                    for k in ("mse", "lsim", "log_high")
-                }
-            tr = timing.get(tk, {})
+        for i, (lab, key, ens, tk) in enumerate(steps):
             lead = (
-                (r"\multirow{5}{*}{" + ("Reference" if t == "ref" else "back001") + "}")
+                (r"\multirow{8}{*}{" + ("Reference" if t == "ref" else "back001") + "}")
                 if i == 0
                 else ""
             )
-            cells = [f(v) for v in q["mse"] + q["lsim"]] + [f(v) for v in q["log_high"]]
+            if lab is None:  # paired change against the single decode
+                cells = []
+                for k in keys:
+                    for c in CASES:
+                        d = np.array([x[k] for x in r[c]["per_seed"][key]]) - np.array(
+                            [x[k] for x in r[c]["per_seed"]["single"]]
+                        )
+                        nd = 3 if k == "log_high" else 2
+                        se = d.std(ddof=1) / np.sqrt(len(d))
+                        cells.append(f"${d.mean():+.{nd}f}\\pm{se:.{nd}f}$")
+                name = "sharpen" if key == SHARP_KEY else "LPM"
+                rows.append(
+                    f"{lead} & \\emph{{{name} vs single}} & "
+                    + " & ".join(cells)
+                    + r" & & \\"
+                )
+                continue
+            if ens:
+                q = {k: [r[c]["ens3"][key][k] for c in CASES] for k in keys}
+            else:
+                q = {
+                    k: [np.mean([x[k] for x in r[c]["per_seed"][key]]) for c in CASES]
+                    for k in keys
+                }
+            tr = timing.get(tk, {})
+            cells = [f(v) for k in keys for v in q[k]]
             rows.append(
                 f"{lead} & {lab} & "
                 + " & ".join(cells)
                 + f" & {tr.get('decodes_per_step', '--')} & {f(tr.get('ms_per_step'))}\\\\"
             )
-        cells = []
-        for k in ("mse", "lsim", "log_high"):
-            for c in CASES:
-                d = np.array([x[k] for x in r[c]["per_seed"][SHARP_KEY]]) - np.array(
-                    [x[k] for x in r[c]["per_seed"]["single"]]
-                )
-                cells.append(
-                    f"${d.mean():+.2f}\\pm{d.std(ddof=1) / np.sqrt(len(d)):.2f}$"
-                )
-        rows.append(r" & \emph{sharpen vs single} & " + " & ".join(cells) + r" & & \\")
         rows[-1] += r" \midrule" if t == "ref" else ""
     (HERE / "tab_pp3.tex").write_text("\n".join(rows) + "\n")
 
 
 def tab_da_pp():
-    """mirror averaging in 4D-Var, paired on seed 2 of each model"""
+    """mirror averaging (and its LPM re-mapping) in 4D-Var, paired on seed 2 of each model"""
     rows = []
     for t in ("ref", "back001"):
-        a, b = da_stats(t, "plain", [2]), da_stats(t, "mirror", [2])
+        a = da_stats(t, "plain", [2])
         name = "Reference" if t == "ref" else "back001"
         rows.append(f"{name} & plain & " + " & ".join(f(v, 3) for v in a) + r"\\")
-        rows.append(" & mirror & " + " & ".join(f(v, 3) for v in b) + r"\\")
-        rows.append(
-            " & change & "
-            + " & ".join(
-                "--" if x is None or y is None else f"{100 * (y / x - 1):+.0f}\\%"
-                for x, y in zip(a, b)
+        for v, lab in (("mirror", "mirror"), ("lpm", "mirror + LPM")):
+            b = da_stats(t, v, [2])
+            rows.append(f" & {lab} & " + " & ".join(f(x, 3) for x in b) + r"\\")
+            rows.append(
+                " & \\quad change & "
+                + " & ".join(
+                    "--" if x is None or y is None else f"{100 * (y / x - 1):+.0f}\\%"
+                    for x, y in zip(a, b)
+                )
+                + r"\\"
             )
-            + r"\\"
-        )
         rows[-1] += r" \midrule" if t == "ref" else ""
     (HERE / "tab_da_pp.tex").write_text("\n".join(rows) + "\n")
 
@@ -417,8 +447,8 @@ def tab_paper():
             f"{'Reference' if t == 'ref' else 'back001'} & " + " & ".join(cells) + r"\\"
         )
     (HERE / "tab_dt.tex").write_text("\n".join(rows) + "\n")
-    # spectra
-    sp = json.loads((PC / "spectral.json").read_text())
+    # spectra (prediction and truth masked alike; paper_suite.py spectral_masked)
+    sp = json.loads((PC / "spectral_masked.json").read_text())
     rows = []
     for name, lab in [
         ("ACDM", "ACDM"),
@@ -426,8 +456,12 @@ def tab_paper():
         ("FNO-16", "FNO$_{16}$"),
         ("ref", "Reference"),
         ("ref+pp", "Reference + post-proc."),
+        ("ref+sharp", "Reference + sharp. mirror"),
+        ("ref+lpm", "Reference + LPM mirror"),
         ("back001", "back001"),
         ("back001+pp", "back001 + post-proc."),
+        ("back001+sharp", "back001 + sharp. mirror"),
+        ("back001+lpm", "back001 + LPM mirror"),
     ]:
         cells = []
         for case, win in [("interp", "0-60"), ("longer", "0-240")]:
@@ -456,8 +490,7 @@ def tab_sharp():
     bl = dict(baselines())
     sp = {
         x["model"]: x
-        for f_ in ("spectral.json", "spectral_sharp.json")
-        for x in json.loads((PC / f_).read_text())["longer"]["rows"]
+        for x in json.loads((PC / "spectral_masked.json").read_text())["longer"]["rows"]
         if x["window"] == "0-240"
     }
     rows = []
@@ -495,6 +528,12 @@ def tab_sharp():
                 SHARP[f"{t}+sharp"]["longer"]["mse_all"],
                 [SHARP[f"{t}+sharp"][c]["lsim"] for c in CASES],
                 t + "+sharp",
+            ),
+            (
+                name + " + LPM mirror",
+                LPM[f"{t}+lpm"]["longer"]["mse_all"],
+                [LPM[f"{t}+lpm"][c]["lsim"] for c in CASES],
+                t + "+lpm",
             ),
         )
     ]:
@@ -536,10 +575,13 @@ def fig_da():
             x = sorted(v)
             ax.plot(x, [v[k] for k in x], ls=ls, color=col, lw=1.0, label=lab)
     for t, col in [("ref", BLUE), ("back001", ORANGE)]:
-        for variant, ls, suf in [("plain", "-", "")]:
+        for variant, ls, suf in [
+            ("plain", "-", ""),
+            ("lpm", "--", " + mirror LPM (seed 2)"),
+        ]:
             dirs = (
-                [da_dir(t, "ens")]
-                if variant == "ens"
+                [da_dir(t, "lpm", 2)]
+                if variant == "lpm"
                 else [da_dir(t, "plain", s) for s in range(3)]
             )
             vs = [delta_f(d / "df1") for d in dirs]
@@ -565,16 +607,18 @@ def fig_da():
 def fig_long():
     d = json.loads((PC / "long1000.json").read_text())["models"]
     d.update(json.loads((PC / "long1000_sharp.json").read_text())["models"])
+    d.update(json.loads((PC / "long1000_lpm.json").read_text())["models"])
     sn = dict(np.load(PC / "long1000_pressure_snapshots.npz"))
     sn.update(
         {
             k: v
-            for k, v in np.load(PC / "long1000_sharp_pressure_snapshots.npz").items()
+            for fn in ("sharp", "lpm")
+            for k, v in np.load(PC / f"long1000_{fn}_pressure_snapshots.npz").items()
             if k != "steps"
         }
     )
-    fig = plt.figure(figsize=(7.2, 9.6))
-    gs = fig.add_gridspec(2, 1, height_ratios=[1, 3.6], hspace=0.2)
+    fig = plt.figure(figsize=(7.2, 11.4))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1, 4.4], hspace=0.16)
     top = gs[0].subgridspec(1, 2, wspace=0.25)
     sty = {
         "ACDM": (MUTED, "--"),
@@ -582,9 +626,11 @@ def fig_long():
         "ref": (BLUE, "-"),
         "ref+pp": (BLUE, "--"),
         "ref+sharp": (BLUE, "-."),
+        "ref+lpm": (BLUE, (0, (1, 1))),
         "back001": (ORANGE, "-"),
         "back001+pp": (ORANGE, "--"),
         "back001+sharp": (ORANGE, "-."),
+        "back001+lpm": (ORANGE, (0, (1, 1))),
     }
     lab = {
         "ACDM": "ACDM",
@@ -592,9 +638,11 @@ def fig_long():
         "ref": "Reference",
         "ref+pp": "Reference + post-proc.",
         "ref+sharp": "Reference + sharp. mirror",
+        "ref+lpm": "Reference + LPM mirror",
         "back001": "back001",
         "back001+pp": "back001 + post-proc.",
         "back001+sharp": "back001 + sharp. mirror",
+        "back001+lpm": "back001 + LPM mirror",
     }
     for i, (key, yl) in enumerate(
         [("corr", "$v_x$ spatial correlation"), ("l2", "$v_x$ relative $L_2$ error")]
@@ -620,9 +668,11 @@ def fig_long():
         ("ref", "Reference"),
         ("ref+pp", "Reference + pp"),
         ("ref+sharp", "Reference + sharp"),
+        ("ref+lpm", "Reference + LPM"),
         ("back001", "back001"),
         ("back001+pp", "back001 + pp"),
         ("back001+sharp", "back001 + sharp"),
+        ("back001+lpm", "back001 + LPM"),
     ]
     bot = gs[1].subgridspec(len(rows), 4, wspace=0.03, hspace=0.06)
     vmin, vmax = np.percentile(sn["truth"], [1, 99])

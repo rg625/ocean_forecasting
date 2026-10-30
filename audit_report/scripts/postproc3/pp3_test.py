@@ -7,7 +7,8 @@ OUT/apply0_<key>.npz (enc:0:mirror; pp2_apply.py). Candidates as in pp3_proxy.py
 (target = mean over the 6 single decodes). Reported per model: mean over seeds with the paired
 change vs the single decode +- SE over seeds, and the 3-seed version.
 
-    python pp3_test.py MODEL OUT_DIR [--cands NAME ...] [--no-lsim]
+    python pp3_test.py MODEL OUT_DIR [--cands NAME ...] [--no-lsim] [--tag pp3_test]
+(lpm(mirror), sharp+lpm, lpm+sharp: round-4 winners, pp4_proxy.py)
 """
 
 import argparse
@@ -27,6 +28,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import pp_analyze as P1  # noqa: E402
 from pp3_proxy import ampmean, power, qmap, regain, spec_metrics  # noqa: E402
+from pp4_proxy import lpm  # noqa: E402
 
 CASES = ["extrap", "interp", "longer"]
 BASE = ["single", "mirror", "mix+mirror"]
@@ -45,6 +47,16 @@ def build(name, f, e_single, M, fl):
             float(cap[1:]),
         )
         return regain(A, M, g) * fl
+    if name == "lpm(mirror)":
+        return lpm(f["mirror"], f["singles"], fl > 0)
+    if name == "sharp+lpm":
+        return lpm(
+            build("sharp(mirror,a1,c5)", f, e_single, M, fl), f["singles"], fl > 0
+        )
+    if name == "lpm+sharp":
+        lp = lpm(f["mix+mirror"], f["singles"], fl > 0)
+        g = np.clip(np.sqrt(e_single / np.maximum(power(lp, M), 1e-30)), 1, 5)
+        return regain(lp, M, g) * fl
     if name == "ampmean(mirror)":
         xs = f["singles"]
         return ampmean(xs, [1 / len(xs)] * len(xs), M) * fl
@@ -77,6 +89,7 @@ def main():
     ap.add_argument("out_dir")
     ap.add_argument("--cands", nargs="*", default=[])
     ap.add_argument("--no-lsim", action="store_true")
+    ap.add_argument("--tag", default="pp3_test")
     a = ap.parse_args()
     out = Path(a.out_dir)
     names = BASE + a.cands
@@ -130,7 +143,7 @@ def main():
             )
         res[case] = {"per_seed": per_seed, "ens3": ens}
         del fields, f3
-        json.dump(res, open(out / f"pp3_test_{a.model}.json", "w"), indent=1)
+        json.dump(res, open(out / f"{a.tag}_{a.model}.json", "w"), indent=1)
     # paired summary
     for case in CASES:
         print(f"\n== {a.model} {case}: seed mean [paired d vs single +- SE] | 3-seed")

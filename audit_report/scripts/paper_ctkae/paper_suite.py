@@ -12,11 +12,14 @@ averaging, plus climatology shrinkage on the 60/240-step cases; no shrinkage on 
     python paper_suite.py eigen      # generator eigenvalues across Mach
     python paper_suite.py sharp | spectral_sharp | long1000_sharp
                                      # round-3 '+sharp' readout (postproc3/sharp.py)
+    python paper_suite.py lpm | long1000_lpm | spectral_masked
+                                     # round-4 '+lpm' readout (postproc3/sharp.py: lpm)
 """
 
 import json
 import sys
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -261,9 +264,11 @@ PP3 = Path(
 )
 
 
-def sharp_fields():
+def sharp_fields(kind="sharp"):
     """'+sharp': 3-seed average of plain + mirrored single decodes, re-sharpened to the mean
-    single-decode band power (postproc3/sharp.py) -> fields/<case>/<t>+sharp.npz, MSE, LSiM
+    single-decode band power (postproc3/sharp.py) -> fields/<case>/<t>+sharp.npz, MSE, LSiM.
+    kind='lpm': the same average re-mapped by the localized probability-matched mean onto the
+    6 single decodes (round 4) -> <t>+lpm.npz, lpm_fields.json
     """
     import pp_analyze as P1
     import sharp as SH
@@ -276,7 +281,7 @@ def sharp_fields():
         for case in CASES:
             xin, ma, _, _ = P1.gt_case(case)
             M = torch.from_numpy(cks[0].d[f"{case}_clim"][:, None].astype(np.float32))
-            avg, e = 0.0, 0.0
+            avg, e, singles = 0.0, 0.0, []
             for s, ck in enumerate(cks):
                 p = torch.from_numpy(ck.d[f"{case}_pred"][0].astype(np.float32))
                 mir = np.load(PP3 / f"apply0_{t}_s{s}.npz")[f"{case}|enc:0:mirror"]
@@ -285,17 +290,22 @@ def sharp_fields():
                 pm = (2 * mir - p) * mask  # mirrored single decode
                 e = e + (SH.band_power(p, M, rb) + SH.band_power(pm, M, rb)) / 6
                 avg = avg + mir / 3
-            x = SH.sharpen(avg, e, M, mask, rb).numpy()
+                singles += [p, pm]
+            if kind == "lpm":
+                x = SH.lpm(avg.double(), [q.double() for q in singles], mask.double())
+                x = x.float().numpy()
+            else:
+                x = SH.sharpen(avg, e, M, mask, rb).numpy()
             full = torch.cat([xin.float(), torch.from_numpy(x)], 1)
             pa = to_acdm_layout(full, ma)
-            save_acdm(OUT / "fields" / case / f"{t}+sharp.npz", pa)
+            save_acdm(OUT / "fields" / case / f"{t}+{kind}.npz", pa)
             r = {
                 "mse_all": P1.mse_all(case, x),
                 "lsim": lsim(pa[None, :, :, :4], case)[0],
             }
-            res.setdefault(f"{t}+sharp", {})[case] = r
-            print(case, t, "+sharp", r, flush=True)
-    json.dump(res, open(OUT / "sharp_fields.json", "w"), indent=1)
+            res.setdefault(f"{t}+{kind}", {})[case] = r
+            print(case, t, f"+{kind}", r, flush=True)
+    json.dump(res, open(OUT / f"{kind}_fields.json", "w"), indent=1)
 
 
 def spectral_sharp():
@@ -321,9 +331,75 @@ def spectral_sharp():
             )
 
 
-def long1000_sharp():
-    """'+sharp' on the 1000-step rollout (as long1000; climatology of the gt_longer sim with
-    the same Mach number)"""
+def spectral_masked():
+    """as spectral() + spectral_sharp(), but prediction and truth both multiplied by the fluid
+    mask (as MSE and LSiM are). Unmasked, the CT-KAE fields carry the normalisation mean in the
+    obstacle while the truth and the baselines carry near-zero velocity there; the step at the
+    cylinder edge adds spurious high-wavenumber power to the CT-KAE spectra."""
+    sys.path.insert(0, str(AUTOREG / "src"))
+    import spectral_analysis as SA
+    from evaluate_dist_metrics import load_ground_truth, load_prediction, resolve_pred
+
+    base = {
+        "ACDM": "acdm-r20.npz",
+        "U-Net-ut": "unet-m8.npz",
+        "FNO-16": "fno-16modes-m2.npz",
+    }
+    out: dict = {}
+    for case, wins in [
+        ("longer", [(0, 240), (0, 60), (60, 120), (120, 180), (180, 240)]),
+        ("interp", [(0, 60)]),
+        ("extrap", [(0, 60)]),
+    ]:
+        mods = dict(base)
+        for t in MODELS:
+            for name in (t, f"{t}+pp", f"{t}+sharp", f"{t}+lpm"):
+                mods[name] = str(OUT / "fields" / case / f"{name}.npz")
+        gt_full, mask = load_ground_truth(case)
+        rows = []
+        for disp, fname in mods.items():
+            path = resolve_pred(case, fname)
+            if path is None:
+                continue
+            raw = load_prediction(case, path)
+            m_, e, s_ = raw.shape[:3]
+            cs, ct = min(gt_full.shape[0], s_), min(gt_full.shape[1], raw.shape[3])
+            fl = mask[:cs, None, None]  # [S, 1, 1, H, W]
+            gt = gt_full[:cs, :ct] * fl
+            pred = (raw[:, :, :cs, :ct] * fl).reshape(m_ * e * cs, ct, *raw.shape[4:])
+            if not torch.isfinite(pred).all():
+                rows.append({"model": disp, "window": "full", "diverged": True})
+                continue
+            vg, vp = SA.velocity_magnitude(gt), SA.velocity_magnitude(pred)
+            for a, b in wins:
+                b = min(b, ct)
+                k, s_g = SA.spectrum(vg[:, a:b])
+                _, s_p = SA.spectrum(vp[:, a:b])
+                n = min(len(s_g), len(s_p))
+                k, s_g, s_p = k[:n], s_g[:n], s_p[:n]
+                rows.append(
+                    {
+                        "model": disp,
+                        "window": f"{a}-{b}",
+                        "diverged": False,
+                        **SA.band_errors(k, s_p, s_g),
+                        "slope_pred": SA.fitted_slope(k, s_p),
+                        "slope_gt": SA.fitted_slope(k, s_g),
+                    }
+                )
+                r = rows[-1]
+                print(
+                    f"{case:7s} {disp:16s} {r['window']:8s} low {r['err_low']:.3f} mid {r['err_mid']:.3f} high {r['err_high']:.3f} slope {r['slope_pred']:.2f} (gt {r['slope_gt']:.2f})",
+                    flush=True,
+                )
+            del raw, pred
+        out[case] = {"rows": rows}
+    json.dump(out, open(OUT / "spectral_masked.json", "w"), indent=0)
+
+
+def long1000_sharp(kind="sharp"):
+    """'+sharp' (or '+lpm', kind='lpm') on the 1000-step rollout (as long1000; climatology of
+    the gt_longer sim with the same Mach number)"""
     import pp_analyze as P1
     import sharp as SH
 
@@ -350,7 +426,7 @@ def long1000_sharp():
     for t in MODELS:
         M = P1.Ckpt(f"{t}_s0").d["longer_clim"][idx][:, None]
         M = torch.from_numpy(M).float().to(dev)
-        avg, e = 0.0, 0.0
+        avg, e, singles = 0.0, 0.0, []
         for s in range(3):
             m = load_model(run_dir(f"{t}_s{s}"), "last.pth", dev)[0]
             p = _forecast(m, x2, ma, mask, taus, 0.0, False)
@@ -358,27 +434,34 @@ def long1000_sharp():
             pm = pm * mask
             e = e + (SH.band_power(p, M, rb) + SH.band_power(pm, M, rb)) / 6
             avg = avg + (p + pm) / 6
+            singles += [p.cpu(), pm.cpu()]
             del m, p, pm
-        out = SH.sharpen(avg, e, M, mask, rb)
+        if kind == "lpm":
+            out = SH.lpm(
+                avg.cpu().double(), [q.double() for q in singles], mask.cpu().double()
+            )
+            out = out.float().to(dev)
+        else:
+            out = SH.sharpen(avg, e, M, mask, rb)
         full = torch.cat([x[:, :3], out], 1)[:, :T].cpu()
         pa = to_acdm_layout(full, ma.cpu())
         c, l2 = _corr_l2(pa, gt, fluid)
-        res[f"{t}+sharp"] = {"corr": c.tolist(), "l2": l2.tolist()}
-        snaps[f"{t}+sharp"] = pa[0, steps, 3]
+        res[f"{t}+{kind}"] = {"corr": c.tolist(), "l2": l2.tolist()}
+        snaps[f"{t}+{kind}"] = pa[0, steps, 3]
         print(
             "long1000",
             t,
-            "+sharp corr@100/250/997",
+            f"+{kind} corr@100/250/997",
             [round(float(c[:, i].mean()), 3) for i in (99, 249, 996)],
             flush=True,
         )
-        del avg, e, out, full, pa
+        del avg, e, out, full, pa, singles
     json.dump(
         {"frame_dt": 0.05, "first_forecast_frame": 3, "models": res},
-        open(OUT / "long1000_sharp.json", "w"),
+        open(OUT / f"long1000_{kind}.json", "w"),
     )
     np.savez_compressed(
-        OUT / "long1000_sharp_pressure_snapshots.npz", steps=np.array(steps), **snaps
+        OUT / f"long1000_{kind}_pressure_snapshots.npz", steps=np.array(steps), **snaps
     )
 
 
@@ -465,15 +548,27 @@ def eigen():
     json.dump(res, open(OUT / "eigen.json", "w"))
 
 
+def lpm_fields():
+    sharp_fields("lpm")
+
+
+def long1000_lpm():
+    long1000_sharp("lpm")
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
-    {
+    cmds: dict[str, Callable[[], None]] = {
         "fields": fields,
         "long1000": long1000,
         "spectral": spectral,
         "sharp": sharp_fields,
         "spectral_sharp": spectral_sharp,
+        "spectral_masked": spectral_masked,
         "long1000_sharp": long1000_sharp,
+        "lpm": lpm_fields,
+        "long1000_lpm": long1000_lpm,
         "solvers": solvers,
         "eigen": eigen,
-    }[sys.argv[1]]()
+    }
+    cmds[sys.argv[1]]()

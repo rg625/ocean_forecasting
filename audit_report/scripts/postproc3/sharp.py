@@ -36,3 +36,47 @@ def sharpen(avg, e_single, M, mask, rb, gmax=GMAX):
     g = torch.clamp(torch.sqrt(e_single / e_avg.clamp_min(1e-30)), 1.0, gmax)
     out = M + torch.fft.irfft2(F * g[..., rb], s=avg.shape[-2:]).to(avg.dtype)
     return out * mask
+
+
+def lpm(avg, singles, mask, ps=16, st=8, chunk=512):
+    """Localized probability-matched mean (Clark 2017; Snook et al. 2020; post-processing round
+    4, pp4_proxy.lpm): in 16x16 patches (stride 8, Hann-weighted overlap) the fluid values of avg
+    are replaced, rank for rank, by the pooled values of the single decodes. avg and each single
+    [..., H, W]; mask [H, W] fluid indicator; patches with fewer than 8 fluid cells are skipped.
+    """
+    import torch.nn.functional as F
+
+    H, W = avg.shape[-2:]
+    n = len(singles)
+    fl = (mask > 0.5).to(avg.dtype)
+    m_p = F.unfold(fl.reshape(1, 1, H, W), ps, stride=st) > 0.5  # [1, P, L]
+    valid = (m_p.sum(1, keepdim=True) >= 8).to(avg.dtype)
+    hann = torch.hann_window(
+        ps + 2, periodic=False, dtype=avg.dtype, device=avg.device
+    )[1:-1]
+    win = (hann[:, None] * hann[None]).reshape(1, -1, 1)
+    wgt = win * m_p * valid  # [1, P, L]
+    den = F.fold(wgt, (H, W), ps, stride=st)[0, 0]
+    inf = torch.tensor(float("inf"), dtype=avg.dtype, device=avg.device)
+    a2 = avg.reshape(-1, 1, H, W)
+    s2 = [s.reshape(-1, 1, H, W) for s in singles]
+    out = torch.empty_like(a2)
+    ar = torch.arange(n, device=avg.device)
+    for b in range(0, len(a2), chunk):
+        sl = slice(b, b + chunk)
+        ap = torch.where(m_p, F.unfold(a2[sl], ps, stride=st), inf)  # [B, P, L]
+        pool = torch.cat(
+            [torch.where(m_p, F.unfold(s[sl], ps, stride=st), inf) for s in s2], 1
+        )
+        pool = pool.sort(1).values  # fluid values first
+        rank = ap.argsort(1).argsort(1)
+        idx = (rank[:, :, None] * n + ar[None, None, :, None]).flatten(
+            1, 2
+        )  # [B, P*n, L]
+        mapped = pool.gather(1, idx).unflatten(1, (-1, n)).mean(2)
+        mapped = torch.where(
+            m_p, mapped, torch.zeros((), dtype=avg.dtype, device=avg.device)
+        )
+        num = F.fold(mapped * wgt, (H, W), ps, stride=st)
+        out[sl] = torch.where(den > 0, num / den.clamp_min(1e-12), a2[sl])
+    return out.reshape(avg.shape) * fl
