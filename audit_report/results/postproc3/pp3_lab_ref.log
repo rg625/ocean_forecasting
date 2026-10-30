@@ -1,0 +1,21 @@
+extrap single (seed mean)           mse=1.911 err_low=0.220 log_low=-0.110 err_mid=0.146 log_mid=-0.049 err_high=0.117 log_high=-0.012 slope=-2.916 slope_gt=-3.633 lsim=1.411
+extrap 3-seed single mean           mse=1.649 err_low=0.227 log_low=-0.114 err_mid=0.141 log_mid=-0.056 err_high=0.135 log_high=-0.038 slope=-2.922 slope_gt=-3.633 lsim=1.398
+extrap avg (mix+mirror, 3 seeds)    mse=1.304 err_low=0.228 log_low=-0.105 err_mid=0.190 log_mid=-0.103 err_high=0.228 log_high=-0.117 slope=-2.943 slope_gt=-3.633 lsim=1.670
+extrap medoid                       mse=1.551 err_low=0.214 log_low=-0.107 err_mid=0.142 log_mid=-0.054 err_high=0.114 log_high=-0.012 slope=-2.926 slope_gt=-3.633 lsim=1.360
+extrap align                        mse=1.637 err_low=0.228 log_low=-0.115 err_mid=0.140 log_mid=-0.056 err_high=0.128 log_high=-0.039 slope=-2.929 slope_gt=-3.633 lsim=1.391
+extrap sharp                        mse=1.385 err_low=0.222 log_low=-0.111 err_mid=0.155 log_mid=-0.037 err_high=0.134 log_high=-0.037 slope=-2.960 slope_gt=-3.633 lsim=1.284
+extrap sharp+tr                     mse=1.493 err_low=0.139 log_low=-0.067 err_mid=0.151 log_mid=-0.025 err_high=0.112 log_high=-0.008 slope=-2.995 slope_gt=-3.633 lsim=1.326
+interp single (seed mean)           mse=3.374 err_low=0.198 log_low=-0.103 err_mid=0.092 log_mid=-0.044 err_high=0.129 log_high=-0.049 slope=-2.893 slope_gt=-3.323 lsim=1.706
+interp 3-seed single mean           mse=3.080 err_low=0.200 log_low=-0.105 err_mid=0.100 log_mid=-0.051 err_high=0.152 log_high=-0.067 slope=-2.896 slope_gt=-3.323 lsim=1.708
+interp avg (mix+mirror, 3 seeds)    mse=2.440 err_low=0.207 log_low=-0.102 err_mid=0.188 log_mid=-0.095 err_high=0.298 log_high=-0.158 slope=-2.972 slope_gt=-3.323 lsim=1.807
+interp medoid                       mse=3.004 err_low=0.205 log_low=-0.106 err_mid=0.095 log_mid=-0.047 err_high=0.138 log_high=-0.055 slope=-2.883 slope_gt=-3.323 lsim=1.694
+interp align                        mse=3.069 err_low=0.201 log_low=-0.105 err_mid=0.101 log_mid=-0.052 err_high=0.153 log_high=-0.069 slope=-2.902 slope_gt=-3.323 lsim=1.707
+interp sharp                        mse=2.621 err_low=0.206 log_low=-0.107 err_mid=0.075 log_mid=-0.031 err_high=0.177 log_high=-0.087 slope=-2.930 slope_gt=-3.323 lsim=1.573
+interp sharp+tr                     mse=2.801 err_low=0.152 log_low=-0.076 err_mid=0.071 log_mid=-0.011 err_high=0.129 log_high=-0.056 slope=-2.966 slope_gt=-3.323 lsim=1.592
+longer single (seed mean)           mse=16.076 err_low=0.311 log_low=-0.167 err_mid=0.359 log_mid=-0.183 err_high=0.251 log_high=-0.131 slope=-2.499 slope_gt=-3.322 lsim=4.057
+longer 3-seed single mean           mse=15.275 err_low=0.314 log_low=-0.179 err_mid=0.396 log_mid=-0.219 err_high=0.304 log_high=-0.163 slope=-2.441 slope_gt=-3.322 lsim=4.234
+longer avg (mix+mirror, 3 seeds)    mse=12.525 err_low=0.338 log_low=-0.150 err_mid=0.549 log_mid=-0.379 err_high=0.437 log_high=-0.259 slope=-2.061 slope_gt=-3.322 lsim=6.325
+longer medoid                       mse=15.190 err_low=0.281 log_low=-0.149 err_mid=0.355 log_mid=-0.198 err_high=0.267 log_high=-0.139 slope=-2.461 slope_gt=-3.322 lsim=4.117
+longer align                        mse=15.268 err_low=0.314 log_low=-0.179 err_mid=0.396 log_mid=-0.219 err_high=0.305 log_high=-0.164 slope=-2.445 slope_gt=-3.322 lsim=4.235
+longer sharp                        mse=15.405 err_low=0.311 log_low=-0.178 err_mid=0.368 log_mid=-0.210 err_high=0.303 log_high=-0.163 slope=-2.301 slope_gt=-3.322 lsim=4.433
+longer sharp+tr                     mse=18.796 err_low=0.130 log_low=-0.050 err_mid=0.277 log_mid=-0.107 err_high=0.132 log_high=-0.029 slope=-2.548 slope_gt=-3.322 lsim=3.921

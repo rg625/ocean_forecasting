@@ -56,6 +56,8 @@ def sources(case):
         ),
         "Reference + post-proc.": (FIELDS / case / "ref+pp.npz", False),
         "back001 + post-proc.": (FIELDS / case / "back001+pp.npz", False),
+        "Reference + sharp. mirror": (FIELDS / case / "ref+sharp.npz", False),
+        "back001 + sharp. mirror": (FIELDS / case / "back001+sharp.npz", False),
     }
 
 
@@ -106,8 +108,10 @@ def tab_lead(m):
         "Original KAE",
         "Reference",
         "Reference + post-proc.",
+        "Reference + sharp. mirror",
         "back001",
         "back001 + post-proc.",
+        "back001 + sharp. mirror",
     ]
     rows = []
     for k in order:
@@ -148,13 +152,15 @@ def gallery():
         "Original KAE",
         "Reference",
         "Reference + post-proc.",
+        "Reference + sharp. mirror",
         "back001",
         "back001 + post-proc.",
+        "back001 + sharp. mirror",
     ]
     fig, axs = plt.subplots(
         len(rows),
         9,
-        figsize=(7.0, 5.6),
+        figsize=(7.0, 7.2),
         gridspec_kw={"width_ratios": [1] * 4 + [0.12] + [1] * 4},
     )
     for k, case in enumerate(CASES):
@@ -194,9 +200,7 @@ def gallery():
                 if i == 0:
                     ax.set_title(f"$t={t}$", fontsize=7)
                 if j == 0 and k == 0:
-                    ax.set_ylabel(
-                        lab.replace(" + post-proc.", "\n+ post-proc."), fontsize=6.5
-                    )
+                    ax.set_ylabel(lab.replace(" + ", "\n+ "), fontsize=6.5)
         axs[0, 5 * k + 1].text(
             1.0,
             1.35,

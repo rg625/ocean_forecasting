@@ -10,6 +10,8 @@ averaging, plus climatology shrinkage on the 60/240-step cases; no shrinkage on 
     python paper_suite.py spectral   # band errors of the |v| spectrum (spectral_analysis.py)
     python paper_suite.py solvers    # latent ODE integrated numerically vs e^{tau A}
     python paper_suite.py eigen      # generator eigenvalues across Mach
+    python paper_suite.py sharp | spectral_sharp | long1000_sharp
+                                     # round-3 '+sharp' readout (postproc3/sharp.py)
 """
 
 import json
@@ -31,7 +33,7 @@ PP2 = Path(
     "/tmp/claude-1003/-home-rg625-mnt-ocean-forecasting/093163e5-e75d-47aa-b04b-9bb0dda37f82/scratchpad/res/pp2"
 )
 AUTOREG = Path("/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion")
-for p in (KAE, SCR, SCR / "postproc2", PP1):
+for p in (KAE, SCR, SCR / "postproc2", SCR / "postproc3", PP1):
     sys.path.insert(0, str(p))
 
 from eval_ctkae import load_model  # noqa: E402
@@ -253,6 +255,133 @@ def spectral():
                 )
 
 
+# ------------------------------------------------------- round-3 sharpened mirror average
+PP3 = Path(
+    "/tmp/claude-1003/-home-rg625-mnt-ocean-forecasting/cfcfc896-3b58-4c33-b471-e1efcfb360e4/scratchpad/pp3px"
+)
+
+
+def sharp_fields():
+    """'+sharp': 3-seed average of plain + mirrored single decodes, re-sharpened to the mean
+    single-decode band power (postproc3/sharp.py) -> fields/<case>/<t>+sharp.npz, MSE, LSiM
+    """
+    import pp_analyze as P1
+    import sharp as SH
+    from lsim_score import lsim
+
+    rb = SH.radial_bins(64, 128, torch.device("cpu"))
+    res: dict = {}
+    for t in MODELS:
+        cks = [P1.Ckpt(f"{t}_s{s}") for s in range(3)]
+        for case in CASES:
+            xin, ma, _, _ = P1.gt_case(case)
+            M = torch.from_numpy(cks[0].d[f"{case}_clim"][:, None].astype(np.float32))
+            avg, e = 0.0, 0.0
+            for s, ck in enumerate(cks):
+                p = torch.from_numpy(ck.d[f"{case}_pred"][0].astype(np.float32))
+                mir = np.load(PP3 / f"apply0_{t}_s{s}.npz")[f"{case}|enc:0:mirror"]
+                mir = torch.from_numpy(mir.astype(np.float32))
+                mask = (p.abs().sum((0, 1, 2)) > 0).float()
+                pm = (2 * mir - p) * mask  # mirrored single decode
+                e = e + (SH.band_power(p, M, rb) + SH.band_power(pm, M, rb)) / 6
+                avg = avg + mir / 3
+            x = SH.sharpen(avg, e, M, mask, rb).numpy()
+            full = torch.cat([xin.float(), torch.from_numpy(x)], 1)
+            pa = to_acdm_layout(full, ma)
+            save_acdm(OUT / "fields" / case / f"{t}+sharp.npz", pa)
+            r = {
+                "mse_all": P1.mse_all(case, x),
+                "lsim": lsim(pa[None, :, :, :4], case)[0],
+            }
+            res.setdefault(f"{t}+sharp", {})[case] = r
+            print(case, t, "+sharp", r, flush=True)
+    json.dump(res, open(OUT / "sharp_fields.json", "w"), indent=1)
+
+
+def spectral_sharp():
+    sys.path.insert(0, str(AUTOREG / "src"))
+    import spectral_analysis as SA
+
+    out = {}
+    for case, wins in [
+        ("longer", [(0, 240), (0, 60), (60, 120), (120, 180), (180, 240)]),
+        ("interp", [(0, 60)]),
+        ("extrap", [(0, 60)]),
+    ]:
+        mods = {
+            f"{t}+sharp": str(OUT / "fields" / case / f"{t}+sharp.npz") for t in MODELS
+        }
+        rows, curves = SA.analyse(case, mods, wins)
+        out[case] = {"rows": rows, "curves": curves}
+    json.dump(out, open(OUT / "spectral_sharp.json", "w"), indent=0)
+    for case, d in out.items():
+        for r in d["rows"]:
+            print(
+                f"{case:7s} {r['model']:16s} {r['window']:8s} low {r['err_low']:.3f} mid {r['err_mid']:.3f} high {r['err_high']:.3f} slope {r['slope_pred']:.2f}"
+            )
+
+
+def long1000_sharp():
+    """'+sharp' on the 1000-step rollout (as long1000; climatology of the gt_longer sim with
+    the same Mach number)"""
+    import pp_analyze as P1
+    import sharp as SH
+
+    gtd = torch.load(
+        AUTOREG / "results/longer/groundTruth.dict",
+        map_location="cpu",
+        weights_only=False,
+    )
+    gt, fluid = gtd["data"].numpy(), gtd["obsMask"].numpy()
+    x, ma, mask = load_eval_case(str(KAE / "data/acdm/128_tra/gt_longer_1000.nc"), dev)
+    ma_l = P1.gt_case("longer")[1].cpu()
+    idx = [
+        int((ma_l - v).abs().argmin()) for v in ma.cpu()
+    ]  # sims of gt_longer by Mach
+    assert torch.allclose(ma_l[idx], ma.cpu()), "no matching climatology"
+    S, T = gt.shape[:2]
+    taus = 0.05 * torch.arange(1, T - 2, device=dev, dtype=torch.float32)[None].expand(
+        S, -1
+    )
+    x2 = x[:, [0, 2]]
+    rb = SH.radial_bins(64, 128, dev)
+    steps = [99, 249, 749, 996]
+    res, snaps = {}, {}
+    for t in MODELS:
+        M = P1.Ckpt(f"{t}_s0").d["longer_clim"][idx][:, None]
+        M = torch.from_numpy(M).float().to(dev)
+        avg, e = 0.0, 0.0
+        for s in range(3):
+            m = load_model(run_dir(f"{t}_s{s}"), "last.pth", dev)[0]
+            p = _forecast(m, x2, ma, mask, taus, 0.0, False)
+            pm = _mirror(_forecast(m, _mirror(x2), ma, mask.flip(-2), taus, 0.0, False))
+            pm = pm * mask
+            e = e + (SH.band_power(p, M, rb) + SH.band_power(pm, M, rb)) / 6
+            avg = avg + (p + pm) / 6
+            del m, p, pm
+        out = SH.sharpen(avg, e, M, mask, rb)
+        full = torch.cat([x[:, :3], out], 1)[:, :T].cpu()
+        pa = to_acdm_layout(full, ma.cpu())
+        c, l2 = _corr_l2(pa, gt, fluid)
+        res[f"{t}+sharp"] = {"corr": c.tolist(), "l2": l2.tolist()}
+        snaps[f"{t}+sharp"] = pa[0, steps, 3]
+        print(
+            "long1000",
+            t,
+            "+sharp corr@100/250/997",
+            [round(float(c[:, i].mean()), 3) for i in (99, 249, 996)],
+            flush=True,
+        )
+        del avg, e, out, full, pa
+    json.dump(
+        {"frame_dt": 0.05, "first_forecast_frame": 3, "models": res},
+        open(OUT / "long1000_sharp.json", "w"),
+    )
+    np.savez_compressed(
+        OUT / "long1000_sharp_pressure_snapshots.npz", steps=np.array(steps), **snaps
+    )
+
+
 # ------------------------------------------------------------------------------ solvers
 def solvers():
     from torchdiffeq import odeint
@@ -342,6 +471,9 @@ if __name__ == "__main__":
         "fields": fields,
         "long1000": long1000,
         "spectral": spectral,
+        "sharp": sharp_fields,
+        "spectral_sharp": spectral_sharp,
+        "long1000_sharp": long1000_sharp,
         "solvers": solvers,
         "eigen": eigen,
     }[sys.argv[1]]()

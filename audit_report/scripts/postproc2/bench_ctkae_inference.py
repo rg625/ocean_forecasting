@@ -5,7 +5,9 @@ warm-up repeats, median of 5 timed repeats, peak VRAM from torch.cuda.max_memory
 
 Readouts: single decode; mixture (5 decodes per step); mixture + mirror (10); and the same for
 the 3-seed average (3 models, run one after another). Climatology shrinkage is one fused
-multiply-add per frame and is included where named.
+multiply-add per frame and is included where named. Round 3: mirror average of single decodes,
+optionally re-sharpened (postproc3/sharp.py: band powers of every single decode, one FFT pair
+on the average).
 
     python bench_ctkae_inference.py OUT.json RUN_s0 RUN_s1 RUN_s2
 """
@@ -18,7 +20,9 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parents[1] / "postproc3"))
 from pp2_lab import REPO, dev, forecast, mirror  # noqa: E402
+from sharp import band_power, radial_bins, sharpen  # noqa: E402
 
 from eval_ctkae import load_model  # noqa: E402
 from models.ct_data import load_eval_case  # noqa: E402
@@ -26,27 +30,35 @@ from models.ct_data import load_eval_case  # noqa: E402
 STEPS, WARMUP, REPS = 240, 2, 5
 
 
-def run_once(models, x2, ma, mask, sigma, use_mirror, shrink):
+def run_once(models, x2, ma, mask, sigma, use_mirror, shrink, sharp=False):
     taus = 0.1 * torch.arange(1, STEPS + 1, device=dev, dtype=torch.float32)[None]
     mmask = mask.flip(-2)
-    out = 0.0
+    out, e = 0.0, 0.0
+    clim = torch.zeros_like(x2[:, :1])
+    H, W = mask.shape[-2:]
+    rb = radial_bins(H, W, dev)
     with torch.no_grad():
         for m in models:
             z = m.encode(x2, mask, ma)
             p = forecast(m, z, taus, ma, mask, sigma)
             if use_mirror:
                 zm = m.encode(mirror(x2), mmask, ma)
-                p = 0.5 * (p + mirror(forecast(m, zm, taus, ma, mmask, sigma)) * mask)
+                pm = mirror(forecast(m, zm, taus, ma, mmask, sigma)) * mask
+                if sharp:
+                    e = e + band_power(p, clim, rb) + band_power(pm, clim, rb)
+                p = 0.5 * (p + pm)
             out = out + p / len(models)
         if shrink is not None:
             g, clim = shrink
             out = clim + g * (out - clim)
+        if sharp:
+            out = sharpen(out, e / (2 * len(models)), clim, mask, rb)
     return out
 
 
-def time_cfg(models, x2, ma, mask, sigma, use_mirror, shrink):
+def time_cfg(models, x2, ma, mask, sigma, use_mirror, shrink, sharp=False):
     for _ in range(WARMUP):
-        run_once(models, x2, ma, mask, sigma, use_mirror, shrink)
+        run_once(models, x2, ma, mask, sigma, use_mirror, shrink, sharp)
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()
     ms = []
@@ -56,7 +68,7 @@ def time_cfg(models, x2, ma, mask, sigma, use_mirror, shrink):
         )
         torch.cuda.synchronize()
         a.record()
-        run_once(models, x2, ma, mask, sigma, use_mirror, shrink)
+        run_once(models, x2, ma, mask, sigma, use_mirror, shrink, sharp)
         b.record()
         torch.cuda.synchronize()
         ms.append(a.elapsed_time(b))
@@ -90,7 +102,7 @@ def main():
     weights_MB = (
         sum(p.numel() * p.element_size() for p in models[0].parameters()) / 2**20
     )
-    cfgs = [
+    cfgs: list = [
         ("single decode", models[:1], 0.0, False, None),
         ("mixture", models[:1], sig, False, None),
         ("mixture + mirror", models[:1], sig, True, None),
@@ -98,13 +110,17 @@ def main():
         ("3 seeds, single decode", models, 0.0, False, None),
         ("3 seeds, mixture", models, sig, False, None),
         ("3 seeds, mixture + mirror + shrink", models, sig, True, shrink),
+        ("mirror", models[:1], 0.0, True, None),
+        ("mirror + sharpen", models[:1], 0.0, True, None, True),
+        ("3 seeds, mirror", models, 0.0, True, None),
+        ("3 seeds, mirror + sharpen", models, 0.0, True, None, True),
     ]
     rows = []
-    for name, ms_, sg, mir, sh in cfgs:
+    for name, ms_, sg, mir, sh, *shp in cfgs:
         row = {
             "readout": name,
             "decodes_per_step": len(ms_) * (5 if sg > 0 else 1) * (2 if mir else 1),
-            **time_cfg(ms_, x2, ma, mask, sg, mir, sh),
+            **time_cfg(ms_, x2, ma, mask, sg, mir, sh, bool(shp)),
         }
         rows.append(row)
         print(

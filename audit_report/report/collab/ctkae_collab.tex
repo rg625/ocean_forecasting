@@ -11,7 +11,7 @@
 \setlength{\parskip}{3pt}\setlength{\parindent}{0pt}
 
 \title{\textbf{CT-KAE on transonic flow: reference and back001}}
-\date{28 October 2026}
+\date{30 October 2026}
 \author{}
 
 \begin{document}
@@ -34,8 +34,9 @@ seeds each; every number below is a mean over seeds or a 3-seed average, as stat
 (relative $L_2$ of the analysis at $t_0$; df1 headline: 12 problems, 2000 iterations; sweeps: mean
 over the points of six sweeps that every method was run on, 31 at $\delta_f=1$ and 37 at
 $\delta_f=9$), and inference cost (Tra\_long,
-240 steps, batch 1, RTX 4090). Lower is better throughout. Post-processing is described in the next
-section; its effect on DA is in Table~\ref{tab:dapp}. Original KAE: final checkpoint; the published DA numbers used a checkpoint selected on the
+240 steps, batch 1, RTX 4090). Lower is better throughout. Post-processing (MSE-optimal averaging)
+and the sharpened mirror average (non-blurring) are described in the next two sections; the effect
+of post-processing on DA is in Table~\ref{tab:dapp}. Original KAE: final checkpoint; the published DA numbers used a checkpoint selected on the
 DA test set.}
 \label{tab:main}
 \setlength{\tabcolsep}{3.5pt}
@@ -58,12 +59,15 @@ DA test set.}
   every lead. ACDM\,+\,SDA wins at $\delta_f\le2$. Against the original KAE, back001 is equal at
   short leads and better from $\delta_f=8$; the reference is worse at short leads (Fig.~\ref{fig:da}).
 \item \textbf{Short horizon:} without post-processing the U-Nets are best on ext and int. With it the
-  reference is best on ext; the U-Nets remain best on int.
+  reference is best on ext; the U-Nets remain best on int. The sharpened mirror average gives
+  almost the same MSE without blurring: on ext the reference has lower MSE than every baseline
+  (1.34) and better LSiM than ACDM (1.20 against 1.29); the U-Nets keep the best LSiM.
 \item \textbf{back001 vs reference:} back001 is better on DA, int and long, worse on ext.
   Post-processing removes most of the forecasting differences; the DA advantage remains.
 \item \textbf{Sharpness:} even without post-processing the CT-KAE is smoother than the baselines
   (worse LSiM, spectra too shallow). Post-processing improves MSE by blurring further
-  (Table~\ref{tab:sharp}). The rows without post-processing are the fair comparison.
+  (Table~\ref{tab:sharp}). The sharpened mirror average does not blur: LSiM improves on ext and int,
+  and on long it stays at the single decode's level (Table~\ref{tab:pp3}).
 \end{itemize}
 
 \section*{Post-processing}
@@ -120,6 +124,63 @@ should match the ground truth.}
 \end{tabular}
 \end{table}
 
+\section*{Non-blurring post-processing: sharpened mirror average}
+The aim is to lower the error without blurring.
+\begin{itemize}\itemsep1pt
+\item \textbf{Readout.} Per seed, average the single decode and the mirrored single decode (no
+  mixture). Then rescale the anomaly of the average about the Mach-interpolated training mean, per
+  frame, field and radial wavenumber, to the mean band power of the two single decodes. The phases of
+  the average are kept and the gain is clipped to $[1,5]$; on the proxies the clip never binds within 58 leads. With 3 seeds, all
+  6 single decodes are averaged and their mean power is the target. Cost: 6 decodes per step and one
+  FFT pair per frame.
+\item \textbf{Selection.} Candidates were scored on the proxies' held-out Mach numbers (7
+  simulations; 28 windows of 58 leads and 7 of 238): the mirror, mixture and mixture\,+\,mirror
+  averages; the latent average of the mixture nodes; re-sharpening of the mirror and mixture\,+\,mirror averages
+  (gain exponent 0.5 or 1, clip 2 or 5); Fourier amplitude averaging with the phase of the mean; and
+  rank-preserving quantile mapping. The rule was fixed before scoring: LSiM no worse than the single
+  decode and band power at most 0.05\,dex lower, on both proxies and both horizons; then lowest MSE.
+  Strictly, no candidate passes, because at 238 leads every average raises LSiM. The sharpened mirror
+  average is the only one within 1.4\,SE everywhere (reference proxy, long: LSiM $+0.07\pm0.05$). At 58 leads it
+  lowers MSE by 9\% and LSiM by 0.10--0.11 on both proxies. The proxies have one seed, so seed
+  averaging is not validated there.
+\item \textbf{Test} (Table~\ref{tab:pp3}; per seed, paired against the single decode, SE over 3 seeds).
+  On ext and int, MSE falls by 10--23\% per seed (15--30\% with the 3-seed average) and LSiM by
+  0.10--0.16; the high-band power ratio stays within 0.03\,dex of the single decode. On long, MSE falls
+  by 0.19--0.26 (1--2 SE) and LSiM rises by 0.05 (within 1 SE). Over 1000 steps the mean $v_x$ correlation is 0.705 (reference) and 0.699 (back001), against 0.691
+  and 0.682 for the single decode and 0.730 and 0.722 for post-processing (Fig.~\ref{fig:long}).
+\item \textbf{Against post-processing} (3 seeds, reference): MSE 1.34 / 2.57 / 15.81 against
+  1.31 / 2.45 / 11.87 (ext / int / long); LSiM 1.20 / 1.53 / 4.07 against 1.73 / 1.86 / 7.24. Use the
+  sharpened mirror average when realistic fields matter. The long-horizon MSE gain of post-processing
+  comes only from blurring.
+\item \textbf{Rejected.} The latent average of the mixture nodes equals the single decode at 58 leads
+  and blurs at 238. Sharpening the
+  mixture\,+\,mirror average keeps the mixture's loss at long leads. Fourier amplitude averaging is
+  close to sharpening but slightly worse. Quantile mapping fixes amplitudes, not scales, so the high band
+  still loses power. In an earlier test-set screen, $x$-shift-aligned averaging and the medoid member gained
+  nothing. Refinement with the trained ACDM (SDEdit) was not run: each frame would need part of
+  ACDM's sampler (142\,ms per step in full), up to $\sim$500$\times$ a single decode.
+\end{itemize}
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\caption{Sharpened mirror average, each step added in turn. MSE $\times10^{-3}$, LSiM $\times10^{-1}$,
+and the mean $\log_{10}$ power ratio (prediction / truth) of the $|v|$ spectrum in the high band
+(13--32; 0 is exact, negative is smoother). Rows 1--3: mean over 3 seeds; row 4: one 3-seed average;
+row 5: paired change of row 3 against row 1, $\pm$ SE over seeds.}
+\label{tab:pp3}
+\setlength{\tabcolsep}{3pt}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{llccccccccccc}
+\toprule
+ & & \multicolumn{3}{c}{MSE} & \multicolumn{3}{c}{LSiM} & \multicolumn{3}{c}{high-band log ratio} & decodes & ms\\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}\cmidrule(lr){9-11}
+ & & ext & int & long & ext & int & long & ext & int & long & /step & /step\\
+\midrule
+\inputrows tab_pp3.tex
+\bottomrule
+\end{tabular}}
+\end{table}
+
 \textbf{In data assimilation} only mirror averaging applies: 4D-Var is run once in the plain frame and
 once in the mirrored frame, and the two analyses are averaged. It cuts the analysis error by 10--16\% for both models at twice the cost
 (Table~\ref{tab:dapp}).
@@ -170,7 +231,7 @@ $t$ & 15 & 30 & 45 & 60 & 15 & 30 & 45 & 60\\
 \centering
 \includegraphics[width=0.85\linewidth]{fig_short.pdf}
 \caption{Pressure at $t=15,30,45,60$, first sequence of each test set (paper layout). CT-KAE rows
-without post-processing: seed 0. Number in each panel: pressure MSE ($\times10^{-3}$) of that
+without post-processing: seed 0; post-processing and sharpened mirror: 3-seed average. Number in each panel: pressure MSE ($\times10^{-3}$) of that
 frame over the whole domain; bold is the best model in the column.}
 \label{fig:short}
 \end{figure}
@@ -184,8 +245,8 @@ from $t=45$. On int the U-Net$_{ut}$ stays best; at $t=60$ the post-processed CT
 \includegraphics[width=\linewidth]{fig_long.pdf}
 \caption{1000-step rollout (Tra\_long simulations, 0.05\,s per frame, 2 trajectories). Top: $v_x$
 spatial correlation and relative $L_2$ error per frame. Bottom: pressure, first trajectory.
-Post-processing here is the 3-seed average of mixture + mirror, without shrinkage. Number in each
-panel: pressure MSE ($\times10^{-3}$) of that frame; bold is the best in the column.}
+Post-processing here is the 3-seed average of mixture + mirror, without shrinkage; ``sharp'' is the
+3-seed sharpened mirror average. Number in each panel: pressure MSE ($\times10^{-3}$) of that frame; bold is the best in the column.}
 \label{fig:long}
 \end{figure}
 
