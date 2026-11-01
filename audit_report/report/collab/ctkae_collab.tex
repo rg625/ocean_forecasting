@@ -181,6 +181,34 @@ $\pm$ SE over seeds. LPM replaces sharpening; it is not applied on top.}
 \end{tabular}}
 \end{table}
 
+\textbf{What the readouts look like} (Figs.~\ref{fig:readouts} and~\ref{fig:spectra}). At $t=240$
+post-processing has the lowest pressure MSE but has erased the wake: the vortices are smeared
+into a band and the vorticity is almost gone, and its spectrum falls to a half of the truth's at
+mid and high wavenumbers, and to a quarter late in the rollout. The sharpened and LPM mirror averages keep the vortex street and the
+single decode's spectrum, with lower MSE than the single decode at every frame; LPM shows faint
+patch-scale texture far downstream. ACDM and the U-Net have the right spectrum but, from $t=120$,
+the vortices in the wrong place, hence their higher MSE. SDEdit with ACDM leaves the single decode
+almost unchanged and adds faint noise.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.95\linewidth]{fig_readouts.pdf}
+\caption{Readouts side by side, Tra\_long, first simulation (CT-KAE: reference; single decode
+seed 0, the other readouts 3-seed). Pressure at $t=60,120,240$ with the pressure MSE ($\times10^{-3}$)
+of each panel (bold: best in the column), and the vorticity of the near wake at $t=240$. SDEdit:
+the single decode noised to step 8 of 20 and denoised by ACDM.}
+\label{fig:readouts}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\linewidth]{fig_spectra.pdf}
+\caption{Spectrum of $|v|$ (prediction and truth masked alike) and its ratio to the truth; dotted
+lines separate the low, mid and high bands of Table~\ref{tab:spec}. The CT-KAE readouts are 3-seed
+except the single decode (seed 0).}
+\label{fig:spectra}
+\end{figure}
+
 \textbf{Literature coverage.} Table~\ref{tab:lit} lists the post-processing families tried, from
 NWP statistical post-processing, ensemble summaries, spectral and stochastic methods, and generative
 refinement (the survey, with references, is \texttt{results/\allowbreak postproc3/\allowbreak literature\_survey.md}). All were
@@ -221,7 +249,20 @@ Generative refinement (SDEdit) & Meng et al.\ 2022; Shu et al.\ 2023 & trained A
 once in the mirrored frame, and the two analyses are averaged. It cuts the analysis error by 10--16\% for both models at twice the cost
 (Table~\ref{tab:dapp}). Re-mapping the averaged analysis by LPM onto the two member analyses keeps
 almost all of the gain ($-9$ to $-15\%$ against $-10$ to $-16\%$); it is 0.5--2\% worse than the plain
-mirror average at every lead $\delta_f$.
+mirror average at every lead $\delta_f$. Fig.~\ref{fig:dafields} shows the analyses of one problem:
+the U-Net and FNO analyses are dominated by grid-scale noise, the CT-KAE analyses reproduce the
+vortex street, and their errors sit at the cylinder and at the vortex edges. Mirror averaging
+lowers the error slightly (0.027 to 0.024 for the reference); LPM changes the picture little.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.8\linewidth]{fig_da_fields.pdf}
+\caption{4D-Var analyses at $t_0$ of one df1 headline problem (Tra\_int; the problem with the median
+error of the plain reference), 5 observations, 2000 iterations. CT-KAE: seed 2. Pressure with the
+relative $L_2$ error of the analysis (bold: best), pressure error (analysis $-$ truth; scale
+$\pm$\,12\% of the pressure range), and the vorticity of the near wake.}
+\label{fig:dafields}
+\end{figure}
 
 \begin{figure}[!htbp]
 \centering
