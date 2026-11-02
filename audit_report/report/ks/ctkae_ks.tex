@@ -36,10 +36,11 @@ baselines.
   halves the 50-frame error, to just under persistence. LPM fails.
 \item \textbf{back001 vs the reference:} back001 has a slightly longer forecast skill, within seed
   spread; DA is the same.
-\item \textbf{The cause is the training horizon.} The 8-step rollout (0.8 t.u.) of the transonic
-  recipe is 3.5\% of a Lyapunov time on KS, and the error leaves the encode--decode floor
-  there. A KS recipe with
-  a longer rollout would test whether the architecture or the recipe limits the forecast.
+\item \textbf{The cause is not established.} It is not the rollout length alone: the paper's KAE
+  also trains on 10-frame windows and keeps skill for 2.4 $T_L$. The largest difference is the
+  training budget. The transonic recipe (batch 16, 20k steps) shows the CT-KAE 0.3M windows; the
+  paper's KAE saw $\sim$16M (batch 1024, 200 epochs over all 79k windows of \texttt{train.nc}). A
+  CT-KAE retrained at the paper's budget would test this.
 \end{itemize}
 
 \section*{Setup}
@@ -93,8 +94,9 @@ the error grows ten-fold every ten steps (0.089 at 1 t.u., 0.51 at 2.2 t.u.; see
 $0.1\,T_L$ it is already 0.58--0.64 against 0.024 for the paper's KAE and 0.0003 for the U-Net, and skill
 is lost at 0.28--0.38 $T_L$ (paper KAE 2.4, U-Net 9.3). This growth is model error, not chaos: the
 learned generators are strictly stable (largest real part $-0.0075$ to $-0.0088$ over six runs; the
-leading Lyapunov exponent is $+0.044$). Training rolls out 8 steps (0.8 t.u.), which is roughly
-where the error leaves the encode--decode floor. back001 is ahead at short leads (0.575 vs 0.643 at
+leading Lyapunov exponent is $+0.044$). Training rolls out 8 steps (0.8 t.u.), which is roughly where the error leaves the
+encode--decode floor; the paper's KAE trains on 10 frames, so the rollout length alone does not
+explain the gap (see the summary). back001 is ahead at short leads (0.575 vs 0.643 at
 $0.1\,T_L$; horizon 0.38 vs 0.28 $T_L$), with seed spread of the same order.
 
 \begin{figure}[!htbp]
