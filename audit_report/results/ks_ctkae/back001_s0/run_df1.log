@@ -1,0 +1,154 @@
+=== geometry_df1 2026-11-01T18:32:09+00:00
+2026-11-01 18:32:14,447 [INFO] KAE latent D=256 | U-Net best_model.pth | SDA (paper) k=4 blanket=9 N=128 C=4 tau=0.5 Gamma=scalar | tuned lr 0.03/0.01
+2026-11-01 18:32:14,447 [INFO] lambda_1 = 0.04432  T_L = 22.56 t.u. = 226 frames
+2026-11-01 18:32:14,456 [INFO] === C2. RECOVERY HORIZON delta_l (delta_f, N fixed) ===
+2026-11-01 18:32:14,534 [INFO]   [1/9] C2_dl5: frames=[1, 2, 3, 5] t=[0.1, 0.2, 0.3, 0.5] delta_f=0.10 delta_l=0.50 N=4  iters=1000
+2026-11-01 18:32:29,727 [INFO]         KAE-expm  rel-L2 0.0122 ± 0.0006 (SEM, n=24)  [15s]
+2026-11-01 18:32:29,727 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:32:29,734 [INFO]   [2/9] C2_dl10: frames=[1, 2, 3, 6, 10] t=[0.1, 0.2, 0.3, 0.6, 1.0] delta_f=0.10 delta_l=1.00 N=5  iters=1000
+2026-11-01 18:32:48,328 [INFO]         KAE-expm  rel-L2 0.0152 ± 0.0009 (SEM, n=24)  [19s]
+2026-11-01 18:32:48,328 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:32:48,335 [INFO]   [3/9] C2_dl25: frames=[1, 2, 5, 11, 25] t=[0.1, 0.2, 0.5, 1.1, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=1000
+2026-11-01 18:33:06,980 [INFO]         KAE-expm  rel-L2 0.0256 ± 0.0019 (SEM, n=24)  [19s]
+2026-11-01 18:33:06,981 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:33:06,987 [INFO]   [4/9] C2_dl50: frames=[1, 3, 7, 19, 50] t=[0.1, 0.3, 0.7, 1.9, 5.0] delta_f=0.10 delta_l=5.00 N=5  iters=1000
+2026-11-01 18:33:25,658 [INFO]         KAE-expm  rel-L2 0.0311 ± 0.0017 (SEM, n=24)  [19s]
+2026-11-01 18:33:25,658 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:33:25,665 [INFO]   [5/9] C2_dl100: frames=[1, 3, 10, 32, 100] t=[0.1, 0.3, 1.0, 3.2, 10.0] delta_f=0.10 delta_l=10.00 N=5  iters=1000
+2026-11-01 18:33:44,243 [INFO]         KAE-expm  rel-L2 0.0378 ± 0.0022 (SEM, n=24)  [19s]
+2026-11-01 18:33:44,244 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:33:44,250 [INFO]   [6/9] C2_dl200: frames=[1, 4, 14, 53, 200] t=[0.1, 0.4, 1.4, 5.3, 20.0] delta_f=0.10 delta_l=20.00 N=5  iters=1000
+2026-11-01 18:34:02,812 [INFO]         KAE-expm  rel-L2 0.0584 ± 0.0039 (SEM, n=24)  [19s]
+2026-11-01 18:34:02,813 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:34:02,819 [INFO]   [7/9] C2_dl400: frames=[1, 4, 20, 89, 400] t=[0.1, 0.4, 2.0, 8.9, 40.0] delta_f=0.10 delta_l=40.00 N=5  iters=1000
+2026-11-01 18:34:21,384 [INFO]         KAE-expm  rel-L2 0.0760 ± 0.0054 (SEM, n=24)  [19s]
+2026-11-01 18:34:21,385 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:34:21,392 [INFO]   [8/9] C2_dl700: frames=[1, 5, 26, 136, 700] t=[0.1, 0.5, 2.6, 13.6, 70.0] delta_f=0.10 delta_l=70.00 N=5  iters=1000
+2026-11-01 18:34:39,986 [INFO]         KAE-expm  rel-L2 0.1097 ± 0.0076 (SEM, n=24)  [19s]
+2026-11-01 18:34:39,987 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:34:39,993 [INFO]   [9/9] C2_dl25_anchor: frames=[1, 2, 5, 11, 25] t=[0.1, 0.2, 0.5, 1.1, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 18:37:36,052 [INFO]         KAE-expm  rel-L2 0.0302 ± 0.0019 (SEM, n=24)  [176s]
+2026-11-01 18:37:36,053 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:37:36,062 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C2_delta_l.json / .npz
+2026-11-01 18:37:36,062 [INFO] === C3. NUMBER of observations (delta_f, delta_l fixed) ===
+2026-11-01 18:37:36,077 [INFO]   [1/6] C3_N2: frames=[1, 25] t=[0.1, 2.5] delta_f=0.10 delta_l=2.50 N=2  iters=8000
+2026-11-01 18:39:00,416 [INFO]         KAE-expm  rel-L2 0.0294 ± 0.0012 (SEM, n=48)  [84s]
+2026-11-01 18:39:00,417 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C3_n_obs.json / .npz
+2026-11-01 18:39:00,430 [INFO]   [2/6] C3_N3: frames=[1, 5, 25] t=[0.1, 0.5, 2.5] delta_f=0.10 delta_l=2.50 N=3  iters=8000
+2026-11-01 18:41:06,585 [INFO]         KAE-expm  rel-L2 0.0328 ± 0.0015 (SEM, n=48)  [126s]
+2026-11-01 18:41:06,586 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C3_n_obs.json / .npz
+2026-11-01 18:41:06,605 [INFO]   [3/6] C3_N5: frames=[1, 2, 5, 11, 25] t=[0.1, 0.2, 0.5, 1.1, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 18:44:36,176 [INFO]         KAE-expm  rel-L2 0.0268 ± 0.0011 (SEM, n=48)  [210s]
+2026-11-01 18:44:36,177 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C3_n_obs.json / .npz
+2026-11-01 18:44:36,206 [INFO]   [4/6] C3_N9: frames=[1, 2, 3, 5, 7, 11, 17, 25] t=[0.1, 0.2, 0.3, 0.5, 0.7, 1.1, 1.7, 2.5] delta_f=0.10 delta_l=2.50 N=8  iters=8000
+2026-11-01 18:50:11,260 [INFO]         KAE-expm  rel-L2 0.0092 ± 0.0003 (SEM, n=48)  [335s]
+2026-11-01 18:50:11,261 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C3_n_obs.json / .npz
+2026-11-01 18:50:11,303 [INFO]   [5/6] C3_N17: frames=[1, 2, 3, 4, 5, 6, 7, 9, 11, 14, 17, 20, 25] t=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 1.1, 1.4, 1.7, 2.0, 2.5] delta_f=0.10 delta_l=2.50 N=13  iters=8000
+2026-11-01 18:59:12,768 [INFO]         KAE-expm  rel-L2 0.0058 ± 0.0002 (SEM, n=48)  [541s]
+2026-11-01 18:59:12,769 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C3_n_obs.json / .npz
+2026-11-01 18:59:12,815 [INFO]   [6/6] C3_N25: frames=[1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13, 15, 17, 19, 22, 25] t=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 1.0, 1.1, 1.3, 1.5, 1.7, 1.9, 2.2, 2.5] delta_f=0.10 delta_l=2.50 N=16  iters=8000
+2026-11-01 19:09:13,448 [INFO]         KAE-expm  rel-L2 0.0059 ± 0.0002 (SEM, n=48)  [601s]
+2026-11-01 19:09:13,449 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C3_n_obs.json / .npz
+2026-11-01 19:09:13,458 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/C3_n_obs.json / .npz
+2026-11-01 19:09:13,458 [INFO] === NOISE LAW: Gaussian vs Laplace at matched std ===
+2026-11-01 19:09:13,466 [INFO]   [1/12] NL_gaussian_0.0: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:11:42,964 [INFO]         KAE-expm  rel-L2 0.0381 ± 0.0021 (SEM, n=48)  [149s]
+2026-11-01 19:11:42,965 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:11:42,972 [INFO]   [2/12] NL_gaussian_0.01: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:14:12,848 [INFO]         KAE-expm  rel-L2 0.0456 ± 0.0023 (SEM, n=48)  [150s]
+2026-11-01 19:14:12,849 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:14:12,857 [INFO]   [3/12] NL_gaussian_0.05: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:16:42,577 [INFO]         KAE-expm  rel-L2 0.1234 ± 0.0075 (SEM, n=48)  [150s]
+2026-11-01 19:16:42,577 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:16:42,585 [INFO]   [4/12] NL_gaussian_0.1: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:19:12,216 [INFO]         KAE-expm  rel-L2 0.2651 ± 0.0182 (SEM, n=48)  [150s]
+2026-11-01 19:19:12,216 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:19:12,223 [INFO]   [5/12] NL_gaussian_0.2: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:21:41,878 [INFO]         KAE-expm  rel-L2 0.6179 ± 0.0514 (SEM, n=48)  [150s]
+2026-11-01 19:21:41,879 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:21:41,886 [INFO]   [6/12] NL_gaussian_0.4: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:24:11,371 [INFO]         KAE-expm  rel-L2 0.9657 ± 0.0796 (SEM, n=48)  [149s]
+2026-11-01 19:24:11,372 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:24:11,379 [INFO]   [7/12] NL_laplace_0.0: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:26:40,638 [INFO]         KAE-expm  rel-L2 0.0381 ± 0.0021 (SEM, n=48)  [149s]
+2026-11-01 19:26:40,639 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:26:40,646 [INFO]   [8/12] NL_laplace_0.01: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:29:09,846 [INFO]         KAE-expm  rel-L2 0.0433 ± 0.0022 (SEM, n=48)  [149s]
+2026-11-01 19:29:09,847 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:29:09,854 [INFO]   [9/12] NL_laplace_0.05: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:31:39,153 [INFO]         KAE-expm  rel-L2 0.1136 ± 0.0051 (SEM, n=48)  [149s]
+2026-11-01 19:31:39,155 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:31:39,162 [INFO]   [10/12] NL_laplace_0.1: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:34:08,468 [INFO]         KAE-expm  rel-L2 0.2467 ± 0.0163 (SEM, n=48)  [149s]
+2026-11-01 19:34:08,469 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:34:08,477 [INFO]   [11/12] NL_laplace_0.2: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:36:37,734 [INFO]         KAE-expm  rel-L2 0.5595 ± 0.0489 (SEM, n=48)  [149s]
+2026-11-01 19:36:37,735 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:36:37,742 [INFO]   [12/12] NL_laplace_0.4: frames=[1, 3, 7, 15, 25] t=[0.1, 0.3, 0.7, 1.5, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:39:07,073 [INFO]         KAE-expm  rel-L2 0.8993 ± 0.0776 (SEM, n=48)  [149s]
+2026-11-01 19:39:07,075 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:39:07,083 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/noise_law.json / .npz
+2026-11-01 19:39:07,083 [INFO] === JOINT spatial x temporal sparsity ===
+2026-11-01 19:39:07,089 [INFO]   [1/20] JS_f1.0_n2: frames=[1, 25] t=[0.1, 2.5] delta_f=0.10 delta_l=2.50 N=2  iters=8000
+2026-11-01 19:40:08,984 [INFO]         KAE-expm  rel-L2 0.0327 ± 0.0015 (SEM, n=48)  [62s]
+2026-11-01 19:40:08,985 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:40:08,990 [INFO]   [2/20] JS_f1.0_n3: frames=[1, 5, 25] t=[0.1, 0.5, 2.5] delta_f=0.10 delta_l=2.50 N=3  iters=8000
+2026-11-01 19:41:39,889 [INFO]         KAE-expm  rel-L2 0.0355 ± 0.0016 (SEM, n=48)  [91s]
+2026-11-01 19:41:39,889 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:41:39,897 [INFO]   [3/20] JS_f1.0_n5: frames=[1, 2, 5, 11, 25] t=[0.1, 0.2, 0.5, 1.1, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:44:09,412 [INFO]         KAE-expm  rel-L2 0.0273 ± 0.0012 (SEM, n=48)  [149s]
+2026-11-01 19:44:09,413 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:44:09,423 [INFO]   [4/20] JS_f1.0_n9: frames=[1, 2, 3, 5, 7, 11, 17, 25] t=[0.1, 0.2, 0.3, 0.5, 0.7, 1.1, 1.7, 2.5] delta_f=0.10 delta_l=2.50 N=8  iters=8000
+2026-11-01 19:48:07,370 [INFO]         KAE-expm  rel-L2 0.0096 ± 0.0004 (SEM, n=48)  [238s]
+2026-11-01 19:48:07,371 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:48:07,386 [INFO]   [5/20] JS_f1.0_n17: frames=[1, 2, 3, 4, 5, 6, 7, 9, 11, 14, 17, 20, 25] t=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 1.1, 1.4, 1.7, 2.0, 2.5] delta_f=0.10 delta_l=2.50 N=13  iters=8000
+2026-11-01 19:54:35,798 [INFO]         KAE-expm  rel-L2 0.0062 ± 0.0003 (SEM, n=48)  [388s]
+2026-11-01 19:54:35,808 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:54:35,814 [INFO]   [6/20] JS_f0.5_n2: frames=[1, 25] t=[0.1, 2.5] delta_f=0.10 delta_l=2.50 N=2  iters=8000
+2026-11-01 19:55:37,948 [INFO]         KAE-expm  rel-L2 0.0367 ± 0.0015 (SEM, n=48)  [62s]
+2026-11-01 19:55:37,949 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:55:37,955 [INFO]   [7/20] JS_f0.5_n3: frames=[1, 5, 25] t=[0.1, 0.5, 2.5] delta_f=0.10 delta_l=2.50 N=3  iters=8000
+2026-11-01 19:57:09,169 [INFO]         KAE-expm  rel-L2 0.0411 ± 0.0017 (SEM, n=48)  [91s]
+2026-11-01 19:57:09,170 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:57:09,177 [INFO]   [8/20] JS_f0.5_n5: frames=[1, 2, 5, 11, 25] t=[0.1, 0.2, 0.5, 1.1, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 19:59:38,736 [INFO]         KAE-expm  rel-L2 0.0277 ± 0.0012 (SEM, n=48)  [150s]
+2026-11-01 19:59:38,737 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 19:59:38,745 [INFO]   [9/20] JS_f0.5_n9: frames=[1, 2, 3, 5, 7, 11, 17, 25] t=[0.1, 0.2, 0.3, 0.5, 0.7, 1.1, 1.7, 2.5] delta_f=0.10 delta_l=2.50 N=8  iters=8000
+2026-11-01 20:03:37,050 [INFO]         KAE-expm  rel-L2 0.0123 ± 0.0005 (SEM, n=48)  [238s]
+2026-11-01 20:03:37,051 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:03:37,063 [INFO]   [10/20] JS_f0.5_n17: frames=[1, 2, 3, 4, 5, 6, 7, 9, 11, 14, 17, 20, 25] t=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 1.1, 1.4, 1.7, 2.0, 2.5] delta_f=0.10 delta_l=2.50 N=13  iters=8000
+2026-11-01 20:10:05,122 [INFO]         KAE-expm  rel-L2 0.0082 ± 0.0003 (SEM, n=48)  [388s]
+2026-11-01 20:10:05,124 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:10:05,128 [INFO]   [11/20] JS_f0.25_n2: frames=[1, 25] t=[0.1, 2.5] delta_f=0.10 delta_l=2.50 N=2  iters=8000
+2026-11-01 20:11:06,969 [INFO]         KAE-expm  rel-L2 0.0375 ± 0.0015 (SEM, n=48)  [62s]
+2026-11-01 20:11:06,971 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:11:06,977 [INFO]   [12/20] JS_f0.25_n3: frames=[1, 5, 25] t=[0.1, 0.5, 2.5] delta_f=0.10 delta_l=2.50 N=3  iters=8000
+2026-11-01 20:12:38,310 [INFO]         KAE-expm  rel-L2 0.0414 ± 0.0017 (SEM, n=48)  [91s]
+2026-11-01 20:12:38,312 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:12:38,319 [INFO]   [13/20] JS_f0.25_n5: frames=[1, 2, 5, 11, 25] t=[0.1, 0.2, 0.5, 1.1, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 20:15:08,058 [INFO]         KAE-expm  rel-L2 0.0275 ± 0.0011 (SEM, n=48)  [150s]
+2026-11-01 20:15:08,060 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:15:08,068 [INFO]   [14/20] JS_f0.25_n9: frames=[1, 2, 3, 5, 7, 11, 17, 25] t=[0.1, 0.2, 0.3, 0.5, 0.7, 1.1, 1.7, 2.5] delta_f=0.10 delta_l=2.50 N=8  iters=8000
+2026-11-01 20:19:06,022 [INFO]         KAE-expm  rel-L2 0.0170 ± 0.0008 (SEM, n=48)  [238s]
+2026-11-01 20:19:06,023 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:19:06,035 [INFO]   [15/20] JS_f0.25_n17: frames=[1, 2, 3, 4, 5, 6, 7, 9, 11, 14, 17, 20, 25] t=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 1.1, 1.4, 1.7, 2.0, 2.5] delta_f=0.10 delta_l=2.50 N=13  iters=8000
+2026-11-01 20:25:33,780 [INFO]         KAE-expm  rel-L2 0.0136 ± 0.0006 (SEM, n=48)  [388s]
+2026-11-01 20:25:33,782 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:25:33,787 [INFO]   [16/20] JS_f0.1_n2: frames=[1, 25] t=[0.1, 2.5] delta_f=0.10 delta_l=2.50 N=2  iters=8000
+2026-11-01 20:26:35,606 [INFO]         KAE-expm  rel-L2 0.5194 ± 0.0266 (SEM, n=48)  [62s]
+2026-11-01 20:26:35,608 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:26:35,613 [INFO]   [17/20] JS_f0.1_n3: frames=[1, 5, 25] t=[0.1, 0.5, 2.5] delta_f=0.10 delta_l=2.50 N=3  iters=8000
+2026-11-01 20:28:06,939 [INFO]         KAE-expm  rel-L2 0.5194 ± 0.0267 (SEM, n=48)  [91s]
+2026-11-01 20:28:06,941 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:28:06,947 [INFO]   [18/20] JS_f0.1_n5: frames=[1, 2, 5, 11, 25] t=[0.1, 0.2, 0.5, 1.1, 2.5] delta_f=0.10 delta_l=2.50 N=5  iters=8000
+2026-11-01 20:30:36,710 [INFO]         KAE-expm  rel-L2 0.5086 ± 0.0266 (SEM, n=48)  [150s]
+2026-11-01 20:30:36,712 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:30:36,720 [INFO]   [19/20] JS_f0.1_n9: frames=[1, 2, 3, 5, 7, 11, 17, 25] t=[0.1, 0.2, 0.3, 0.5, 0.7, 1.1, 1.7, 2.5] delta_f=0.10 delta_l=2.50 N=8  iters=8000
+2026-11-01 20:34:34,611 [INFO]         KAE-expm  rel-L2 0.4947 ± 0.0277 (SEM, n=48)  [238s]
+2026-11-01 20:34:34,613 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:34:34,627 [INFO]   [20/20] JS_f0.1_n17: frames=[1, 2, 3, 4, 5, 6, 7, 9, 11, 14, 17, 20, 25] t=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9, 1.1, 1.4, 1.7, 2.0, 2.5] delta_f=0.10 delta_l=2.50 N=13  iters=8000
+2026-11-01 20:41:02,594 [INFO]         KAE-expm  rel-L2 0.4871 ± 0.0272 (SEM, n=48)  [388s]
+2026-11-01 20:41:02,596 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+2026-11-01 20:41:02,605 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/back001_s0/geometry_df1/joint_sparsity.json / .npz
+--- exit=0 2026-11-01T20:41:03+00:00
+=== DONE 2026-11-01T20:41:03+00:00

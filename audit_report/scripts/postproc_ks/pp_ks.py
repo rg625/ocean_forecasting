@@ -21,7 +21,7 @@ log10 power ratio prediction / truth and
 relative error. Selection on val.nc with the Tra rule (band power at most 0.05 dex below the
 single decode in mid and high, on both horizons; then lowest MSE), scored on test.nc.
 
-    python pp_ks.py OUT.json
+    python pp_ks.py OUT.json [NAME=RUN_DIR ...]   (CT-KAE runs via ks_driver.load_kae)
 """
 
 import json
@@ -34,11 +34,13 @@ from tensordict import TensorDict
 
 IMPL = Path(__file__).resolve().parents[3]
 MAIN = Path("/home/rg625/mnt/ocean_forecasting/koopman_autoencoder")
-sys.path.insert(0, str(IMPL / "koopman_autoencoder"))
-sys.path.insert(0, str(IMPL / "audit_report/scripts/postproc3"))
-from data_assimilation.ks.models_io import load_kae, load_unet  # noqa: E402
+sys.path.insert(0, str(IMPL / "audit_report/scripts/ks_ctkae"))
+import ks_driver  # noqa: E402  (main-repo KS code; CT-KAE runs load through ks_driver.load_kae)
+from data_assimilation.ks.models_io import load_unet  # noqa: E402
 from data_assimilation.ks.protocol import KSData  # noqa: E402
 from models.ct_kae import mixture_nodes  # noqa: E402
+
+LEGACY = MAIN / "model_outputs_ks/continous_linear_128/rollout_10"
 
 dev = torch.device("cuda")
 SHIFTS = (0, 16, 32, 48)
@@ -60,10 +62,8 @@ def reflect(u):
 
 
 class KAE:
-    def __init__(self):
-        self.m, self.K, _ = load_kae(
-            MAIN / "model_outputs_ks/continous_linear_128/rollout_10", None, dev
-        )
+    def __init__(self, run=LEGACY):
+        self.m, self.K, _ = ks_driver.load_kae(run, None, dev)
 
     @torch.no_grad()
     def forecast(self, x0n, taus):
@@ -220,13 +220,18 @@ def run(split, kae, unet):
 
 
 def main():
+    """pp_ks.py OUT.json [NAME=RUN_DIR ...]; default: the legacy KS KAE only. With several
+    models the output is {name: {split: ...}}."""
     out = Path(sys.argv[1])
-    kae = KAE()
+    runs = dict(a.split("=", 1) for a in sys.argv[2:]) or {"legacy": str(LEGACY)}
     unet = load_unet(
         MAIN / "model_outputs_ks/unet1d/rollout10_extended2/best_model.pth", dev
     )
-    res = {s: run(s, kae, unet) for s in ("val", "test")}
-    json.dump(res, open(out, "w"))
+    res = {}
+    for name, r in runs.items():
+        kae = KAE(Path(r))
+        res[name] = {s: run(s, kae, unet) for s in ("val", "test")}
+    json.dump(res if len(runs) > 1 or sys.argv[2:] else res["legacy"], open(out, "w"))
     print("saved", out)
 
 

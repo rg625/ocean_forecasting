@@ -1,0 +1,30 @@
+{
+  "system": {
+    "equation": "u_t = -u u_x - u_xx - u_xxxx",
+    "L": 22.0,
+    "n_x": 64,
+    "dt_frames": 0.1,
+    "forcing": "none"
+  },
+  "method": "twin experiment with periodic renormalisation; scipy RK45, rtol 1e-9, atol 1e-11; perturbation 1e-07, renormalised every 2.0 time units, 200.0 total, 50.0 spin-up",
+  "n_trajectories": 12,
+  "lambda_1_mean": 0.044321415486253894,
+  "lambda_1_sem": 0.0041447646720338,
+  "lambda_1_all": [
+    0.05263048316166967,
+    0.042572007559353156,
+    0.026097575670819894,
+    0.02570070850809004,
+    0.0619719944736445,
+    0.04429052311832527,
+    0.07273139337811567,
+    0.029281828798410632,
+    0.035549926481286034,
+    0.043828542382444685,
+    0.053987379258797576,
+    0.04321462304408954
+  ],
+  "lyapunov_time": 22.56245629858428,
+  "lyapunov_time_sem": 2.1099522827668316,
+  "lyapunov_time_in_frames": 225.6245629858428
+}

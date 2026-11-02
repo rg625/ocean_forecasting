@@ -1,0 +1,15 @@
+=== init_scales 2026-11-01T15:16:01+00:00
+{"source": "data/ks/train.nc", "kae_run": "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ctkae_ks/ks_ref_s0_20261101_145100", "kae_latent_init_scale": 354.2401428222656, "unet_state_init_scale": 1.0, "note": "kae_latent_init_scale: per-element std of the CT-KAE encoder latents on the TRAINING split (data_assimilation.ks.models_io.kae_latent_scale); U-Net scale copied from da_results_v2/init_scales.json."}
+--- exit=0 2026-11-01T15:16:07+00:00
+=== tune 2026-11-01T15:16:07+00:00
+init=random lr=0.003  analysis=2.0776 obs=1.9983
+init=random lr=0.01   analysis=2.0133 obs=1.7718
+init=random lr=0.03   analysis=1.8541 obs=1.2400
+init=random lr=0.1    analysis=1.6655 obs=0.5094
+init=random lr=0.3    analysis=1.6519 obs=0.1715
+init=random lr=1      analysis=1.6222 obs=0.0671
+init=zero   lr=0.003  analysis=1.1303 obs=0.1315
+init=zero   lr=0.01   analysis=1.0890 obs=0.1374
+init=zero   lr=0.03   analysis=1.0293 obs=0.0853
+init=zero   lr=0.1    analysis=1.0901 obs=0.0578
+init=zero   lr=0.3    analysis=1.3636 obs=0.0524
