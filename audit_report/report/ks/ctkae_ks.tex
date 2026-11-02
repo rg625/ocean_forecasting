@@ -43,6 +43,99 @@ baselines.
   CT-KAE retrained at the paper's budget would test this.
 \end{itemize}
 
+\section*{Matched training: the paper's KS pipeline}
+\textbf{Status (2 November 2026): training in progress; rows marked -- are pending.}
+The first-round CT-KAEs (sections below) were trained with the transonic recipe, not with the
+paper's KS settings: batch 16 for 20k steps (0.3M windows, against $\sim$16M), one input frame
+and 8 targets (against 4 and 10), and the CT-KAE objective. These runs repeat the comparison
+with \emph{only the architecture changed}. The main repository's \texttt{train.py} runs
+unmodified on the configuration stored in the paper KAE's checkpoint (\texttt{rollout\_10}):
+\texttt{train.nc}, all windows of 4 input and 10 target frames, the paper's dataloader and
+normalisation, \texttt{KoopmanLoss} with its stored weights, AdamW $10^{-3}$ with cosine warm-up
+(20 epochs) and decay (to $2\times10^{-5}$), batch 1024, 200 epochs, float32, input noise and
+clamping, best-validation checkpoint. The CT-KAE (block generator, exact $e^{\tau A}$, 1-D conv
+encoder on the 4-frame window, 1-D conv decoder) sits behind the legacy model interface
+(\texttt{models/ct\_kae\_matched.py}); its latent target for each target frame is the encoding of
+the 4-frame window ending there, the delay-window counterpart of the legacy single-frame target.
+back001 adds its backward latent consistency (weight 0.01) to the paper's loss. The paper KAE
+architecture is retrained in the same code as a control, because the August training code was
+never committed and today's code does not reproduce the stored model. Latent sizes 128 (the
+paper's) and 256 (the transonic candidates); seed 0. Evaluation: the paper's KS suite as above
+(tuning on validation, the paper's $\delta_f = 1$ schedules), and the forecast from the true state
+with two encodings: \emph{single}, the paper's FC protocol (one frame; the CT-KAE gets it
+repeated over its window), and \emph{window}, the 4 true frames ending at $t_0$ that both models
+are trained on.
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\caption{Matched runs: forecast from the true state (\texttt{da\_test\_long}, the paper's FC
+protocol): relative error at leads in Lyapunov times, skill horizon, encode--decode error.}
+\label{tab:ksmfc}
+\begin{tabular}{llcccccc}
+\toprule
+ & encoding & $0.1\,T_L$ & $0.5\,T_L$ & $1\,T_L$ & $5\,T_L$ & horizon ($T_L$) & round trip\\
+\midrule
+\inputrows tab_ksm_fc.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\linewidth]{fig_ksm.pdf}
+\caption{Matched runs. (a) Forecast error from the true state, window encoding. (b, c) 4D-Var
+analysis error against the first and last observation time, next to the paper's stored results.}
+\label{fig:ksm}
+\end{figure}
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\caption{Matched runs: 4D-Var analysis error at $t_0$ for every sweep of the paper (same problems
+and schedules as Table~\ref{tab:ksda}). Paper KAE, U-Net, SDA: the paper's stored results.}
+\label{tab:ksmda}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+ & Paper KAE & U-Net & SDA & KAE (ctrl) & ref 128 & back001 128 & ref 256 & back001 256\\
+\midrule
+\inputrows tab_ksm_da.tex
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\begin{minipage}[t]{0.56\linewidth}\centering
+\caption{Matched runs: long-baseline assimilation ($\delta_l$ in $T_L$).}
+\label{tab:ksmlb}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{ccccccccc}
+\toprule
+$T_L$ & Paper & U-Net & SDA & ctrl & ref128 & b128 & ref256 & b256\\
+\midrule
+\inputrows tab_ksm_lb.tex
+\bottomrule
+\end{tabular}}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.42\linewidth}\centering
+\caption{Matched runs: forecast from each method's own analysis.}
+\label{tab:ksmpf}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+ & analysis & $0.1\,T_L$ & $1\,T_L$ & horizon\\
+\midrule
+\inputrows tab_ksm_pf.tex
+\bottomrule
+\end{tabular}}
+\end{minipage}
+\end{table}
+
+
+
+\section*{First round (transonic recipe; superseded by the matched runs)}
 \section*{Setup}
 \begin{itemize}\itemsep1pt
 \item \textbf{Models.} The two transonic candidates, the reference and back001 (the reference plus
@@ -50,7 +143,8 @@ baselines.
   dimension 256, widths 64/128/256, 128 damped oscillators (exact $e^{\tau A}$), no fixed point,
   reconstruction + 8-lead prediction + latent consistency + amplitude terms, 20k steps, batch 16,
   AdamW $3\times10^{-4}$, final checkpoint, 3 seeds each. KS-specific changes: 1-D convolutions with
-  circular padding, one input frame (KS is Markovian; the paper's KS models also encode one frame),
+  circular padding, one input frame (the paper's KS KAE trains on 4 input frames and 10 targets and encodes
+  one frame only in the DA harness; the matched runs below use its exact setup),
   no physical parameter, $\Delta t = 0.1$ (the transonic step). Training: \texttt{train.nc} (80
   trajectories); \texttt{val.nc} only logged. About 8 minutes per run on one RTX 4090.
 \item \textbf{Baselines.} The paper's KS KAE, U-Net and SDA. Their numbers are the paper's stored
