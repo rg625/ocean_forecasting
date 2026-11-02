@@ -48,6 +48,7 @@ import models  # noqa: E402,F401  (the main repository's package)
 
 _load("models.ct_kae", IMPL / "models/ct_kae.py")
 CK = _load("models.ct_kae_ks", IMPL / "models/ct_kae_ks.py")
+CMT = _load("models.ct_kae_matched", IMPL / "models/ct_kae_matched.py")
 import data_assimilation.ks.models_io as MIO  # noqa: E402
 
 _orig_load_kae = MIO.load_kae
@@ -60,6 +61,7 @@ class CTKAEKS(torch.nn.Module):
     def __init__(self, model, scale):
         super().__init__()
         self.m = model
+        self.n = int(model.cfg.n_frames)  # delay window: the present frame repeated
         with torch.no_grad():
             A = model.generator_matrix(None)[0].float()
             self.register_buffer("s", scale.float())
@@ -67,7 +69,8 @@ class CTKAEKS(torch.nn.Module):
 
     def present_encoding(self, x, cond_input=None):
         u = x["u"][:, -1, :, 0]  # [B, X], the present frame
-        return self.m.encode(u[:, None, None, None, :], None, None) / self.s
+        w = u[:, None, None, None, :].expand(-1, self.n, -1, -1, -1)
+        return self.m.encode(w, None, None) / self.s
 
     def decode(self, z):
         x = self.m.decode(z * self.s, None, None)  # [..., 1, 1, X]
@@ -97,7 +100,13 @@ def latent_std(model, device):
     f = data.u[torch.arange(min(8, data.n_sim))][:, idx_t].reshape(-1, data.X)
     z = torch.cat(
         [
-            model.encode(f[i : i + 256][:, None, None, None, :], None, None)
+            model.encode(
+                f[i : i + 256][:, None, None, None, :].expand(
+                    -1, int(model.cfg.n_frames), -1, -1, -1
+                ),
+                None,
+                None,
+            )
             for i in range(0, len(f), 256)
         ]
     )
@@ -106,6 +115,24 @@ def latent_std(model, device):
 
 def load_kae(run_dir, ckpt, device):
     run_dir = Path(run_dir)
+    meta = run_dir.parent / "matched_run.json"
+    if meta.exists() and json.loads(meta.read_text())["arch"] == "ct":
+        # train_matched.py run: CTKAEMatched, best-validation checkpoint as the paper's KAE
+        cfg = json.loads(meta.read_text())["config"]
+        mm = CMT.CTKAEMatched(
+            cfg["data"]["variables"],
+            cfg["data"]["input_sequence_length"],
+            cfg["model"]["latent_dim"],
+            cfg["model"]["hidden_dims"],
+        )
+        ck = ckpt or run_dir / "checkpoints" / "best_model.pth"
+        sd = torch.load(ck, map_location="cpu", weights_only=False)["model_state_dict"]
+        mm.load_state_dict(sd)
+        model = mm.ct.to(device).eval()
+        w = CTKAEKS(model, latent_std(model, device)).to(device).eval()
+        for p in w.parameters():
+            p.requires_grad_(False)
+        return w, w.A, int(w.A.shape[0])
     if not (
         (run_dir / "last.pth").exists() and not (run_dir / "final_model.pth").exists()
     ):
