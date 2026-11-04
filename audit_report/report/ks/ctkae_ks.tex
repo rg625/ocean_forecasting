@@ -10,7 +10,7 @@
 \setlength{\parskip}{3pt}\setlength{\parindent}{0pt}
 
 \title{\textbf{CT-KAE candidates on Kuramoto--Sivashinsky}}
-\date{1 November 2026}
+\date{4 November 2026}
 \author{}
 
 \begin{document}
@@ -18,122 +18,136 @@
 \vspace{-2.5em}
 
 \section*{Summary}
-The two transonic CT-KAE candidates (the reference and back001) were trained on KS with the transonic
-recipe and run through every KS experiment of the paper. The paper's KAE, U-Net and SDA are the
-baselines.
+CT-KAE candidates retrained on Kuramoto--Sivashinsky with the paper KAE's exact training
+pipeline (only the architecture swapped), against a KAE control retrained the same way, the
+paper's stored models and SDA. Data assimilation at $\delta_f = 9$ frames (0.9 t.u.), with a warm
+start for every gradient-based method; forecast from the true state.
 \begin{itemize}\itemsep1pt
-\item \textbf{Forecasting fails beyond one training horizon.} The CT-KAEs have the best
-  encode--decode accuracy of the four models (0.007), but their error grows ten-fold every ten steps.
-  At $0.1\,T_L$ it is 0.58--0.64, against 0.024 for the paper's KAE and 0.0003 for the U-Net. Skill is
-  lost at 0.3--0.4 $T_L$ (paper's KAE 2.4, U-Net 9.3).
-\item \textbf{DA is close to the paper's KAE when the first observation is close to $t_0$.} The
-  canonical analysis is 0.025--0.028 (paper's KAE 0.0044, SDA 0.009, U-Net 0.097). The CT-KAEs match
-  the paper's KAE with $\ge 13$ observation times. They are the best of all five models with 25--50\%
-  sensor coverage and many observation times.
-\item \textbf{DA is worse than the paper's KAE} when the first observation is later than 0.1 t.u., with
-  noise (3--6$\times$), and in long windows.
-\item \textbf{Of the transonic readouts, only the sharpened symmetry average is admissible on KS.} It
-  halves the 50-frame error, to just under persistence. LPM fails.
-\item \textbf{back001 vs the reference:} back001 has a slightly longer forecast skill, within seed
-  spread; DA is the same.
-\item \textbf{The cause is not established.} It is not the rollout length alone: the paper's KAE
-  also trains on 10-frame windows and keeps skill for 2.4 $T_L$. The largest difference is the
-  training budget. The transonic recipe (batch 16, 20k steps) shows the CT-KAE 0.3M windows; the
-  paper's KAE saw $\sim$16M (batch 1024, 200 epochs over all 79k windows of \texttt{train.nc}). A
-  CT-KAE retrained at the paper's budget would test this.
+\item \textbf{Clean, dense observations: the KAE wins.} With $N \ge 5$ observation times, full
+  coverage and no noise, the KAE control reaches 0.015 and the stored $d_z = 512$ KAE 0.0105, both
+  below SDA (0.019--0.022). Every CT-KAE is 2--3$\times$ worse than the control (ref 128: $+0.025 \pm
+  0.003$, paired over 48 problems).
+\item \textbf{Long windows: the CT-KAEs fail.} From $\delta_l = 10$ t.u. their error is 0.18--0.50;
+  the control holds 0.023 at $\delta_l = 10$ and SDA stays at $\approx 0.025$ to $\delta_l = 70$.
+\item \textbf{Noise and sparse coverage: the CT-KAEs beat both KAEs, but not SDA.} At noise std 0.1
+  the CT-KAEs are at 0.09 against 0.39 for the control (paired $-0.30 \pm 0.03$); at 25\% coverage
+  0.05 against 0.09. SDA is better still (0.039, 0.038).
+\item \textbf{Forecasting: no KAE variant is useful past $\approx 0.25\,T_L$.} At $0.1\,T_L$ the
+  CT-KAEs are at 0.09, the control at 0.074, the paper's stored KAE at 0.024 and the U-Net at 0.0003.
+  The retrained control is 3$\times$ worse than the stored paper KAE: today's code does not
+  reproduce the paper's model.
+\item \textbf{Cause: not the decay-only generator.} The CT-KAE's generator only allows decaying
+  modes, while the control learned 11 growing modes (fastest $+0.040$/t.u., KS $\lambda_1 = 0.044$).
+  A CT-KAE with signed decay rates learned 9 growing modes and changed nothing. Open suspects: the
+  encoder/decoder (round trip 0.04--0.07 vs 0.027) and the block-diagonal generator structure.
 \end{itemize}
 
-\section*{Matched training: the paper's KS pipeline}
-\textbf{Status (2 November 2026): training in progress; rows marked -- are pending.}
-The first-round CT-KAEs (sections below) were trained with the transonic recipe, not with the
-paper's KS settings: batch 16 for 20k steps (0.3M windows, against $\sim$16M), one input frame
-and 8 targets (against 4 and 10), and the CT-KAE objective. These runs repeat the comparison
-with \emph{only the architecture changed}. The main repository's \texttt{train.py} runs
-unmodified on the configuration stored in the paper KAE's checkpoint (\texttt{rollout\_10}):
-\texttt{train.nc}, all windows of 4 input and 10 target frames, the paper's dataloader and
-normalisation, \texttt{KoopmanLoss} with its stored weights, AdamW $10^{-3}$ with cosine warm-up
-(20 epochs) and decay (to $2\times10^{-5}$), batch 1024, 200 epochs, float32, input noise and
-clamping, best-validation checkpoint. The CT-KAE (block generator, exact $e^{\tau A}$, 1-D conv
-encoder on the 4-frame window, 1-D conv decoder) sits behind the legacy model interface
-(\texttt{models/ct\_kae\_matched.py}); its latent target for each target frame is the encoding of
-the 4-frame window ending there, the delay-window counterpart of the legacy single-frame target.
-back001 adds its backward latent consistency (weight 0.01) to the paper's loss. The paper KAE
-architecture is retrained in the same code as a control, because the August training code was
-never committed and today's code does not reproduce the stored model. Latent sizes 128 (the
-paper's) and 256 (the transonic candidates); seed 0. Evaluation: the paper's KS suite as above
-(tuning on validation, the paper's $\delta_f = 1$ schedules), and the forecast from the true state
-with two encodings: \emph{single}, the paper's FC protocol (one frame; the CT-KAE gets it
-repeated over its window), and \emph{window}, the 4 true frames ending at $t_0$ that both models
-are trained on.
+\section*{Matched training}
+The first-round CT-KAEs (later sections) used the transonic recipe. These runs use \emph{only a
+different architecture}: the main repository's \texttt{train.py} runs unmodified on the
+configuration stored in the paper KAE's checkpoint (\texttt{rollout\_10}): all windows of 4
+input and 10 target frames of \texttt{train.nc}, the paper's dataloader and normalisation,
+\texttt{KoopmanLoss} with its stored weights, AdamW $10^{-3}$ with cosine warm-up and decay,
+batch 1024, 200 epochs, float32, best-validation checkpoint. The CT-KAE (block generator, exact
+$e^{\tau A}$, 1-D conv encoder on the 4-frame window and 1-D conv decoder) sits behind the legacy
+model interface; its latent target for each target frame is the encoding of the 4-frame window
+ending there. back001 adds its backward latent consistency (weight 0.01). The paper KAE
+architecture is retrained in the same code as a control. Latent sizes 128 and 256; seed 0.
+\emph{ref 128, signed decay} is ref 128 with the decay rate of each oscillator free in sign
+(growing modes allowed), to test the dynamics explanation below.
 
-\begin{table}[!htbp]
-\centering\scriptsize
-\caption{Matched runs: forecast from the true state (\texttt{da\_test\_long}, the paper's FC
-protocol): relative error at leads in Lyapunov times, skill horizon, encode--decode error.}
-\label{tab:ksmfc}
-\begin{tabular}{llcccccc}
-\toprule
- & encoding & $0.1\,T_L$ & $0.5\,T_L$ & $1\,T_L$ & $5\,T_L$ & horizon ($T_L$) & round trip\\
-\midrule
-\inputrows tab_ksm_fc.tex
-\bottomrule
-\end{tabular}
-\end{table}
-
-
+\textbf{DA protocol.} The paper's \texttt{exp\_geometry} sweeps at its default pin $\delta_f = 9$
+frames (C2 window length, C3 number of observation times, Gaussian noise, coverage), on the
+campaign's seeded problems (48 per setting; 24 for C2, at 1000 iterations), 8000 iterations of
+4D-Var. Every gradient-based method starts warm: the KAE and CT-KAEs from the nearest observation
+encoded and pulled back to $t_0$ (forced for back001 256, whose tuning chose a zero start), the
+U-Net from the nearest observation. Learning rates are tuned on validation per model. SDA (stored)
+has no first guess. \emph{KAE $d_z = 512$} is the stored warm-start run of September
+(\texttt{kae512\_tuned.json}, same problem seeds). The paper's own $d_z = 128$ checkpoint cannot be
+re-run warm: today's code degrades it (round trip 0.135 against 0.009). The warm U-Net sweeps were
+stopped after $N = 2, 3$; its stored warm result at the standard setting ($N = 5$, 24 other
+problems) is 0.071, against 0.011 for the KAE and 0.020 for SDA.
 
 \begin{figure}[!htbp]
 \centering
-\includegraphics[width=\linewidth]{fig_ksm.pdf}
-\caption{Matched runs. (a) Forecast error from the true state, window encoding. (b, c) 4D-Var
-analysis error against the first and last observation time, next to the paper's stored results.}
-\label{fig:ksm}
+\includegraphics[width=\linewidth]{fig_ksm_warm9.pdf}
+\caption{DA at $\delta_f = 0.9$ t.u., warm start for every gradient method: analysis error at
+$t_0$ against (a) the last observation time, (b) the number of observation times, (c) the noise
+level and (d) the spatial coverage. Mean $\pm$ SE over problems (bands).}
+\label{fig:ksmwarm}
 \end{figure}
 
 \begin{table}[!htbp]
 \centering\scriptsize
-\caption{Matched runs: 4D-Var analysis error at $t_0$ for every sweep of the paper (same problems
-and schedules as Table~\ref{tab:ksda}). Paper KAE, U-Net, SDA: the paper's stored results.}
-\label{tab:ksmda}
+\caption{The data of Figure~\ref{fig:ksmwarm}: analysis error at $t_0$, mean over problems (SE
+5--10\% of the mean). Bold: best per row.}
+\label{tab:ksmwarm}
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{lcccccccc}
+\begin{tabular}{lccccccccc}
 \toprule
- & Paper KAE & U-Net & SDA & KAE (ctrl) & ref 128 & back001 128 & ref 256 & back001 256\\
+ & SDA & KAE $d_z$ 512 & U-Net & KAE ctrl & ref 128 & back001 128 & ref 256 & back001 256 & ref 128 signed\\
 \midrule
-\inputrows tab_ksm_da.tex
+\inputrows tab_ksm_warm9.tex
 \bottomrule
 \end{tabular}}
 \end{table}
 
 \begin{table}[!htbp]
 \centering\scriptsize
-\begin{minipage}[t]{0.56\linewidth}\centering
-\caption{Matched runs: long-baseline assimilation ($\delta_l$ in $T_L$).}
-\label{tab:ksmlb}
-\resizebox{\linewidth}{!}{%
-\begin{tabular}{ccccccccc}
+\caption{Paired differences to the KAE control (CT-KAE $-$ control, mean $\pm$ SE over the same
+problems). Positive: the CT-KAE is worse.}
+\label{tab:ksmpaired}
+\begin{tabular}{lccc}
 \toprule
-$T_L$ & Paper & U-Net & SDA & ctrl & ref128 & b128 & ref256 & b256\\
+ & ref 128 & back001 128 & ref 128 signed\\
 \midrule
-\inputrows tab_ksm_lb.tex
+$N = 5$ (clean, full coverage) & $+0.025 \pm 0.003$ & $+0.017 \pm 0.002$ & $+0.023 \pm 0.003$\\
+$\delta_l = 10$ t.u. & $+0.278 \pm 0.020$ & $+0.226 \pm 0.016$ & $+0.261 \pm 0.020$\\
+noise std 0.1 & $-0.297 \pm 0.027$ & $-0.296 \pm 0.028$ & $-0.295 \pm 0.028$\\
+25\% coverage, $N = 5$ & $-0.036 \pm 0.008$ & $-0.050 \pm 0.007$ & $-0.040 \pm 0.007$\\
 \bottomrule
-\end{tabular}}
-\end{minipage}\hfill
-\begin{minipage}[t]{0.42\linewidth}\centering
-\caption{Matched runs: forecast from each method's own analysis.}
-\label{tab:ksmpf}
-\resizebox{\linewidth}{!}{%
-\begin{tabular}{lcccc}
-\toprule
- & analysis & $0.1\,T_L$ & $1\,T_L$ & horizon\\
-\midrule
-\inputrows tab_ksm_pf.tex
-\bottomrule
-\end{tabular}}
-\end{minipage}
+\end{tabular}
 \end{table}
 
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.85\linewidth]{fig_ksm_fc2.pdf}
+\caption{Forecast from the true state (\texttt{da\_test\_long}, 32 trajectories, the paper's FC
+protocol, single-frame encoding). Mean $\pm$ SE.}
+\label{fig:ksmfc2}
+\end{figure}
 
+\begin{table}[!htbp]
+\centering\scriptsize
+\caption{The data of Figure~\ref{fig:ksmfc2}: relative error at leads in Lyapunov times, and the
+encode--decode error at $t_0$.}
+\label{tab:ksmfc2}
+\begin{tabular}{lccccc}
+\toprule
+ & round trip & $0.1\,T_L$ & $0.25\,T_L$ & $0.5\,T_L$ & $1\,T_L$\\
+\midrule
+\inputrows tab_ksm_fc2.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section*{Why the CT-KAEs fail on KS}
+\textbf{Hypothesis: a decay-only generator cannot represent chaos.} The CT-KAE's block generator
+has decay rates $g_j = \mathrm{softplus}(\cdot) \ge 0$: every mode rotates and decays. This kept
+long transonic rollouts stable. KS is chaotic ($\lambda_1 = 0.044$/t.u.). The KAE control's dense
+generator learned 11 growing modes out of 128, the fastest at $+0.040$/t.u., close to
+$\lambda_1$. All 64 CT-KAE pairs decay (rates 0.002--0.53).
+
+\textbf{Test: the hypothesis is refuted.} With signed decay rates (\emph{ref 128 signed}, the
+same pipeline), the CT-KAE learned 9 growing pairs (four at 0.12--0.16/t.u., $3\times\lambda_1$),
+but every result stayed within about one standard error of ref 128: $N = 5$ 0.038 (ref 0.040),
+$\delta_l = 10$ 0.285 (0.301), noise 0.1 0.093 (0.092), forecast at $0.1\,T_L$ 0.089 (0.092).
+
+\textbf{Open suspects.} (i) The encoder/decoder: the CT-KAE's 1-D conv autoencoder (a port of the
+transonic one) reconstructs worse (round trip 0.04--0.07 against 0.027 for the control's
+attention + spectral autoencoder). (ii) The generator structure: independent 2$\times$2
+oscillators against the KAE's dense, coupled generator. Two swaps separate them: the paper's
+encoder/decoder with the block generator, and the CT-KAE encoder/decoder with a dense generator.
 
 \section*{First round (transonic recipe; superseded by the matched runs)}
 \section*{Setup}
@@ -333,5 +347,79 @@ at long leads. LPM, the best transonic readout, fails here: with 64 points a 16-
 quarter of the domain, and the patch-wise rank matching adds 30--300$\times$ power at $k = 7$--10. On
 KS, the sharpened symmetry average is the only admissible readout; it brings the 50-frame error
 (0.24 for both candidates) just under persistence.
+
+\clearpage
+\section*{Appendix: matched runs at the paper's $\delta_f = 1$ schedules}
+Cold and warm starts mixed (each model's tuned choice; back001 256 started from zero), so these rows are not comparable across columns as the main tables are. Paper KAE, U-Net and SDA: the paper's stored results (zero/tuned starts of the original campaign).
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\caption{Matched runs: forecast from the true state (\texttt{da\_test\_long}, the paper's FC
+protocol): relative error at leads in Lyapunov times, skill horizon, encode--decode error.}
+\label{tab:ksmfc}
+\begin{tabular}{llcccccc}
+\toprule
+ & encoding & $0.1\,T_L$ & $0.5\,T_L$ & $1\,T_L$ & $5\,T_L$ & horizon ($T_L$) & round trip\\
+\midrule
+\inputrows tab_ksm_fc.tex
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=\linewidth]{fig_ksm.pdf}
+\caption{Matched runs. (a) Forecast error from the true state, window encoding. (b, c) 4D-Var
+analysis error against the first and last observation time, next to the paper's stored results.}
+\label{fig:ksm}
+\end{figure}
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\caption{Matched runs: 4D-Var analysis error at $t_0$ for every sweep of the paper (same problems
+and schedules as Table~\ref{tab:ksda}). Paper KAE, U-Net, SDA: the paper's stored results.}
+\label{tab:ksmda}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+ & Paper KAE & U-Net & SDA & KAE (ctrl) & ref 128 & back001 128 & ref 256 & back001 256\\
+\midrule
+\inputrows tab_ksm_da.tex
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{table}[!htbp]
+\centering\scriptsize
+\begin{minipage}[t]{0.56\linewidth}\centering
+\caption{Matched runs: long-baseline assimilation ($\delta_l$ in $T_L$).}
+\label{tab:ksmlb}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{ccccccccc}
+\toprule
+$T_L$ & Paper & U-Net & SDA & ctrl & ref128 & b128 & ref256 & b256\\
+\midrule
+\inputrows tab_ksm_lb.tex
+\bottomrule
+\end{tabular}}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.42\linewidth}\centering
+\caption{Matched runs: forecast from each method's own analysis.}
+\label{tab:ksmpf}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+ & analysis & $0.1\,T_L$ & $1\,T_L$ & horizon\\
+\midrule
+\inputrows tab_ksm_pf.tex
+\bottomrule
+\end{tabular}}
+\end{minipage}
+\end{table}
+
+
+
 
 \end{document}
