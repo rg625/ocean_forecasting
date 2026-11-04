@@ -58,6 +58,9 @@ class CTKAEConfig:
     # Block generator: decay rates g_j free in sign (g_j < 0 is a growing mode, as the
     # unstable directions of a chaotic system need) instead of softplus(.) >= 0. Off by default.
     signed_decay: bool = False
+    # Activation checkpointing of the 1-D encoder/decoder stages (ct_kae_ks): recomputes
+    # activations in the backward pass; the same function and gradients, less memory.
+    grad_checkpoint: bool = False
     dense_rank: int = 8  # low-rank conditional correction for hurwitz/dense
     padding_mode: str = "zeros"
     # Harmonic lattice: the first harmonic_pairs oscillator pairs have frequencies locked to

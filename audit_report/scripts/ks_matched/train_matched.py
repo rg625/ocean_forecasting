@@ -4,7 +4,7 @@ unmodified from its directory on the configuration stored in the paper's checkpo
 (model_outputs_ks/continous_linear_128/rollout_10/final_model.pth). Only the model class is
 swapped (and, for back001, its backward-consistency term added to the loss):
 
-    python train_matched.py ARCH OUT_DIR [--latent D] [--w-back W] [--seed S] [--signed-decay]
+    python train_matched.py ARCH OUT_DIR [--latent D] [--w-back W] [--seed S] [--signed-decay] [--ct KEY=JSON ...]
       ARCH = kae : the paper's KoopmanAutoencoder (control: today's code, same settings)
              ct  : models/ct_kae_matched.CTKAEMatched (CT-KAE: block generator, exact exp)
 
@@ -91,12 +91,22 @@ def main():
         action="store_true",
         help="CT-KAE block generator with decay rates free in sign (growing modes allowed)",
     )
+    ap.add_argument(
+        "--ct",
+        action="append",
+        default=[],
+        metavar="KEY=JSON",
+        help="CTKAEConfig override, e.g. --ct 'widths=[128,256,512]' (repeatable)",
+    )
     a = ap.parse_args()
     random.seed(a.seed)
     np.random.seed(a.seed)
     torch.manual_seed(a.seed)
 
     ct_overrides = {"signed_decay": True} if a.signed_decay else {}
+    for kv in a.ct:
+        k, v = kv.split("=", 1)
+        ct_overrides[k] = json.loads(v)
     if ct_overrides:
         assert a.arch == "ct", "--signed-decay is a CT-KAE option"
     st = torch.load(PAPER_CKPT, map_location="cpu", weights_only=False)

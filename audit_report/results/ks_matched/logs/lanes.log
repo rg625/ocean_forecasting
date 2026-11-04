@@ -41,3 +41,8 @@
 --- ct_ref_signed_128_s0 exit=0 2026-11-03T20:17:22+00:00
 === eval ct_ref_signed_128_s0 2026-11-03T20:17:22+00:00
 --- eval ct_ref_signed_128_s0 done 2026-11-03T22:44:29+00:00
+=== ct_ref_w2_128_s0 2026-11-04T10:47:03+00:00
+=== run_wide.sh stopped: ct_ref_w3_128_s0 held until the w2 results (user); w2 continues 2026-11-04T11:13:10+00:00
+--- ct_ref_w2_128_s0 exit=0 2026-11-04T18:03:35+00:00
+=== eval ct_ref_w2_128_s0 2026-11-04T18:03:35+00:00
+--- eval ct_ref_w2_128_s0 done 2026-11-04T20:31:21+00:00

@@ -22,6 +22,7 @@ STY = {  # colour, linestyle, marker, label
     "back001 128": ("#e87ba4", "-", "v", "CT-KAE back001 128"),
     "back001 256": ("#e87ba4", "--", "v", "CT-KAE back001 256"),
     "ref signed 128": ("#008300", "-", "P", "CT-KAE ref 128, signed decay"),
+    "ref w2 128": ("#6250d6", "-", "X", "CT-KAE ref 128, widths x2"),
 }
 mpl.rcParams.update(
     {
@@ -172,6 +173,7 @@ def fc():
         "back001 128": "CT-KAE back001 128",
         "back001 256": "CT-KAE back001 256",
         "ref signed 128": "CT-KAE ref 128, signed decay",
+        "ref w2 128": "CT-KAE ref 128, widths x2",
     }
     for n, lab in RUNS:
         p = RES / n / "fc_matched.npz"

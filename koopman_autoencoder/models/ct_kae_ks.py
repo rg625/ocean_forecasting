@@ -18,6 +18,7 @@ import torch
 import torch.nn.functional as F
 import xarray as xr
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 from models.ct_kae import CTKAE, BlockGenerator, CTKAEConfig, MatrixGenerator, _groups
 from models.dataloader import KS_MEAN, KS_STD
@@ -65,11 +66,15 @@ class Encoder1d(nn.Module):
             c = wo
         self.norm = nn.GroupNorm(_groups(c), c)
         self.to_z = nn.Linear(c * (cfg.width // 2 ** len(w)), cfg.latent_dim)
+        self.ckpt = cfg.grad_checkpoint
 
     def forward(self, x):
         h = self.stem(x)
         for blocks, down in zip(self.stages, self.down):
-            h = down(blocks(h))
+            if self.ckpt and self.training and torch.is_grad_enabled():
+                h = down(checkpoint(blocks, h, use_reentrant=False))
+            else:
+                h = down(blocks(h))
         return self.to_z(F.silu(self.norm(h)).flatten(1))
 
 
@@ -90,6 +95,7 @@ class Decoder1d(nn.Module):
                 )
             )
             c = wo
+        self.ckpt = cfg.grad_checkpoint
         self.out = nn.Sequential(
             nn.GroupNorm(_groups(c), c),
             nn.SiLU(),
@@ -99,7 +105,11 @@ class Decoder1d(nn.Module):
     def forward(self, z):
         h = self.from_z(z).view(-1, self.c0, self.w0)
         for up, blocks in zip(self.up, self.stages):
-            h = blocks(up(F.interpolate(h, scale_factor=2, mode="nearest")))
+            h = up(F.interpolate(h, scale_factor=2, mode="nearest"))
+            if self.ckpt and self.training and torch.is_grad_enabled():
+                h = checkpoint(blocks, h, use_reentrant=False)
+            else:
+                h = blocks(h)
         return self.out(h)
 
 
