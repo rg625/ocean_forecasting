@@ -27,6 +27,7 @@ import runpy
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 
 MAIN = Path("/home/rg625/mnt/ocean_forecasting/koopman_autoencoder")
@@ -118,12 +119,14 @@ def load_kae(run_dir, ckpt, device):
     meta = run_dir.parent / "matched_run.json"
     if meta.exists() and json.loads(meta.read_text())["arch"] == "ct":
         # train_matched.py run: CTKAEMatched, best-validation checkpoint as the paper's KAE
-        cfg = json.loads(meta.read_text())["config"]
+        mj = json.loads(meta.read_text())
+        cfg = mj["config"]
         mm = CMT.CTKAEMatched(
             cfg["data"]["variables"],
             cfg["data"]["input_sequence_length"],
             cfg["model"]["latent_dim"],
             cfg["model"]["hidden_dims"],
+            ct_overrides=mj.get("ct_overrides"),
         )
         ck = ckpt or run_dir / "checkpoints" / "best_model.pth"
         sd = torch.load(ck, map_location="cpu", weights_only=False)["model_state_dict"]
@@ -252,9 +255,26 @@ def run(module, args):
         return last["p"]
 
     def cfg(self, name, iters, seed, prob=None):
-        return _cfg(
-            self, name, iters, seed, prob if prob is not None else last.get("p")
-        )
+        p = prob if prob is not None else last.get("p")
+        hp = self.hp.get("UNet-4DVar")
+        if name.startswith("KAE") or hp is None or hp["init"] != "obs":
+            return _cfg(self, name, iters, seed, p)
+        # U-Net warm start (the bench allows 'obs' for the KAE only): the nearest
+        # observation y_1 as the state at t_0, as tune_ks_unet_init.py, masked to the
+        # observed points as the KAE's informed_init
+        self.hp["UNet-4DVar"] = {**hp, "init": "zero"}
+        try:
+            c = _cfg(self, name, iters, seed, p)
+        finally:
+            self.hp["UNet-4DVar"] = hp
+        assert p is not None, "U-Net warm start needs the problem"
+        i = int(np.argmin(p.taus))
+        y = torch.as_tensor(p.y[i], device=self.dev)
+        m = torch.as_tensor(p.mask[i], device=self.dev)
+        if float(m.min()) < 1.0:
+            y = y * m
+        c.init, c.init_value = "given", y
+        return c
 
     PR.build_problem, X3.Bench.cfg = build_problem, cfg
     if os.environ.get("KS_ONLY_KAE"):

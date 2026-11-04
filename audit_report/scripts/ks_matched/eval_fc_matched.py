@@ -67,6 +67,7 @@ def load(run_dir: Path, which: str, dev):
         cfg["data"]["input_sequence_length"],
         cfg["model"]["latent_dim"],
         cfg["model"]["hidden_dims"],
+        ct_overrides=meta.get("ct_overrides"),
     )
     m.load_state_dict(
         torch.load(ck, map_location="cpu", weights_only=False)["model_state_dict"]

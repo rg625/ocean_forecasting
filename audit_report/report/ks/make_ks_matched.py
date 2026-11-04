@@ -102,8 +102,11 @@ def tab_fc():
     (HERE / "tab_ksm_fc.tex").write_text("\n".join(rows) + "\n")
 
 
-def geo(sec):
-    pap = jl(MAIN / f"da_results_geometry/{sec}.json")
+def geo(sec, camp="da_results_geometry", sub="geometry"):
+    """(paper row, [paper means..., model means...]); camp/sub: the paper's campaign and the
+    models' output dir (delta_f = 1: da_results_geometry, geometry; delta_f = 9:
+    da_results_geometry_df9, geometry_df9)"""
+    pap = jl(MAIN / f"{camp}/{sec}.json")
     out = []
     for r in pap["rows"]:
         vals = [
@@ -115,7 +118,7 @@ def geo(sec):
             for k, _ in PAPER
         ]
         for n, _ in MODELS:
-            d = jl(RES / n / f"geometry/{sec}.json")
+            d = jl(RES / n / f"{sub}/{sec}.json")
             hit = (
                 None
                 if d is None
@@ -128,7 +131,7 @@ def geo(sec):
     return out
 
 
-def tab_da():
+def tab_da(camp="da_results_geometry", sub="geometry", out="tab_ksm_da.tex"):
     pick = {
         "C1_delta_f": ("first observation $\\delta_f$ (t.u.)", None),
         "C2_delta_l": ("last observation $\\delta_l$ (t.u.)", None),
@@ -140,10 +143,16 @@ def tab_da():
         "joint_sparsity": ("coverage, $N$", lambda r: r["value"][1] in (3, 5, 9, 17)),
         "S1_single_obs": ("single observation at $\\tau$", None),
     }
+    if (
+        sub == "geometry_df9"
+    ):  # delta_f is pinned: S1 and C1 belong to the delta_f = 1 table
+        pick = {
+            k: v for k, v in pick.items() if k not in ("C1_delta_f", "S1_single_obs")
+        }
     rows = []
     for sec, (lab, keep) in pick.items():
         rows.append(r"\multicolumn{9}{l}{\emph{" + lab + r"}}\\")
-        for r, vals in geo(sec):
+        for r, vals in geo(sec, camp, sub):
             if keep is not None and not keep(r):
                 continue
             v = r["value"]
@@ -160,7 +169,7 @@ def tab_da():
             else:
                 v = f"{float(v):g}"
             rows.append(f"\\quad {v} & " + " & ".join(bold_min(vals)) + r"\\")
-    (HERE / "tab_ksm_da.tex").write_text("\n".join(rows) + "\n")
+    (HERE / out).write_text("\n".join(rows) + "\n")
 
 
 def tab_lb_pf():
@@ -296,6 +305,7 @@ def fig():
 if __name__ == "__main__":
     tab_fc()
     tab_da()
+    tab_da("da_results_geometry_df9", "geometry_df9", "tab_ksm_da9.tex")
     tab_lb_pf()
     fig()
     print("matched tables and figure written")

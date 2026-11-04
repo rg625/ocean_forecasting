@@ -4,7 +4,7 @@ unmodified from its directory on the configuration stored in the paper's checkpo
 (model_outputs_ks/continous_linear_128/rollout_10/final_model.pth). Only the model class is
 swapped (and, for back001, its backward-consistency term added to the loss):
 
-    python train_matched.py ARCH OUT_DIR [--latent D] [--w-back W] [--seed S]
+    python train_matched.py ARCH OUT_DIR [--latent D] [--w-back W] [--seed S] [--signed-decay]
       ARCH = kae : the paper's KoopmanAutoencoder (control: today's code, same settings)
              ct  : models/ct_kae_matched.CTKAEMatched (CT-KAE: block generator, exact exp)
 
@@ -86,11 +86,19 @@ def main():
     ap.add_argument("--w-back", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--epochs", type=int, default=None, help="smoke tests only")
+    ap.add_argument(
+        "--signed-decay",
+        action="store_true",
+        help="CT-KAE block generator with decay rates free in sign (growing modes allowed)",
+    )
     a = ap.parse_args()
     random.seed(a.seed)
     np.random.seed(a.seed)
     torch.manual_seed(a.seed)
 
+    ct_overrides = {"signed_decay": True} if a.signed_decay else {}
+    if ct_overrides:
+        assert a.arch == "ct", "--signed-decay is a CT-KAE option"
     st = torch.load(PAPER_CKPT, map_location="cpu", weights_only=False)
     cfg = copy.deepcopy(st["config"])
     cfg["output_dir"] = str(a.out_dir.resolve())
@@ -106,6 +114,7 @@ def main():
                 "arch": a.arch,
                 "w_back": a.w_back,
                 "seed": a.seed,
+                "ct_overrides": ct_overrides,
                 "paper_ckpt": str(PAPER_CKPT),
                 "config": cfg,
             },
@@ -118,7 +127,13 @@ def main():
     if a.arch == "ct":
 
         def factory(data_variables, input_frames, latent_dim, hidden_dims, **_):
-            m = CM.CTKAEMatched(data_variables, input_frames, latent_dim, hidden_dims)
+            m = CM.CTKAEMatched(
+                data_variables,
+                input_frames,
+                latent_dim,
+                hidden_dims,
+                ct_overrides=ct_overrides,
+            )
             model_ref.append(m)
             return m
 

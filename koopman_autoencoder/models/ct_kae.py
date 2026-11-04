@@ -55,6 +55,9 @@ class CTKAEConfig:
     generator: str = "block"  # block | hurwitz | dense
     omega_max: float = 12.0  # init range of block frequencies (rad / time unit)
     gamma_init: Tuple[float, float] = (0.01, 0.3)
+    # Block generator: decay rates g_j free in sign (g_j < 0 is a growing mode, as the
+    # unstable directions of a chaotic system need) instead of softplus(.) >= 0. Off by default.
+    signed_decay: bool = False
     dense_rank: int = 8  # low-rank conditional correction for hurwitz/dense
     padding_mode: str = "zeros"
     # Harmonic lattice: the first harmonic_pairs oscillator pairs have frequencies locked to
@@ -270,7 +273,8 @@ class BlockGenerator(nn.Module):
             self.h_coef = nn.Parameter(
                 torch.tensor(cfg.harmonic_coef, dtype=torch.float32)
             )
-        self.g_raw = nn.Parameter(_inv_softplus(g0))
+        self.signed = cfg.signed_decay
+        self.g_raw = nn.Parameter(g0.clone() if self.signed else _inv_softplus(g0))
         # frequencies log-spaced over (0.05, omega_max) with random sign-free jitter
         w0 = torch.exp(torch.linspace(math.log(0.05), math.log(cfg.omega_max), m))
         self.w = nn.Parameter(w0[torch.randperm(m)])
@@ -325,7 +329,7 @@ class BlockGenerator(nn.Module):
         if self.n_h:
             wh = self.orders * self.omega1(cn, batch)[:, None]
             w = torch.cat([wh.to(w.dtype), w[:, self.n_h :]], -1)
-        return F.softplus(g_raw), w
+        return (g_raw if self.signed else F.softplus(g_raw)), w
 
     def propagate(
         self,

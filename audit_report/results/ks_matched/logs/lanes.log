@@ -1,0 +1,43 @@
+=== kae_128_s0 2026-11-02T11:28:59+00:00
+=== ct_back001_128_s0 2026-11-02T11:28:59+00:00
+--- kae_128_s0 exit=1 2026-11-02T11:29:06+00:00
+=== ct_ref_128_s0 2026-11-02T11:29:06+00:00
+--- ct_ref_128_s0 exit=1 2026-11-02T11:29:18+00:00
+=== ct_ref_256_s0 2026-11-02T11:29:18+00:00
+--- ct_ref_256_s0 exit=1 2026-11-02T11:29:28+00:00
+--- ct_back001_128_s0 exit=0 2026-11-02T15:07:00+00:00
+=== ct_back001_256_s0 2026-11-02T15:07:00+00:00
+=== eval ct_back001_128_s0 2026-11-02T15:09:42+00:00
+--- eval ct_back001_128_s0 done 2026-11-02T17:55:28+00:00
+--- ct_back001_256_s0 exit=0 2026-11-02T20:06:52+00:00
+=== ALL DONE 2026-11-02T20:06:52+00:00
+=== kae_128_s0 2026-11-02T20:07:26+00:00
+=== eval ct_back001_256_s0 2026-11-02T20:10:28+00:00
+--- eval ct_back001_256_s0 done 2026-11-02T22:57:04+00:00
+=== eval kae_128_s0 SKIPPED (training failed) 2026-11-02T22:57:04+00:00
+=== eval ct_ref_128_s0 SKIPPED (training failed) 2026-11-02T22:57:04+00:00
+=== eval ct_ref_256_s0 SKIPPED (training failed) 2026-11-02T22:57:04+00:00
+=== EVAL ALL DONE 2026-11-02T22:57:04+00:00
+--- kae_128_s0 exit=0 2026-11-02T23:42:57+00:00
+=== ct_ref_128_s0 2026-11-02T23:42:57+00:00
+--- ct_ref_128_s0 exit=0 2026-11-03T03:15:21+00:00
+=== ct_ref_256_s0 2026-11-03T03:15:21+00:00
+--- ct_ref_256_s0 exit=0 2026-11-03T06:47:59+00:00
+=== LANE A DONE 2026-11-03T06:47:59+00:00
+=== eval kae_128_s0 2026-11-03T10:46:55+00:00
+=== eval ct_ref_128_s0 2026-11-03T10:46:55+00:00
+=== rerun stopped; replaced by eval_matched_df9.sh 2026-11-03T10:52:32+00:00
+=== eval9 kae_128_s0 2026-11-03T10:52:47+00:00
+=== eval9 ct_ref_128_s0 2026-11-03T10:52:47+00:00
+--- eval9 kae_128_s0 done 2026-11-03T12:12:42+00:00
+=== eval9 ct_ref_256_s0 2026-11-03T12:12:42+00:00
+--- eval9 ct_ref_128_s0 done 2026-11-03T13:22:44+00:00
+=== eval9 ct_back001_128_s0 2026-11-03T13:22:44+00:00
+=== eval_matched_df9.sh stopped after its running steps; eval_warm_df9.sh queued 2026-11-03T14:07:54+00:00
+--- eval9 ct_ref_256_s0 done 2026-11-03T14:45:54+00:00
+--- eval9 ct_back001_128_s0 done 2026-11-03T15:33:54+00:00
+=== eval_warm_df9.sh stopped: U-Net warm sweeps dropped (user); back001-256 warm geometry_df9 left running (pid 1841423) 2026-11-03T15:38:19+00:00
+=== ct_ref_signed_128_s0 2026-11-03T15:41:52+00:00
+--- ct_ref_signed_128_s0 exit=0 2026-11-03T20:17:22+00:00
+=== eval ct_ref_signed_128_s0 2026-11-03T20:17:22+00:00
+--- eval ct_ref_signed_128_s0 done 2026-11-03T22:44:29+00:00

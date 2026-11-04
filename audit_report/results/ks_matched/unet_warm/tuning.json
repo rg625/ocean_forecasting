@@ -1,0 +1,300 @@
+{
+ "val_file": "data/ks/val.nc",
+ "n_problems": 24,
+ "iters": 2000,
+ "seed": 0,
+ "taus": [
+  0.1,
+  0.3,
+  0.7,
+  1.5,
+  2.5
+ ],
+ "obs_frac": 0.25,
+ "noise_std": 0.05,
+ "grid_lr": [
+  0.003,
+  0.01,
+  0.03,
+  0.1,
+  0.3,
+  1.0
+ ],
+ "grid_init": [
+  "random",
+  "zero"
+ ],
+ "kae_run": "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ks_matched/kae_128_s0/dummy-q1l5dwys",
+ "unet_ckpt": "model_outputs_ks/unet1d/rollout10_extended2/best_model.pth",
+ "init_scales": {
+  "source": "data/ks/train.nc",
+  "kae_run": "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ks_matched/kae_128_s0/dummy-q1l5dwys",
+  "kae_latent_init_scale": 0.7193257212638855,
+  "unet_state_init_scale": 1.0,
+  "note": "kae_latent_init_scale: per-element std of the CT-KAE encoder latents on the TRAINING split (data_assimilation.ks.models_io.kae_latent_scale); U-Net scale copied from da_results_v2/init_scales.json."
+ },
+ "results": {
+  "KAE-expm": {
+   "grid": [
+    {
+     "lr": 0.003,
+     "init": "random",
+     "init_rel_l2_mean": 0.3175794531901677,
+     "init_rel_l2_median": 0.2570720985531807,
+     "obs_rel_l2_mean": 0.044150840413446225,
+     "s_per_solve": 19.38318744674325
+    },
+    {
+     "lr": 0.01,
+     "init": "random",
+     "init_rel_l2_mean": 0.23423078438887993,
+     "init_rel_l2_median": 0.1774664968252182,
+     "obs_rel_l2_mean": 0.0370084207970649,
+     "s_per_solve": 18.65595357492566
+    },
+    {
+     "lr": 0.03,
+     "init": "random",
+     "init_rel_l2_mean": 0.21041750737155476,
+     "init_rel_l2_median": 0.1608080118894577,
+     "obs_rel_l2_mean": 0.03411734290421009,
+     "s_per_solve": 18.869541361927986
+    },
+    {
+     "lr": 0.1,
+     "init": "random",
+     "init_rel_l2_mean": 0.2273797228311499,
+     "init_rel_l2_median": 0.21482442319393158,
+     "obs_rel_l2_mean": 0.0327223784600695,
+     "s_per_solve": 18.991159334778786
+    },
+    {
+     "lr": 0.3,
+     "init": "random",
+     "init_rel_l2_mean": 0.22551726767172417,
+     "init_rel_l2_median": 0.18522538989782333,
+     "obs_rel_l2_mean": 0.03271127988894781,
+     "s_per_solve": 19.012572951614857
+    },
+    {
+     "lr": 1.0,
+     "init": "random",
+     "init_rel_l2_mean": 0.20826901666199168,
+     "init_rel_l2_median": 0.16790736466646194,
+     "obs_rel_l2_mean": 0.03281114646233618,
+     "s_per_solve": 18.9495269022882
+    },
+    {
+     "lr": 0.003,
+     "init": "zero",
+     "init_rel_l2_mean": 0.21222774467120567,
+     "init_rel_l2_median": 0.18742436170578003,
+     "obs_rel_l2_mean": 0.03671466830807427,
+     "s_per_solve": 18.932131700217724
+    },
+    {
+     "lr": 0.01,
+     "init": "zero",
+     "init_rel_l2_mean": 0.20724913819382587,
+     "init_rel_l2_median": 0.15628797560930252,
+     "obs_rel_l2_mean": 0.034141905372962356,
+     "s_per_solve": 18.971416391432285
+    },
+    {
+     "lr": 0.03,
+     "init": "zero",
+     "init_rel_l2_mean": 0.22480873266855875,
+     "init_rel_l2_median": 0.2003529593348503,
+     "obs_rel_l2_mean": 0.03283128677867353,
+     "s_per_solve": 19.019602119922638
+    },
+    {
+     "lr": 0.1,
+     "init": "zero",
+     "init_rel_l2_mean": 0.21590621676295996,
+     "init_rel_l2_median": 0.19722126424312592,
+     "obs_rel_l2_mean": 0.03271881079611679,
+     "s_per_solve": 18.95898048952222
+    },
+    {
+     "lr": 0.3,
+     "init": "zero",
+     "init_rel_l2_mean": 0.21351274754852057,
+     "init_rel_l2_median": 0.1604350581765175,
+     "obs_rel_l2_mean": 0.03436168267702063,
+     "s_per_solve": 18.996177289634943
+    },
+    {
+     "lr": 1.0,
+     "init": "zero",
+     "init_rel_l2_mean": 0.24432416539639235,
+     "init_rel_l2_median": 0.19960538297891617,
+     "obs_rel_l2_mean": 0.03627432083400587,
+     "s_per_solve": 18.91748635470867
+    },
+    {
+     "lr": 0.003,
+     "init": "obs",
+     "init_rel_l2_mean": 0.16962320202340683,
+     "init_rel_l2_median": 0.12784291803836823,
+     "obs_rel_l2_mean": 0.033894021762534976,
+     "s_per_solve": 19.062364127486944
+    },
+    {
+     "lr": 0.01,
+     "init": "obs",
+     "init_rel_l2_mean": 0.2106894984220465,
+     "init_rel_l2_median": 0.18577946722507477,
+     "obs_rel_l2_mean": 0.03239950258284807,
+     "s_per_solve": 18.930189073085785
+    },
+    {
+     "lr": 0.03,
+     "init": "obs",
+     "init_rel_l2_mean": 0.2617053648767372,
+     "init_rel_l2_median": 0.24240103363990784,
+     "obs_rel_l2_mean": 0.033569685105855264,
+     "s_per_solve": 18.965421088039875
+    },
+    {
+     "lr": 0.1,
+     "init": "obs",
+     "init_rel_l2_mean": 0.2321024350821972,
+     "init_rel_l2_median": 0.22167926281690598,
+     "obs_rel_l2_mean": 0.03341668316473564,
+     "s_per_solve": 18.93182810395956
+    },
+    {
+     "lr": 0.3,
+     "init": "obs",
+     "init_rel_l2_mean": 0.21783897498001656,
+     "init_rel_l2_median": 0.16387224197387695,
+     "obs_rel_l2_mean": 0.03559786779806018,
+     "s_per_solve": 18.980999302119017
+    },
+    {
+     "lr": 1.0,
+     "init": "obs",
+     "init_rel_l2_mean": 0.23271585814654827,
+     "init_rel_l2_median": 0.1854887679219246,
+     "obs_rel_l2_mean": 0.03763429525618752,
+     "s_per_solve": 18.911498997360468
+    }
+   ],
+   "best": {
+    "lr": 0.003,
+    "init": "obs",
+    "init_rel_l2_mean": 0.16962320202340683,
+    "init_rel_l2_median": 0.12784291803836823,
+    "obs_rel_l2_mean": 0.033894021762534976,
+    "s_per_solve": 19.062364127486944
+   }
+  },
+  "UNet-4DVar": {
+   "grid": [
+    {
+     "lr": 0.003,
+     "init": "random",
+     "init_rel_l2_mean": 0.8113209729393324,
+     "init_rel_l2_median": 0.8206887543201447,
+     "obs_rel_l2_mean": 0.07541165423269074,
+     "s_per_solve": 298.2760883755982
+    },
+    {
+     "lr": 0.01,
+     "init": "random",
+     "init_rel_l2_mean": 0.6565793553988138,
+     "init_rel_l2_median": 0.6326857209205627,
+     "obs_rel_l2_mean": 0.036954882089048624,
+     "s_per_solve": 295.2780128568411
+    },
+    {
+     "lr": 0.03,
+     "init": "random",
+     "init_rel_l2_mean": 0.684925432006518,
+     "init_rel_l2_median": 0.6556498408317566,
+     "obs_rel_l2_mean": 0.029050153602535527,
+     "s_per_solve": 295.9625538177788
+    },
+    {
+     "lr": 0.1,
+     "init": "random",
+     "init_rel_l2_mean": 0.935720091064771,
+     "init_rel_l2_median": 0.8618892729282379,
+     "obs_rel_l2_mean": 0.025964182956765097,
+     "s_per_solve": 295.98308643326163
+    },
+    {
+     "lr": 0.3,
+     "init": "random",
+     "init_rel_l2_mean": 1.43963323533535,
+     "init_rel_l2_median": 1.2257079482078552,
+     "obs_rel_l2_mean": 0.026035067819369335,
+     "s_per_solve": 294.8183780349791
+    },
+    {
+     "lr": 1.0,
+     "init": "random",
+     "init_rel_l2_mean": 4.65585857629776,
+     "init_rel_l2_median": 4.346532106399536,
+     "obs_rel_l2_mean": 0.030418250244110823,
+     "s_per_solve": 294.3492596372962
+    },
+    {
+     "lr": 0.003,
+     "init": "zero",
+     "init_rel_l2_mean": 0.4360181801021099,
+     "init_rel_l2_median": 0.43578559160232544,
+     "obs_rel_l2_mean": 0.045967614899079,
+     "s_per_solve": 296.249853476882
+    },
+    {
+     "lr": 0.01,
+     "init": "zero",
+     "init_rel_l2_mean": 0.40936490645011264,
+     "init_rel_l2_median": 0.40221016108989716,
+     "obs_rel_l2_mean": 0.03278039085368315,
+     "s_per_solve": 295.364891666919
+    },
+    {
+     "lr": 0.03,
+     "init": "zero",
+     "init_rel_l2_mean": 0.5679159921904405,
+     "init_rel_l2_median": 0.5679512917995453,
+     "obs_rel_l2_mean": 0.028171284201865394,
+     "s_per_solve": 295.258876029402
+    },
+    {
+     "lr": 0.1,
+     "init": "zero",
+     "init_rel_l2_mean": 0.8685021263857683,
+     "init_rel_l2_median": 0.8063843846321106,
+     "obs_rel_l2_mean": 0.02594842459075153,
+     "s_per_solve": 295.05113722756505
+    },
+    {
+     "lr": 0.3,
+     "init": "zero",
+     "init_rel_l2_mean": 1.2635246713956196,
+     "init_rel_l2_median": 1.0952986478805542,
+     "obs_rel_l2_mean": 0.028047402234127123,
+     "s_per_solve": 295.0561505667865
+    },
+    {
+     "lr": 1.0,
+     "init": "zero",
+     "init_rel_l2_mean": 4.144050315022469,
+     "init_rel_l2_median": 4.239713668823242,
+     "obs_rel_l2_mean": 0.036082735285162926,
+     "s_per_solve": 295.3656021282077
+    }
+   ],
+   "best": {
+    "lr": 0.01,
+    "init": "obs",
+    "source": "da_results_geometry_df9/unet_tuning.json best (validation, init in {zero, obs})"
+   }
+  }
+ },
+ "note": "UNet-4DVar: warm start (nearest observation), lr from the main repository's df9 U-Net init tuning; KAE-expm unused (--methods UNet-4DVar)"
+}
