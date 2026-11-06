@@ -50,6 +50,7 @@ import models  # noqa: E402,F401  (the main repository's package)
 _load("models.ct_kae", IMPL / "models/ct_kae.py")
 CK = _load("models.ct_kae_ks", IMPL / "models/ct_kae_ks.py")
 CMT = _load("models.ct_kae_matched", IMPL / "models/ct_kae_matched.py")
+KB = _load("models.kae_block", IMPL / "models/kae_block.py")
 import data_assimilation.ks.models_io as MIO  # noqa: E402
 
 _orig_load_kae = MIO.load_kae
@@ -117,6 +118,8 @@ def latent_std(model, device):
 def load_kae(run_dir, ckpt, device):
     run_dir = Path(run_dir)
     meta = run_dir.parent / "matched_run.json"
+    if meta.exists() and json.loads(meta.read_text())["arch"] == "kae_block":
+        return KB.load_kae_block(_orig_load_kae, run_dir, ckpt, device, meta)
     if meta.exists() and json.loads(meta.read_text())["arch"] == "ct":
         # train_matched.py run: CTKAEMatched, best-validation checkpoint as the paper's KAE
         mj = json.loads(meta.read_text())

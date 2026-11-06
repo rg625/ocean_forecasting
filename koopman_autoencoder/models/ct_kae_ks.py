@@ -4,7 +4,7 @@ Same latent dynamics (block generator, exact propagation, mixture readout) and t
 training objective (train_ctkae.step_backward); only what is tied to the 2-D TRA grid
 changes:
   * encoder / decoder: 1-D convolutions with circular padding (KS is periodic), no obstacle
-    mask and no coordinate channels (KS is translation invariant);
+    mask; a linear grid-coordinate input channel only with ``coord_channel`` (default off);
   * no physical parameter: the condition is a dummy zero (FiLM, conditional generator and
     fixed point are off in the KS configs).
 Fields keep the TRA layout [..., C, H, W] with C = H = 1 and W = 64 grid points, so the
@@ -47,8 +47,19 @@ class Encoder1d(nn.Module):
     def __init__(self, cfg: CTKAEConfig):
         super().__init__()
         w, pm = cfg.widths, cfg.padding_mode
+        self.coord = cfg.coord_channel
+        if (
+            self.coord
+        ):  # as the paper KAE's ConvEncoder and the TRA CT-KAE: linspace(-1, 1)
+            self.register_buffer(
+                "grid", torch.linspace(-1, 1, cfg.width).view(1, 1, -1)
+            )
         self.stem = nn.Conv1d(
-            cfg.in_channels * cfg.n_frames, w[0], 3, padding=1, padding_mode=pm
+            cfg.in_channels * cfg.n_frames + int(self.coord),
+            w[0],
+            3,
+            padding=1,
+            padding_mode=pm,
         )
         self.stages = nn.ModuleList()
         self.down = nn.ModuleList()
@@ -69,6 +80,8 @@ class Encoder1d(nn.Module):
         self.ckpt = cfg.grad_checkpoint
 
     def forward(self, x):
+        if self.coord:
+            x = torch.cat([x, self.grid.expand(x.shape[0], -1, -1).to(x.dtype)], 1)
         h = self.stem(x)
         for blocks, down in zip(self.stages, self.down):
             if self.ckpt and self.training and torch.is_grad_enabled():

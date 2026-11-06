@@ -30,6 +30,8 @@ RUNS = [
     ("ct_back001_256_s0", "back001 256"),
     ("ct_ref_signed_128_s0", "ref signed 128"),
     ("ct_ref_w2_128_s0", "ref w2 128"),
+    ("ct_ref_coord_128_s0", "ref coord 128"),
+    ("kae_block_128_s0", "KAE block gen."),
 ]
 COLS = ["SDA", "KAE-512 (stored)", "U-Net"] + [lab for _, lab in RUNS]
 

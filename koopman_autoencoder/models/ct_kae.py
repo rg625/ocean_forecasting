@@ -61,6 +61,9 @@ class CTKAEConfig:
     # Activation checkpointing of the 1-D encoder/decoder stages (ct_kae_ks): recomputes
     # activations in the backward pass; the same function and gradients, less memory.
     grad_checkpoint: bool = False
+    coord_channel: bool = (
+        False  # KS (ct_kae_ks.Encoder1d): linear grid coordinate input
+    )
     dense_rank: int = 8  # low-rank conditional correction for hurwitz/dense
     padding_mode: str = "zeros"
     # Harmonic lattice: the first harmonic_pairs oscillator pairs have frequencies locked to

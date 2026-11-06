@@ -1,5 +1,5 @@
 #!/bin/bash
-# One matched CT-KAE variant, trained with the paper's KS pipeline and evaluated as the other
+# One matched variant (ARCH=ct default, or ARCH=kae_block), trained with the paper's KS pipeline and evaluated as the other
 # matched runs: run_variant.sh NAME TRAIN_ARGS...  (train_matched.py ct NAME TRAIN_ARGS), e.g.
 #   run_variant.sh ct_ref_w2_128_s0 --latent 128 --ct 'widths=[128,256,512]' --ct grad_checkpoint=true
 # Evaluation: forecast (fc_matched), init scale, DA tuning (warm start forced: best init='obs'
@@ -13,7 +13,7 @@ R=/home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_matched
 L=$R/logs/lanes.log
 n=$1; shift
 echo "=== $n $(date -Is)" >> $L
-$PY -W ignore $T ct $M/$n "$@" > $R/logs/$n.log 2>&1
+$PY -W ignore $T ${ARCH:-ct} $M/$n "$@" > $R/logs/$n.log 2>&1
 rc=$?; echo "--- $n exit=$rc $(date -Is)" >> $L; [ $rc = 0 ] || exit 1
 RD=$(ls -d $M/$n/*/ | head -n 1); RD=${RD%/}; O=$R/$n; mkdir -p $O; G=$O/run.log
 step () { echo "=== $1 $(date -Is)" >> $G; shift; "$@" >> $G 2>&1; echo "--- exit=$? $(date -Is)" >> $G; }

@@ -10,7 +10,7 @@ line style = variant (CT-KAE: solid 128, dashed 256; KAE: solid control, dotted 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from make_ksm_warm import COLS, HERE, MAIN, RES, RUNS, table9
+from make_ksm_warm import HERE, MAIN, RES, RUNS, table9
 
 STY = {  # colour, linestyle, marker, label
     "SDA": ("#2a78d6", "-", "s", "SDA (stored)"),
@@ -21,9 +21,23 @@ STY = {  # colour, linestyle, marker, label
     "ref 256": ("#eda100", "--", "^", "CT-KAE ref 256"),
     "back001 128": ("#e87ba4", "-", "v", "CT-KAE back001 128"),
     "back001 256": ("#e87ba4", "--", "v", "CT-KAE back001 256"),
-    "ref signed 128": ("#008300", "-", "P", "CT-KAE ref 128, signed decay"),
+    "ref signed 128": ("#008300", "--", "P", "CT-KAE ref 128, signed decay"),
     "ref w2 128": ("#6250d6", "-", "X", "CT-KAE ref 128, widths x2"),
+    "ref coord 128": ("#008300", "-", "P", "CT-KAE ref 128, coordinate channel"),
+    "KAE block gen.": ("#e34948", "-", "s", "paper KAE enc./dec. + CT block generator"),
 }
+# drawn; ref 256, back001 256 and ref signed 128 (superseded) are in the tables only
+PLOT = [
+    "SDA",
+    "KAE ctrl",
+    "KAE-512 (stored)",
+    "U-Net",
+    "ref 128",
+    "back001 128",
+    "ref w2 128",
+    "ref coord 128",
+    "KAE block gen.",
+]
 mpl.rcParams.update(
     {
         "font.size": 8,
@@ -74,7 +88,7 @@ def da9():
     # (a) last observation
     rr = [(r, v) for r, v in tab["C2_delta_l"] if not r["tag"].endswith("anchor")]
     x = [r["taus"][-1] for r, _ in rr]
-    for c in COLS:
+    for c in PLOT:
         line(axs[0], x, [v[c] for _, v in rr], c)
     axs[0].set_xscale("log")
     axs[0].set_xticks([1.3, 2.5, 5, 10, 20, 40, 70])
@@ -85,7 +99,7 @@ def da9():
     # (b) number of observation times
     rr = tab["C3_n_obs"]
     x = [len(r["taus"]) for r, _ in rr]
-    for c in COLS:
+    for c in PLOT:
         line(axs[1], x, [v[c] for _, v in rr], c)
     axs[1].set_xscale("log")
     axs[1].minorticks_off()
@@ -96,7 +110,7 @@ def da9():
     # (c) noise (0 drawn at 0.003)
     rr = tab["noise_law"]
     x = [max(float(r["value"]), 0.003) for r, _ in rr]
-    for c in COLS:
+    for c in PLOT:
         line(axs[2], x, [v[c] for _, v in rr], c)
     axs[2].set_xscale("log")
     axs[2].minorticks_off()
@@ -107,7 +121,7 @@ def da9():
     # (d) coverage at N = 5
     rr = [(r, v) for r, v in tab["joint_sparsity"] if len(r["taus"]) == 5]
     x = [100 * r["value"][0] for r, _ in rr]
-    for c in COLS:
+    for c in PLOT:
         line(axs[3], x, [v[c] for _, v in rr], c)
     axs[3].set_xscale("log")
     axs[3].minorticks_off()
@@ -133,8 +147,8 @@ def da9():
         "(mean $\\pm$ SE over problems; lower is better)",
         fontsize=9,
     )
-    fig.tight_layout(rect=(0, 0.17, 1, 0.95))
-    fig.legend(h, order, loc="lower center", ncol=4, fontsize=7.5)
+    fig.tight_layout(rect=(0, 0.2, 1, 0.95))
+    fig.legend(h, order, loc="lower center", ncol=3, fontsize=7.5)
     for ext in ("pdf", "png"):
         fig.savefig(HERE / f"fig_ksm_warm9.{ext}", dpi=170)
 
@@ -174,10 +188,12 @@ def fc():
         "back001 256": "CT-KAE back001 256",
         "ref signed 128": "CT-KAE ref 128, signed decay",
         "ref w2 128": "CT-KAE ref 128, widths x2",
+        "ref coord 128": "CT-KAE ref 128, coordinate channel",
+        "KAE block gen.": "paper KAE enc./dec. + CT block generator",
     }
     for n, lab in RUNS:
         p = RES / n / "fc_matched.npz"
-        if p.exists():
+        if p.exists() and lab in PLOT:
             d = np.load(p)
             c, ls, _, _ = STY[lab]
             band(

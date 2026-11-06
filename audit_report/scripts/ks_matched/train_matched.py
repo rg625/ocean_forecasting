@@ -5,8 +5,10 @@ unmodified from its directory on the configuration stored in the paper's checkpo
 swapped (and, for back001, its backward-consistency term added to the loss):
 
     python train_matched.py ARCH OUT_DIR [--latent D] [--w-back W] [--seed S] [--signed-decay] [--ct KEY=JSON ...]
-      ARCH = kae : the paper's KoopmanAutoencoder (control: today's code, same settings)
-             ct  : models/ct_kae_matched.CTKAEMatched (CT-KAE: block generator, exact exp)
+      ARCH = kae       : the paper's KoopmanAutoencoder (control: today's code, same settings)
+             ct        : models/ct_kae_matched.CTKAEMatched (CT-KAE: block generator, exact exp)
+             kae_block : the paper's KoopmanAutoencoder with the CT-KAE block generator
+                         (models/kae_block.py; --signed-decay frees the decay sign)
 
 W&B is disabled (WANDB_MODE=disabled); everything is written under OUT_DIR.
 """
@@ -46,6 +48,7 @@ import models  # noqa: E402,F401  (the main repository's package)
 _load("models.ct_kae", IMPL / "models/ct_kae.py")
 _load("models.ct_kae_ks", IMPL / "models/ct_kae_ks.py")
 CM = _load("models.ct_kae_matched", IMPL / "models/ct_kae_matched.py")
+KB = _load("models.kae_block", IMPL / "models/kae_block.py")
 import train as TR  # noqa: E402  (main repository's train.py)
 from models.loss import KoopmanLoss  # noqa: E402
 from models.trainer import Trainer  # noqa: E402
@@ -80,7 +83,7 @@ class LossWithBack(torch.nn.Module):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("arch", choices=["kae", "ct"])
+    ap.add_argument("arch", choices=["kae", "ct", "kae_block"])
     ap.add_argument("out_dir", type=Path)
     ap.add_argument("--latent", type=int, default=None)
     ap.add_argument("--w-back", type=float, default=0.0)
@@ -107,7 +110,11 @@ def main():
     for kv in a.ct:
         k, v = kv.split("=", 1)
         ct_overrides[k] = json.loads(v)
-    if ct_overrides:
+    block_kw = {"signed": True} if a.signed_decay else {}
+    if a.arch == "kae_block":
+        assert not a.ct, "--ct is a CT-KAE option"
+        ct_overrides = {}
+    elif ct_overrides:
         assert a.arch == "ct", "--signed-decay is a CT-KAE option"
     st = torch.load(PAPER_CKPT, map_location="cpu", weights_only=False)
     cfg = copy.deepcopy(st["config"])
@@ -125,6 +132,7 @@ def main():
                 "w_back": a.w_back,
                 "seed": a.seed,
                 "ct_overrides": ct_overrides,
+                "block_kw": block_kw,
                 "paper_ckpt": str(PAPER_CKPT),
                 "config": cfg,
             },
@@ -148,6 +156,9 @@ def main():
             return m
 
         TR.KoopmanAutoencoder = factory
+    if a.arch == "kae_block":
+        KA = TR.KoopmanAutoencoder
+        TR.KoopmanAutoencoder = lambda **kw: KB.blockify(KA(**kw), **block_kw)
     if a.w_back > 0:
         assert a.arch == "ct", "w_back is a CT-KAE term"
         TR.KoopmanLoss = lambda **kw: LossWithBack(

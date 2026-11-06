@@ -1,0 +1,303 @@
+{
+  "val_file": "data/ks/val.nc",
+  "n_problems": 24,
+  "iters": 2000,
+  "seed": 0,
+  "taus": [
+    0.1,
+    0.3,
+    0.7,
+    1.5,
+    2.5
+  ],
+  "obs_frac": 0.25,
+  "noise_std": 0.05,
+  "grid_lr": [
+    0.003,
+    0.01,
+    0.03,
+    0.1,
+    0.3,
+    1.0
+  ],
+  "grid_init": [
+    "random",
+    "zero"
+  ],
+  "kae_run": "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ks_matched/kae_block_128_s0/dummy-vtm0lm8r",
+  "unet_ckpt": "model_outputs_ks/unet1d/rollout10_extended2/best_model.pth",
+  "init_scales": {
+    "source": "data/ks/train.nc",
+    "kae_run": "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ks_matched/kae_block_128_s0/dummy-vtm0lm8r",
+    "kae_latent_init_scale": 0.42875024676322937,
+    "unet_state_init_scale": 1.0,
+    "note": "kae_latent_init_scale: per-element std of the CT-KAE encoder latents on the TRAINING split (data_assimilation.ks.models_io.kae_latent_scale); U-Net scale copied from da_results_v2/init_scales.json."
+  },
+  "results": {
+    "KAE-expm": {
+      "grid": [
+        {
+          "lr": 0.003,
+          "init": "random",
+          "init_rel_l2_mean": 0.3488385062664747,
+          "init_rel_l2_median": 0.2851431369781494,
+          "obs_rel_l2_mean": 0.03624925762414932,
+          "s_per_solve": 18.22906118258834
+        },
+        {
+          "lr": 0.01,
+          "init": "random",
+          "init_rel_l2_mean": 0.27974981380005676,
+          "init_rel_l2_median": 0.20472753047943115,
+          "obs_rel_l2_mean": 0.02955254664023717,
+          "s_per_solve": 16.616674374789
+        },
+        {
+          "lr": 0.03,
+          "init": "random",
+          "init_rel_l2_mean": 0.27374291761467856,
+          "init_rel_l2_median": 0.24407945573329926,
+          "obs_rel_l2_mean": 0.02624750618512432,
+          "s_per_solve": 16.60867316648364
+        },
+        {
+          "lr": 0.1,
+          "init": "random",
+          "init_rel_l2_mean": 0.24828431786348423,
+          "init_rel_l2_median": 0.21815752238035202,
+          "obs_rel_l2_mean": 0.0248297235618035,
+          "s_per_solve": 16.624423254281282
+        },
+        {
+          "lr": 0.3,
+          "init": "random",
+          "init_rel_l2_mean": 0.26504713545242947,
+          "init_rel_l2_median": 0.22804857790470123,
+          "obs_rel_l2_mean": 0.02526201563887298,
+          "s_per_solve": 16.60569855198264
+        },
+        {
+          "lr": 1.0,
+          "init": "random",
+          "init_rel_l2_mean": 0.3001405652612448,
+          "init_rel_l2_median": 0.26937080919742584,
+          "obs_rel_l2_mean": 0.02465911170778175,
+          "s_per_solve": 16.626795329153538
+        },
+        {
+          "lr": 0.003,
+          "init": "zero",
+          "init_rel_l2_mean": 0.28859672602266073,
+          "init_rel_l2_median": 0.25700752437114716,
+          "obs_rel_l2_mean": 0.031072944945966203,
+          "s_per_solve": 16.707907669246197
+        },
+        {
+          "lr": 0.01,
+          "init": "zero",
+          "init_rel_l2_mean": 0.2720650170619289,
+          "init_rel_l2_median": 0.22246988117694855,
+          "obs_rel_l2_mean": 0.027153100275124114,
+          "s_per_solve": 16.650653570890427
+        },
+        {
+          "lr": 0.03,
+          "init": "zero",
+          "init_rel_l2_mean": 0.27101244560132426,
+          "init_rel_l2_median": 0.22155893594026566,
+          "obs_rel_l2_mean": 0.024803729029372334,
+          "s_per_solve": 16.652946058660746
+        },
+        {
+          "lr": 0.1,
+          "init": "zero",
+          "init_rel_l2_mean": 0.2581649720668793,
+          "init_rel_l2_median": 0.24689633399248123,
+          "obs_rel_l2_mean": 0.024117970218261082,
+          "s_per_solve": 16.656647857278585
+        },
+        {
+          "lr": 0.3,
+          "init": "zero",
+          "init_rel_l2_mean": 0.2716980744153261,
+          "init_rel_l2_median": 0.21223095059394836,
+          "obs_rel_l2_mean": 0.024096498265862465,
+          "s_per_solve": 16.62334356084466
+        },
+        {
+          "lr": 1.0,
+          "init": "zero",
+          "init_rel_l2_mean": 0.31319256002704304,
+          "init_rel_l2_median": 0.30864980816841125,
+          "obs_rel_l2_mean": 0.024429289468874533,
+          "s_per_solve": 16.586774792522192
+        },
+        {
+          "lr": 0.003,
+          "init": "obs",
+          "init_rel_l2_mean": 0.21647304700066647,
+          "init_rel_l2_median": 0.17739085108041763,
+          "obs_rel_l2_mean": 0.025424764724448323,
+          "s_per_solve": 16.669848885387182
+        },
+        {
+          "lr": 0.01,
+          "init": "obs",
+          "init_rel_l2_mean": 0.28352751148243743,
+          "init_rel_l2_median": 0.26731742918491364,
+          "obs_rel_l2_mean": 0.022228607054178912,
+          "s_per_solve": 16.63319493085146
+        },
+        {
+          "lr": 0.03,
+          "init": "obs",
+          "init_rel_l2_mean": 0.2959754839539528,
+          "init_rel_l2_median": 0.2514745146036148,
+          "obs_rel_l2_mean": 0.021063255650612216,
+          "s_per_solve": 16.67537058517337
+        },
+        {
+          "lr": 0.1,
+          "init": "obs",
+          "init_rel_l2_mean": 0.3089522775262594,
+          "init_rel_l2_median": 0.26987969875335693,
+          "obs_rel_l2_mean": 0.021306973959629733,
+          "s_per_solve": 16.69376863911748
+        },
+        {
+          "lr": 0.3,
+          "init": "obs",
+          "init_rel_l2_mean": 0.2918950921545426,
+          "init_rel_l2_median": 0.2730806916952133,
+          "obs_rel_l2_mean": 0.022513034132619698,
+          "s_per_solve": 16.557541772723198
+        },
+        {
+          "lr": 1.0,
+          "init": "obs",
+          "init_rel_l2_mean": 0.3296004148821036,
+          "init_rel_l2_median": 0.30935893952846527,
+          "obs_rel_l2_mean": 0.021904914756305516,
+          "s_per_solve": 16.60990557447076
+        }
+      ],
+      "best": {
+        "lr": 0.003,
+        "init": "obs",
+        "init_rel_l2_mean": 0.21647304700066647,
+        "init_rel_l2_median": 0.17739085108041763,
+        "obs_rel_l2_mean": 0.025424764724448323,
+        "s_per_solve": 16.669848885387182
+      }
+    },
+    "UNet-4DVar": {
+      "grid": [
+        {
+          "lr": 0.003,
+          "init": "random",
+          "init_rel_l2_mean": 0.8113209729393324,
+          "init_rel_l2_median": 0.8206887543201447,
+          "obs_rel_l2_mean": 0.07541165423269074,
+          "s_per_solve": 298.2760883755982
+        },
+        {
+          "lr": 0.01,
+          "init": "random",
+          "init_rel_l2_mean": 0.6565793553988138,
+          "init_rel_l2_median": 0.6326857209205627,
+          "obs_rel_l2_mean": 0.036954882089048624,
+          "s_per_solve": 295.2780128568411
+        },
+        {
+          "lr": 0.03,
+          "init": "random",
+          "init_rel_l2_mean": 0.684925432006518,
+          "init_rel_l2_median": 0.6556498408317566,
+          "obs_rel_l2_mean": 0.029050153602535527,
+          "s_per_solve": 295.9625538177788
+        },
+        {
+          "lr": 0.1,
+          "init": "random",
+          "init_rel_l2_mean": 0.935720091064771,
+          "init_rel_l2_median": 0.8618892729282379,
+          "obs_rel_l2_mean": 0.025964182956765097,
+          "s_per_solve": 295.98308643326163
+        },
+        {
+          "lr": 0.3,
+          "init": "random",
+          "init_rel_l2_mean": 1.43963323533535,
+          "init_rel_l2_median": 1.2257079482078552,
+          "obs_rel_l2_mean": 0.026035067819369335,
+          "s_per_solve": 294.8183780349791
+        },
+        {
+          "lr": 1.0,
+          "init": "random",
+          "init_rel_l2_mean": 4.65585857629776,
+          "init_rel_l2_median": 4.346532106399536,
+          "obs_rel_l2_mean": 0.030418250244110823,
+          "s_per_solve": 294.3492596372962
+        },
+        {
+          "lr": 0.003,
+          "init": "zero",
+          "init_rel_l2_mean": 0.4360181801021099,
+          "init_rel_l2_median": 0.43578559160232544,
+          "obs_rel_l2_mean": 0.045967614899079,
+          "s_per_solve": 296.249853476882
+        },
+        {
+          "lr": 0.01,
+          "init": "zero",
+          "init_rel_l2_mean": 0.40936490645011264,
+          "init_rel_l2_median": 0.40221016108989716,
+          "obs_rel_l2_mean": 0.03278039085368315,
+          "s_per_solve": 295.364891666919
+        },
+        {
+          "lr": 0.03,
+          "init": "zero",
+          "init_rel_l2_mean": 0.5679159921904405,
+          "init_rel_l2_median": 0.5679512917995453,
+          "obs_rel_l2_mean": 0.028171284201865394,
+          "s_per_solve": 295.258876029402
+        },
+        {
+          "lr": 0.1,
+          "init": "zero",
+          "init_rel_l2_mean": 0.8685021263857683,
+          "init_rel_l2_median": 0.8063843846321106,
+          "obs_rel_l2_mean": 0.02594842459075153,
+          "s_per_solve": 295.05113722756505
+        },
+        {
+          "lr": 0.3,
+          "init": "zero",
+          "init_rel_l2_mean": 1.2635246713956196,
+          "init_rel_l2_median": 1.0952986478805542,
+          "obs_rel_l2_mean": 0.028047402234127123,
+          "s_per_solve": 295.0561505667865
+        },
+        {
+          "lr": 1.0,
+          "init": "zero",
+          "init_rel_l2_mean": 4.144050315022469,
+          "init_rel_l2_median": 4.239713668823242,
+          "obs_rel_l2_mean": 0.036082735285162926,
+          "s_per_solve": 295.3656021282077
+        }
+      ],
+      "best": {
+        "lr": 0.01,
+        "init": "zero",
+        "init_rel_l2_mean": 0.40936490645011264,
+        "init_rel_l2_median": 0.40221016108989716,
+        "obs_rel_l2_mean": 0.03278039085368315,
+        "s_per_solve": 295.364891666919
+      }
+    }
+  },
+  "note": "KAE-expm re-tuned for this CT-KAE with tune.py's grid and problems; UNet-4DVar copied."
+}

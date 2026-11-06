@@ -23,7 +23,22 @@ from eval_ctkae import load_model  # noqa: E402
 from models.ct_data import TraWindows, denormalise  # noqa: E402
 from models.ct_kae import mixture_nodes  # noqa: E402
 
-GRID = [0.0, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10]
+GRID = [
+    0.0,
+    0.01,
+    0.02,
+    0.03,
+    0.04,
+    0.05,
+    0.06,
+    0.08,
+    0.10,
+    0.12,
+    0.15,
+    0.20,
+    0.25,
+    0.30,
+]
 STARTS = [300, 700]  # raw-frame indices (0.05 apart); the rollouts span 116 raw frames
 K = 58
 

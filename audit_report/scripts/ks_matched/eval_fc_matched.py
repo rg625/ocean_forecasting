@@ -46,6 +46,7 @@ import models  # noqa: E402,F401
 _load("models.ct_kae", IMPL / "models/ct_kae.py")
 _load("models.ct_kae_ks", IMPL / "models/ct_kae_ks.py")
 CM = _load("models.ct_kae_matched", IMPL / "models/ct_kae_matched.py")
+KB = _load("models.kae_block", IMPL / "models/kae_block.py")
 import data_assimilation.ks.models_io as MIO  # noqa: E402
 from data_assimilation.ks.protocol import DT, KSData, rel_l2  # noqa: E402
 
@@ -60,6 +61,11 @@ def load(run_dir: Path, which: str, dev):
     )
     if meta["arch"] == "kae":
         m, K, _ = MIO.load_kae(run_dir, ck, dev)
+        return "kae", m, K
+    if meta["arch"] == "kae_block":
+        m, K, _ = KB.load_kae_block(
+            MIO.load_kae, run_dir, ck, dev, run_dir.parent / "matched_run.json"
+        )
         return "kae", m, K
     cfg = meta["config"]
     m = CM.CTKAEMatched(
