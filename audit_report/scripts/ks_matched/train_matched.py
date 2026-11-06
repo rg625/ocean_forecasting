@@ -95,6 +95,12 @@ def main():
         help="CT-KAE block generator with decay rates free in sign (growing modes allowed)",
     )
     ap.add_argument(
+        "--block-init",
+        choices=["ct", "kae"],
+        default="ct",
+        help="kae_block: CT-KAE initialisation (default) or the KAE's initial spectrum",
+    )
+    ap.add_argument(
         "--ct",
         action="append",
         default=[],
@@ -111,6 +117,9 @@ def main():
         k, v = kv.split("=", 1)
         ct_overrides[k] = json.loads(v)
     block_kw = {"signed": True} if a.signed_decay else {}
+    if a.block_init != "ct":
+        assert a.arch == "kae_block", "--block-init is a kae_block option"
+        block_kw["init"] = a.block_init
     if a.arch == "kae_block":
         assert not a.ct, "--ct is a CT-KAE option"
         ct_overrides = {}

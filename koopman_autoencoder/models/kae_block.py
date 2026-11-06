@@ -5,7 +5,9 @@ of its dense one.
 The paper KAE's continuous generator is K = skew(W) + sym(D), a dense D x D matrix. Here
 K = blockdiag([[-g_j, -w_j], [w_j, -g_j]]), j = 1..D/2: independent damped oscillators, with
 g_j = softplus(.) >= 0 (models/ct_kae.BlockGenerator; ``signed`` frees the sign) and the CT-KAE's
-initialisation (g log-uniform in gamma_init, w log-spaced over (0.05, omega_max)). Everything
+initialisation (g log-uniform in gamma_init, w log-spaced over (0.05, omega_max)); with
+init="kae" it starts from the KAE's initial spectrum instead (w = eigen-frequencies of skew(W),
+W orthogonal; g = 0, free in sign), so only the generator's block structure differs. Everything
 else is the KAE's except the propagation: exact exp(dt K) in training (closed form per
 oscillator, as the CT-KAE; the KAE uses an RK4 step), K for matrix_exp in the DA
 (da_ks.get_generator calls _get_effective_linear_map), the loss and the training pipeline.
@@ -36,19 +38,33 @@ class BlockContinuousKoopmanOperator(ContinuousKoopmanOperator):
         gamma_init=(0.01, 0.3),
         omega_max: float = 12.0,
         signed: bool = False,
+        init: str = "ct",
     ):
         super().__init__(config)
         assert config.mode == KoopmanMode.LINEAR and config.latent_dim % 2 == 0
         assert self.hypnet is None, "KS: unconditioned generator"
         del self.W_param, self.D_param
         m = config.latent_dim // 2
-        g0 = torch.exp(
-            torch.empty(m).uniform_(math.log(gamma_init[0]), math.log(gamma_init[1]))
-        )
+        if init == "kae":
+            # the KAE's initial generator in block form: K0 = skew(W), W orthogonal, D = 0
+            # has eigenvalues +-i lambda_j (lambda_j <= 1); start at w_j = lambda_j, g_j = 0,
+            # decay free in sign (sym(D) is free in sign)
+            W = torch.empty(config.latent_dim, config.latent_dim)
+            nn.init.orthogonal_(W, gain=1.0)
+            lam = torch.linalg.eigvals(0.5 * (W - W.T)).imag.abs().sort().values
+            w0 = lam[1::2]  # one of each +-lambda pair (robust to a lambda ~ 0 pair)
+            g0, signed = torch.zeros(m), True
+        else:
+            g0 = torch.exp(
+                torch.empty(m).uniform_(
+                    math.log(gamma_init[0]), math.log(gamma_init[1])
+                )
+            )
+            w0 = torch.exp(torch.linspace(math.log(0.05), math.log(omega_max), m))
+            w0 = w0[torch.randperm(m)]
         self.signed = signed
         self.g_raw = nn.Parameter(g0.clone() if signed else _inv_softplus(g0))
-        w0 = torch.exp(torch.linspace(math.log(0.05), math.log(omega_max), m))
-        self.w = nn.Parameter(w0[torch.randperm(m)])
+        self.w = nn.Parameter(w0)
         i = torch.arange(m)
         self.register_buffer("i0", 2 * i)
         self.register_buffer("i1", 2 * i + 1)

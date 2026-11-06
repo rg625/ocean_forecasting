@@ -52,7 +52,7 @@ class CTKAEConfig:
     # latent dynamics are dz/dt = A(c) z with no offset. With an offset the model is still
     # exactly linear in [z; 1] (see augmented_generator).
     fixed_point: str = "conditional"
-    generator: str = "block"  # block | hurwitz | dense
+    generator: str = "block"  # block | hurwitz | dense | kae
     omega_max: float = 12.0  # init range of block frequencies (rad / time unit)
     gamma_init: Tuple[float, float] = (0.01, 0.3)
     # Block generator: decay rates g_j free in sign (g_j < 0 is a growing mode, as the
@@ -370,13 +370,17 @@ class BlockGenerator(nn.Module):
 
 
 class MatrixGenerator(nn.Module):
-    """hurwitz: A = J - (L L^T + eps I); dense: A = skew(W) + sym(D). Low-rank c-correction."""
+    """hurwitz: A = J - (L L^T + eps I); dense: A = skew(W) + sym(D). Low-rank c-correction.
+    kae: the paper KAE's continuous generator exactly (models/modules.ContinuousKoopmanOperator,
+    linear mode): A = skew(W) + sym(D), W orthogonal at init (pure rotation), D = 0."""
 
     def __init__(self, cfg: CTKAEConfig, kind: str):
         super().__init__()
         d = cfg.latent_dim
         self.kind, self.d, self.r = kind, d, cfg.dense_rank
         self.W = nn.Parameter(torch.randn(d, d) * (1.0 / math.sqrt(d)))
+        if kind == "kae":
+            nn.init.orthogonal_(self.W, gain=1.0)
         if kind == "hurwitz":
             self.L = nn.Parameter(torch.randn(d, d) * (0.1 / math.sqrt(d)))
         else:
@@ -406,6 +410,8 @@ class MatrixGenerator(nn.Module):
         if self.kind == "hurwitz":
             R = self.L @ self.L.T + 1e-4 * torch.eye(self.d, device=self.L.device)
             return J - R
+        if self.kind == "kae":
+            return J + 0.5 * (self.D + self.D.T)
         S = 0.5 * (Wb + Wb.transpose(1, 2)) + 0.5 * (self.D + self.D.T)
         return J + S
 
@@ -413,6 +419,12 @@ class MatrixGenerator(nn.Module):
         self, y: Tensor, taus: Tensor, e: Optional[Tensor], cn: Optional[Tensor] = None
     ) -> Tensor:
         B, K = taus.shape
+        if self.head is None and B > 1 and torch.equal(taus, taus[:1].expand_as(taus)):
+            # unconditioned generator, same times for the whole batch: one expm, not B
+            E = torch.linalg.matrix_exp(
+                self.matrix(None, 1)[0] * taus[0, :, None, None]
+            )
+            return torch.einsum("kij,bj->bki", E, y)  # [B, K, d]
         A = self.matrix(e, B)  # [B, d, d]
         grid = taus[:, :1] * torch.arange(1, K + 1, device=taus.device)
         if torch.allclose(taus, grid, rtol=1e-6, atol=1e-7):
