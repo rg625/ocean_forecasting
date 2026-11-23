@@ -1,0 +1,54 @@
+
+== ref short (single: MSE 3.661, LSiM 1.778)
+  candidate                            MSE/single            dLSiM  log_low log_mid log_high slope
+  single                           1.000+-0.000  +0.000+-0.000  -0.027  -0.015  -0.020  -3.40
+  mirror                           0.890+-0.036  -0.053+-0.011  -0.030  -0.025  -0.044  -3.40
+  sharp(mirror,a1,c5)              0.911+-0.034  -0.109+-0.023  -0.027  -0.012  -0.021  -3.40
+  lpm(mirror)                      0.904+-0.035  -0.129+-0.021  -0.030  -0.014  -0.029  -3.38
+  stack(global)                    0.847+-0.032  +0.208+-0.054  -0.027  -0.080  -0.115  -3.40
+  stack(band)                      0.848+-0.032  +0.189+-0.052  -0.019  -0.092  -0.142  -3.49
+  stack(band)+sharp                0.913+-0.030  -0.102+-0.027  -0.028  -0.005  -0.026  -3.38
+  lpm(stack(band))                 0.890+-0.033  -0.104+-0.018  -0.031  -0.026  -0.073  -3.38
+
+== ref long (single: MSE 12.223, LSiM 3.972)
+  candidate                            MSE/single            dLSiM  log_low log_mid log_high slope
+  single                           1.000+-0.000  +0.000+-0.000  -0.029  -0.153  -0.105  -3.37
+  mirror                           0.978+-0.017  +0.249+-0.048  -0.042  -0.188  -0.133  -3.34
+  sharp(mirror,a1,c5)              1.019+-0.018  +0.068+-0.049  -0.033  -0.159  -0.105  -3.37
+  lpm(mirror)                      1.003+-0.017  -0.093+-0.071  -0.043  -0.159  -0.115  -3.31
+  stack(global)                    0.892+-0.034  +1.818+-0.184  -0.050  -0.397  -0.257  -3.31
+  stack(band)                      0.914+-0.032  +1.519+-0.190  -0.040  -0.407  -0.285  -3.44
+  stack(band)+sharp                1.032+-0.025  +0.293+-0.122  -0.024  -0.190  -0.157  -3.40
+  lpm(stack(band))                 0.962+-0.013  +0.234+-0.057  -0.052  -0.231  -0.158  -3.34
+
+== back001 short (single: MSE 3.118, LSiM 1.644)
+  candidate                            MSE/single            dLSiM  log_low log_mid log_high slope
+  single                           1.000+-0.000  +0.000+-0.000  -0.017  -0.019  -0.017  -3.45
+  mirror                           0.888+-0.042  -0.054+-0.024  -0.020  -0.025  -0.037  -3.45
+  sharp(mirror,a1,c5)              0.908+-0.042  -0.102+-0.028  -0.017  -0.016  -0.016  -3.45
+  lpm(mirror)                      0.903+-0.041  -0.119+-0.030  -0.019  -0.016  -0.025  -3.43
+  stack(global)                    0.861+-0.039  +0.188+-0.047  -0.021  -0.075  -0.095  -3.46
+  stack(band)                      0.863+-0.039  +0.166+-0.044  -0.017  -0.077  -0.116  -3.48
+  stack(band)+sharp                0.920+-0.045  -0.078+-0.036  -0.018  -0.010  -0.020  -3.43
+  lpm(stack(band))                 0.896+-0.041  -0.100+-0.030  -0.021  -0.024  -0.060  -3.42
+
+== back001 long (single: MSE 10.966, LSiM 4.083)
+  candidate                            MSE/single            dLSiM  log_low log_mid log_high slope
+  single                           1.000+-0.000  +0.000+-0.000  -0.020  -0.158  -0.100  -3.44
+  mirror                           0.942+-0.031  +0.238+-0.082  -0.029  -0.194  -0.130  -3.45
+  sharp(mirror,a1,c5)              0.987+-0.025  -0.041+-0.052  -0.015  -0.157  -0.098  -3.48
+  lpm(mirror)                      0.971+-0.027  -0.230+-0.078  -0.028  -0.148  -0.102  -3.41
+  stack(global)                    0.910+-0.030  +1.117+-0.152  -0.056  -0.328  -0.227  -3.33
+  stack(band)                      0.935+-0.028  +0.928+-0.177  -0.048  -0.340  -0.257  -3.39
+  stack(band)+sharp                1.022+-0.017  -0.071+-0.087  -0.007  -0.162  -0.127  -3.42
+  lpm(stack(band))                 0.958+-0.023  -0.005+-0.044  -0.037  -0.187  -0.143  -3.33
+
+== selection (admissible: dLSiM <= 0 and band log ratio >= single - 0.05 everywhere)
+  stack(global)                  mean MSE/single 0.878  -
+  stack(band)                    mean MSE/single 0.890  -
+  mirror                         mean MSE/single 0.925  -
+  lpm(stack(band))               mean MSE/single 0.927  -
+  lpm(mirror)                    mean MSE/single 0.945  ADMISSIBLE
+  sharp(mirror,a1,c5)            mean MSE/single 0.956  -
+  stack(band)+sharp              mean MSE/single 0.972  -
+  single                         mean MSE/single 1.000  ADMISSIBLE

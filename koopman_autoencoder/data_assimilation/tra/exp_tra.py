@@ -142,6 +142,18 @@ class Bench:
                 kw["config_path"] = self.a.kae_config
             if getattr(self.a, "kae_input_frames", 0):
                 kw["input_frames"] = self.a.kae_input_frames
+            if getattr(self.a, "kae_kind", "legacy") == "ctkae":
+                # the CT-KAE takes the KAE slot, so every KAE code path runs unchanged
+                from data_assimilation.tra.ctkae_adapter import CTKAEAdapter
+
+                return CTKAEAdapter(
+                    self.a.kae_run,
+                    self.regime,
+                    self.dev,
+                    ckpt=self.a.kae_ckpt or "best.pth",
+                )
+            if getattr(self.a, "kae_ckpt", None):
+                kw["ckpt"] = Path(self.a.kae_run) / "checkpoints" / self.a.kae_ckpt
             ad = KAEAdapter(self.a.kae_run, self.regime, self.dev, **kw)
             if name == "KAE" and getattr(self.a, "kae_objective", "bg") == "bg":
                 ad.background = self.kae_background(ad)
@@ -179,6 +191,10 @@ class Bench:
                 kw = {"init": init, "bgx": self.unet_background(ad, float(prob.noise_std))}
             return solve_autoregressive(ad, data, prob, iters=iters, lr=lr, seed=seed,
                                         track_every=track_every, **kw)
+        if name == "KAE" and self._kae_members():
+            return self._solve_kae_avg(
+                ad, data, prob, iters=iters, lr=lr, seed=seed, init=init
+            )
         fn = {
             "KAE": solve_kae,
             "KAE-data": solve_kae_data,
@@ -202,6 +218,90 @@ class Bench:
             ),
         )
 
+    # -- averaged CT-KAE analyses (mirror readout, seed ensembles) ------------------
+    def _kae_members(self) -> List:
+        """(run, mirror) for every CT-KAE analysis averaged with the primary one."""
+        a = self.a
+        if getattr(a, "kae_kind", "legacy") != "ctkae":
+            return []
+        runs = [a.kae_run] + list(getattr(a, "kae_ensemble", []) or [])
+        mirrors = [False, True] if getattr(a, "kae_mirror", False) else [False]
+        return [(r, m) for r in runs for m in mirrors][1:]
+
+    def _solve_kae_avg(self, ad, data, prob, *, iters, lr, seed, init) -> Dict:
+        """4D-Var once per member (each its own latent control), analyses averaged in
+        physical space; the error is that of the average."""
+        from data_assimilation.tra.ctkae_adapter import CTKAEAdapter
+
+        rs = [solve_kae(ad, data, prob, iters=iters, lr=lr, seed=seed, init=init)]
+        for run, mirror in self._kae_members():
+            key = f"kae:{run}:{mirror}"
+            if key not in self._cache:
+                self._cache[key] = CTKAEAdapter(
+                    run,
+                    self.regime,
+                    self.dev,
+                    ckpt=self.a.kae_ckpt or "best.pth",
+                    mirror=mirror,
+                )
+            rs.append(
+                solve_kae(
+                    self._cache[key],
+                    data,
+                    prob,
+                    iters=iters,
+                    lr=lr,
+                    seed=seed,
+                    init=init,
+                )
+            )
+        analysis = np.mean([r["analysis"] for r in rs], 0)
+        sim = torch.as_tensor(prob.sim, device=self.dev)
+        t0 = torch.as_tensor(prob.t0, device=self.dev)
+        if getattr(self.a, "kae_avg", "mean") == "lpm":
+            analysis = self._lpm(
+                analysis, [r["analysis"] for r in rs], data.mask_for(sim)
+            )
+        with torch.no_grad():
+            rel = rel_l2(
+                torch.as_tensor(analysis, device=self.dev),
+                data.frames(sim, t0),
+                data.mask_for(sim),
+            )
+        return {
+            **rs[0],
+            "rel": rel.cpu().numpy(),
+            "analysis": analysis,
+            "wall_s": sum(r["wall_s"] for r in rs),
+            "members": len(rs),
+        }
+
+    @staticmethod
+    def _lpm(avg, members, mask):
+        """localized probability-matched mean of the averaged analysis onto the member
+        analyses, per problem (audit_report/scripts/postproc3/sharp.py)"""
+        import sys
+
+        sys.path.insert(
+            0,
+            str(Path(__file__).resolve().parents[3] / "audit_report/scripts/postproc3"),
+        )
+        from sharp import lpm
+
+        out = np.empty_like(avg)
+        for i in range(len(avg)):
+            m = (
+                torch.ones(avg.shape[-2:])
+                if mask is None
+                else mask[i].float().cpu().reshape(avg.shape[-2:])
+            )
+            out[i] = lpm(
+                torch.from_numpy(avg[i]).double(),
+                [torch.from_numpy(x[i]).double() for x in members],
+                m.double(),
+            ).numpy()
+        return out
+
 
 # ---------------------------------------------------------------------------
 def tune(b: Bench, out: Path) -> Dict:
@@ -217,7 +317,7 @@ def tune(b: Bench, out: Path) -> Dict:
         noise_std=b.a.noise,
     )
     best = {}
-    for name in FOURDVAR:
+    for name in [m for m in FOURDVAR if m in b.a.methods]:
         ad = b.model(name)
         rows = []
         for lr in b.a.lrs:
@@ -259,7 +359,7 @@ def headline(b: Bench, out: Path, tuning: Dict) -> None:
     )
     logger.info(f"  {json.dumps(prob.meta())}")
     store, summary = {"problem": prob.meta()}, {}
-    for name in FOURDVAR:
+    for name in [m for m in FOURDVAR if m in b.a.methods]:
         ad = b.model(name)
         lr = tuning[name]["lr"]
         r = b.solve(
@@ -2656,6 +2756,36 @@ def main():
     ap.add_argument(
         "--kae-run",
         default=("model_outputs_tra/continous_linear_128/run-20260821_031121"),
+    )
+    ap.add_argument(
+        "--kae-kind",
+        default="legacy",
+        choices=["legacy", "ctkae"],
+        help="which model fills the KAE slot: the legacy KoopmanAutoencoder or the CT-KAE",
+    )
+    ap.add_argument(
+        "--kae-ckpt",
+        default=None,
+        help="checkpoint file name: in the run dir for ctkae (default best.pth), in "
+        "RUN/checkpoints for legacy (default best_model.pth)",
+    )
+    ap.add_argument(
+        "--kae-mirror",
+        action="store_true",
+        help="ctkae: average the analysis with that of the vertically mirrored problem",
+    )
+    ap.add_argument(
+        "--kae-avg",
+        default="mean",
+        choices=["mean", "lpm"],
+        help="ctkae: how the member analyses (--kae-mirror, --kae-ensemble) are combined: "
+        "their mean, or the mean re-mapped by the localized probability-matched mean",
+    )
+    ap.add_argument(
+        "--kae-ensemble",
+        nargs="*",
+        default=[],
+        help="ctkae: further run dirs whose analyses are averaged with --kae-run's",
     )
     ap.add_argument("--sections", nargs="+", default=["tune", "headline"])
     ap.add_argument(

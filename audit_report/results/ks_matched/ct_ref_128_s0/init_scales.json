@@ -1,0 +1,7 @@
+{
+  "source": "data/ks/train.nc",
+  "kae_run": "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ks_matched/ct_ref_128_s0/dummy-gsnt8ogt",
+  "kae_latent_init_scale": 1.6744270324707031,
+  "unet_state_init_scale": 1.0,
+  "note": "kae_latent_init_scale: per-element std of the CT-KAE encoder latents on the TRAINING split (data_assimilation.ks.models_io.kae_latent_scale); U-Net scale copied from da_results_v2/init_scales.json."
+}

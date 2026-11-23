@@ -1,0 +1,51 @@
+# Fair-horizon CT-KAE with a two-timescale latent (2026-10-21): identical to fair_h8.yaml
+# (latent 256) plus a spatial detail latent (16 channels on the 32x64 grid, padded 8/16
+# cells, part of the state) whose generator is diagonal in Fourier space:
+# decay only (control for the advection variant). Dynamics stay exactly linear (tests:
+# test_detail_latent_is_exactly_linear_semigroup_and_stable). Target, fixed before the run:
+# interp lead-1 error <= 0.12 with lead-10 no worse than H8_d256_s0 (0.466).
+#
+# Fair-horizon CT-KAE (2026-10-20 requirements):
+#   - trained purely for forecasting, end-to-end (no DA objective, no frozen stages)
+#   - horizon comparable to the baselines: 2 conditioning frames -> 8 predicted frames
+#     (U-Net_ut unrolls 8-frame windows; the original KAE trained 2 -> 8), every predicted
+#     frame supervised, stride 2 only (dt = 0.1, as ACDM), so the horizon in time matches
+#   - data as ACDM: the 33 training simulations, all frames, random offsets, no
+#     validation split, final checkpoint used
+#   - purely linear latent dynamics dz/dt = A(Ma) z (fixed_point: none; mu had no effect)
+run_name: fair_h8_decay
+out_root: model_outputs_ctkae
+seed: 0
+data:
+  train_file: data/acdm/128_tra/train.nc
+  val_ma: []
+  extra_raw_sims: [/home/rg625/mnt/ocean_forecasting/data/128_tra/sim_000040]
+model:
+  latent_dim: 256
+  detail_channels: 16
+  detail_mode: decay
+  detail_level: 1
+  detail_pad: [8, 16]
+  widths: [64, 128, 256]
+  blocks_per_stage: 2
+  n_frames: 2
+  cond_ref: [0.7]
+  cond_scale: [0.1]
+  film_encoder: true
+  film_decoder: true
+  cond_generator: true
+  fixed_point: none
+  generator: block
+train:
+  steps: 20000
+  batch: 16
+  lr: 3.0e-4
+  k_start: 8
+  k_max: 8
+  n_dec: 8
+  strides: [2]
+  w_rec: 1.0
+  w_pred: 1.0
+  w_lat: 0.1
+  w_amp: 0.1
+  val_every: 2000

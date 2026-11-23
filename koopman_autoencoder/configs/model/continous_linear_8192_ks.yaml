@@ -1,0 +1,45 @@
+# configs/model/base.yaml
+# Optimized for 1D Kuramoto-Sivashinsky
+
+# model:
+height: 64
+width: 1
+
+# 1. INCREASE CAPACITY: KS is chaotic. A single layer of 64 isn't deep enough
+# to flatten the nonlinear manifold into a linear Koopman space.
+hidden_dims: [64, 128, 256]
+block_size: 1
+kernel_size: 3
+conv_kwargs:
+  padding: 1
+  # 2. CRITICAL FIX: KS uses periodic boundaries.
+  # Zero-padding creates artificial "walls" that bounce waves back and ruin the physics.
+  padding_mode: circular
+
+# 3. EXPAND LATENT SPACE: The KS attractor has a high fractal dimension.
+# 16 is too compressed; 32 or 64 gives the Koopman matrix room to rotate.
+latent_dim: 8192
+
+cond_embedding_dim: null
+cond_type: null
+operator_mode: linear
+
+transformer:
+  num_layers: 1
+  nhead: 2
+  ff_mult: 2
+  max_len: 1000
+  dropout: 0.1
+
+predict_cond: false
+cond_grad_enabled: false
+disturb_std: 0.0
+
+# 4. CONTINUOUS TIME: Chaotic systems diverge rapidly with discrete maps.
+# Using continuous time forces the model to learn the PDE derivative (dz/dt)
+# and integrates it cleanly using RK4, which is wildly more stable for KS.
+is_continuous: true
+
+rank: null
+use_attention: true
+spectral: true

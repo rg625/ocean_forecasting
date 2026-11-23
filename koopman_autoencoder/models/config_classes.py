@@ -70,6 +70,11 @@ class ModelConfig:
     operator_type: str = "discrete"  # NEW: "discrete", "continuous", or "azencot"
     # Spectral radius of the Azencot forward operator at init (reference default: 0.99).
     init_scale: float = 1.0
+    # Apply conv_kwargs["padding_mode"] and `spectral` to every encoder/decoder conv.
+    # False keeps the legacy architecture (needed to load existing checkpoints).
+    honor_conv_kwargs: bool = False
+    # Physical time between model frames (data dt x subsample). TRA: 0.05 x 2, KS: 0.1.
+    dt: float = 0.1
 
 
 @dataclass
@@ -82,6 +87,9 @@ class TrainingConfig:
     save_latest_every: int = 1
     num_visual_batches: int = 1
     precision: str = "bfloat16"
+    debug_nan_checks: bool = False  # autograd anomaly mode + per-module NaN hooks
+    drop_prob: float = 0.0  # probability of dropping a target frame (irregular dt)
+    consistent_latent_targets: bool = False  # ENC-01: encode targets with encode()
     # curriculum_epochs: int = 15
 
 
@@ -90,6 +98,7 @@ class LossConfig:
     alpha: float = 1.0  # Forward loss weight (continuous & discrete)
     beta: float = 1.0  # Latent consistency weight (continuous)
     loss_type: str = "l2"
+    pred_loss_type: Optional[str] = None  # None = legacy (always squared error)
     ssim_weight: Optional[float] = None
     re_weight: Optional[float] = None
     stability_weight: Optional[float] = None

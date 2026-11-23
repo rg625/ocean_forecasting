@@ -214,7 +214,9 @@ def load_datasets(
         )
         val_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.val_file,
-            normalizer=get_normalizer(cfg),
+            # Share the train-fitted normalizer: held-out splits must not be
+            # normalised with their own statistics.
+            normalizer=train_dataset.normalizer,
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
@@ -225,7 +227,7 @@ def load_datasets(
         )
         test_dataset = DatasetClass(
             data_path=base_data_dir / cfg.data.test_file,
-            normalizer=get_normalizer(cfg),
+            normalizer=train_dataset.normalizer,
             input_sequence_length=cfg.data.input_sequence_length,
             max_sequence_length=cfg.data.max_sequence_length,
             variables=cfg.data.variables,
@@ -256,8 +258,9 @@ def load_checkpoint(
     """
     cp_path = Path(checkpoint_path)
     if not cp_path.is_file():
-        logger.warning(f"Checkpoint file not found: {cp_path}. Starting from scratch.")
-        return model, optimizer, {}, 0
+        # Returning the untrained model here let evaluations silently score random
+        # weights; a requested checkpoint that does not exist is an error.
+        raise FileNotFoundError(f"Checkpoint file not found: {cp_path}")
 
     try:
         checkpoint = torch.load(cp_path, map_location="cpu")
@@ -430,6 +433,21 @@ def compute_all_metrics(
             results[mode][var] = (dist.mean().item(), dist.std().item())
 
     return results
+
+
+def git_state(path: Union[str, Path] = ".") -> Dict[str, Any]:
+    """Commit hash and dirty flag of the repository containing ``path`` (for run metadata)."""
+    import subprocess
+
+    def run(*args):
+        return subprocess.run(
+            ["git", "-C", str(path), *args], capture_output=True, text=True
+        ).stdout.strip()
+
+    return {
+        "commit": run("rev-parse", "HEAD"),
+        "dirty": bool(run("status", "--porcelain")),
+    }
 
 
 def cuda_timer():

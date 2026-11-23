@@ -97,6 +97,10 @@ class MeanStdNormalizer(AbstractNormalizer):
         self.stds: Optional[TensorDict] = None
 
     def fit(self, data: TensorDict):
+        # load_datasets shares the training split's normalizer with val/test; keep the
+        # training statistics instead of refitting on held-out data.
+        if self.means is not None:
+            return
         self.normalized_vars = list(data.keys())
         # self.means = TensorDict(
         #     {key: torch.mean(tensor).float() for key, tensor in data.items()},
@@ -118,6 +122,17 @@ class MeanStdNormalizer(AbstractNormalizer):
         else:
             means = INC_MEAN
             stds = INC_STD
+
+        if not all(k in means for k in self.normalized_vars):
+            # e.g. the QG files store q_1/q_2, which no table above covers; the INC
+            # fallback then raised a KeyError in transform(). Use this split's own
+            # statistics (the training split, given the sharing in load_datasets).
+            logger.warning(
+                f"No hard-coded statistics for {self.normalized_vars}; "
+                "computing mean/std from the data being fitted."
+            )
+            means = {k: float(data[k].double().mean()) for k in self.normalized_vars}
+            stds = {k: float(data[k].double().std()) for k in self.normalized_vars}
 
         self.means = TensorDict(
             {key: val for key, val in means.items()},
@@ -176,6 +191,8 @@ class QuantileNormalizer(AbstractNormalizer):
         self.q_highs: Dict[str, torch.Tensor] = {}
 
     def fit(self, data: TensorDict):
+        if len(self.q_lows) > 0:  # already fitted on the training split
+            return
         self.normalized_vars = list(data.keys())
         q_lows: Dict[str, torch.Tensor] = {}
         q_highs: Dict[str, torch.Tensor] = {}

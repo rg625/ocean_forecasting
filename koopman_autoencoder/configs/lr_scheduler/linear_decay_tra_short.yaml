@@ -1,0 +1,4 @@
+lr: 2e-4
+warmup: 1
+decay: 15
+final_lr: 2.0e-5

@@ -1,0 +1,160 @@
+{
+  "meta": {
+    "varies": "delta_l, far beyond the canonical 2.5 time units",
+    "fixed": {
+      "delta_f_frames": 1,
+      "N_requested": 5
+    },
+    "iters": 1000,
+    "n_problems": 24,
+    "T_L": 22.56245629858428,
+    "data": "data/ks/da_test_long.nc",
+    "caps": {
+      "KAE-expm": 1000000000
+    },
+    "train_rollout_frames": 10,
+    "note": "Every model was trained on 10-frame rollouts, so all of these horizons are extrapolation. Methods are capped at different horizons purely by affordability; the cap is reported, never silently applied."
+  },
+  "rows": [
+    {
+      "delta_l_frames": 25,
+      "delta_l_tu": 2.5,
+      "delta_l_TL": 0.11080353871563474,
+      "frames": [
+        1,
+        2,
+        5,
+        11,
+        25
+      ],
+      "N": 5,
+      "iters": 1000,
+      "KAE-expm": {
+        "mean": 0.010464613558724523,
+        "sem": 0.0013232070852378496,
+        "n": 24,
+        "wall_s": 18.630036797374487
+      }
+    },
+    {
+      "delta_l_frames": 100,
+      "delta_l_tu": 10.0,
+      "delta_l_TL": 0.44321415486253896,
+      "frames": [
+        1,
+        3,
+        10,
+        32,
+        100
+      ],
+      "N": 5,
+      "iters": 1000,
+      "KAE-expm": {
+        "mean": 0.07791537356873353,
+        "sem": 0.006628566447193456,
+        "n": 24,
+        "wall_s": 18.741104621440172
+      }
+    },
+    {
+      "delta_l_frames": 250,
+      "delta_l_tu": 25.0,
+      "delta_l_TL": 1.1080353871563473,
+      "frames": [
+        1,
+        4,
+        16,
+        63,
+        250
+      ],
+      "N": 5,
+      "iters": 1000,
+      "KAE-expm": {
+        "mean": 0.16034339492519697,
+        "sem": 0.012054364811328185,
+        "n": 24,
+        "wall_s": 18.644779969006777
+      }
+    },
+    {
+      "delta_l_frames": 500,
+      "delta_l_tu": 50.0,
+      "delta_l_TL": 2.2160707743126946,
+      "frames": [
+        1,
+        5,
+        22,
+        106,
+        500
+      ],
+      "N": 5,
+      "iters": 1000,
+      "KAE-expm": {
+        "mean": 0.20333308136711517,
+        "sem": 0.013415773844512117,
+        "n": 24,
+        "wall_s": 18.626217737793922
+      }
+    },
+    {
+      "delta_l_frames": 1000,
+      "delta_l_tu": 100.0,
+      "delta_l_TL": 4.432141548625389,
+      "frames": [
+        1,
+        6,
+        32,
+        178,
+        1000
+      ],
+      "N": 5,
+      "iters": 1000,
+      "KAE-expm": {
+        "mean": 0.2406202300141255,
+        "sem": 0.016198172819531228,
+        "n": 24,
+        "wall_s": 18.672926500439644
+      }
+    },
+    {
+      "delta_l_frames": 2000,
+      "delta_l_tu": 200.0,
+      "delta_l_TL": 8.864283097250778,
+      "frames": [
+        1,
+        7,
+        45,
+        299,
+        2000
+      ],
+      "N": 5,
+      "iters": 1000,
+      "KAE-expm": {
+        "mean": 0.2204428417608142,
+        "sem": 0.019181183719513883,
+        "n": 24,
+        "wall_s": 18.6505114659667
+      }
+    },
+    {
+      "delta_l_frames": 4000,
+      "delta_l_tu": 400.0,
+      "delta_l_TL": 17.728566194501557,
+      "frames": [
+        1,
+        8,
+        63,
+        503,
+        4000
+      ],
+      "N": 5,
+      "iters": 1000,
+      "KAE-expm": {
+        "mean": 0.26355341635644436,
+        "sem": 0.0170737062964491,
+        "n": 24,
+        "wall_s": 18.849060647189617
+      }
+    }
+  ]
+}

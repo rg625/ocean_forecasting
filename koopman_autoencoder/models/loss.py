@@ -38,6 +38,10 @@ class LossConfig:
     gamma_space: float = 1.0  # Spatial gradient (Sobolev)
     gamma_spectral: float = 1.0  # FFT consistency
 
+    # Distance used by the rollout prediction loss. None keeps the legacy behaviour
+    # (always squared error, whatever loss_type says); "l1"/"l2" select explicitly.
+    pred_loss_type: Optional[Literal["l1", "l2"]] = None
+
     # Advanced Options
     ssim_weight: Optional[float] = None
     sigma_blur: Optional[float] = None
@@ -287,7 +291,8 @@ class PredictionLoss(BaseModule):
         metrics = {}
 
         for key in pred.keys() & true.keys():
-            diff = (pred[key] - self.preprocess(true[key])) ** 2
+            err = pred[key] - self.preprocess(true[key])
+            diff = err.abs() if self.cfg.pred_loss_type == "l1" else err**2
             step_loss = reduce(diff, "b t ... -> b t", "mean")
 
             # weighted_loss = step_loss * weights.view(1, -1)
@@ -560,7 +565,10 @@ class KoopmanLoss(nn.Module):
             deriv_diff = F.mse_loss(dz_dt, dz_dt_disturbed)
 
             l_stab = (state_diff + deriv_diff) * self.cfg.stability_weight
-            total_loss = total_loss + l_stab.detach()  # Detach to act as regularizer
+            # Must stay attached: a detached term adds a constant and has no effect on
+            # training (dz_dt / dz_dt_disturbed are already computed from detached z0,
+            # so the derivative part only reaches the operator).
+            total_loss = total_loss + l_stab
             loss_dict["stability"] = l_stab.detach().item()
 
         # Final key for trainer compatibility

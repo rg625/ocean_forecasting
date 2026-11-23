@@ -1,0 +1,14 @@
+# E1: corrected legacy KAE (all audit fixes, LoRA init fixed) on the parameter-separated
+# split (val = held-out Ma 0.60/0.75). Short budget comparable to the CT-KAE full runs.
+defaults:
+  - _self_
+  - /data: tra_heldout
+  - /model: continous_linear_128_tra
+  - /metric: base
+  - /training: tra_short
+  - /loss: tra
+  - /lr_scheduler: linear_decay_tra_short
+
+output_dir: "model_outputs_ctkae/legacy_E1"
+ckpt: null
+log_epoch: 1

@@ -1,0 +1,15 @@
+2026-11-01 18:34:51,406 [INFO] KAE latent D=256 | U-Net best_model.pth | SDA (paper) k=4 blanket=9 N=128 C=4 tau=0.5 Gamma=scalar | tuned lr 0.03/0.01
+2026-11-01 18:34:51,421 [INFO] C1_df1: frames [1, 2, 5, 11, 25]
+2026-11-01 18:37:27,865 [INFO]     KAE-expm  rel-L2 0.0338
+2026-11-01 18:37:27,877 [INFO] C1_df2: frames [2, 4, 7, 13, 25]
+2026-11-01 18:40:04,289 [INFO]     KAE-expm  rel-L2 0.1472
+2026-11-01 18:40:04,321 [INFO] C1_df4: frames [4, 6, 10, 16, 25]
+2026-11-01 18:42:40,869 [INFO]     KAE-expm  rel-L2 0.4161
+2026-11-01 18:42:40,910 [INFO] C1_df8: frames [8, 11, 14, 19, 25]
+2026-11-01 18:45:17,377 [INFO]     KAE-expm  rel-L2 0.6881
+2026-11-01 18:45:17,422 [INFO] C1_df12: frames [12, 14, 17, 21, 25]
+2026-11-01 18:47:53,887 [INFO]     KAE-expm  rel-L2 0.8332
+2026-11-01 18:47:53,936 [INFO] C1_df18: frames [18, 20, 21, 23, 25]
+2026-11-01 18:50:30,198 [INFO]     KAE-expm  rel-L2 1.3486
+2026-11-01 18:50:30,200 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/ref_s0/geometry/C1_delta_f_fields.npz
+--- exit=0

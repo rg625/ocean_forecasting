@@ -1,0 +1,10 @@
+== LSiM x1e-1 (lower better)
+  mix              ref      seeds: | ext 1.72 ens 1.75 | int 1.87 ens 1.86 | lon 5.74 ens 6.07
+  mix              back001  seeds: | ext 1.81 ens 1.85 | int 1.83 ens 1.82 | lon 6.09 ens 6.50
+  mix              both     seeds: | ext nan ens 1.80 | int nan ens 1.83 | lon nan ens 6.44
+  mix+sclim        ref      seeds: | ext 1.78 ens 1.81 | int 1.91 ens 1.91 | lon 7.00 ens 7.10
+  mix+sclim        back001  seeds: | ext 1.86 ens 1.90 | int 1.87 ens 1.85 | lon 7.23 ens 7.35
+  mix+sclim        both     seeds: | ext nan ens 1.86 | int nan ens 1.88 | lon nan ens 7.27
+  mix+wclim        ref      seeds: | ext 1.80 ens 1.82 | int 1.91 ens 1.91 | lon 6.85 ens 6.97
+  mix+wclim        back001  seeds: | ext 1.89 ens 1.93 | int 1.86 ens 1.85 | lon 7.04 ens 7.20
+  mix+wclim        both     seeds: | ext nan ens 1.88 | int nan ens 1.87 | lon nan ens 7.13

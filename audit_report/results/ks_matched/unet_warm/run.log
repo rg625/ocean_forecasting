@@ -1,0 +1,15 @@
+=== unet_df9_C3_NL 2026-11-03T14:45:54+00:00
+2026-11-03 14:45:58,751 [INFO] Loaded architecture from /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ks_matched/kae_128_s0/dummy-q1l5dwys/final_model.pth
+2026-11-03 14:45:58,751 [INFO] Operator Type: continuous
+2026-11-03 14:45:59,007 [INFO] Loaded weights from /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ks_matched/kae_128_s0/dummy-q1l5dwys/checkpoints/best_model.pth
+2026-11-03 14:45:59,295 [INFO] KAE latent D=128 | U-Net best_model.pth | SDA (paper) k=4 blanket=9 N=128 C=4 tau=0.5 Gamma=scalar | tuned lr 0.003/0.01
+2026-11-03 14:45:59,296 [INFO] lambda_1 = 0.04432  T_L = 22.56 t.u. = 226 frames
+2026-11-03 14:45:59,296 [INFO] === C3. NUMBER of observations (delta_f, delta_l fixed) ===
+2026-11-03 14:45:59,776 [INFO]   [1/6] C3_N2: frames=[9, 25] t=[0.9, 2.5] delta_f=0.90 delta_l=2.50 N=2  iters=8000
+2026-11-03 15:05:46,632 [INFO]         UNet      rel-L2 0.0505 ± 0.0051 (SEM, n=48)  [1187s]
+2026-11-03 15:05:46,632 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_matched/unet_warm/geometry_df9_a/C3_n_obs.json / .npz
+2026-11-03 15:05:46,639 [INFO]   [2/6] C3_N3: frames=[9, 15, 25] t=[0.9, 1.5, 2.5] delta_f=0.90 delta_l=2.50 N=3  iters=8000
+2026-11-03 15:25:33,360 [INFO]         UNet      rel-L2 0.0541 ± 0.0053 (SEM, n=48)  [1187s]
+2026-11-03 15:25:33,361 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_matched/unet_warm/geometry_df9_a/C3_n_obs.json / .npz
+2026-11-03 15:25:33,370 [INFO]   [3/6] C3_N5: frames=[9, 12, 15, 19, 25] t=[0.9, 1.2, 1.5, 1.9, 2.5] delta_f=0.90 delta_l=2.50 N=5  iters=8000
+--- stopped by request (U-Net sweeps dropped; GPU to the signed-decay retrain) 2026-11-03T15:38:19+00:00

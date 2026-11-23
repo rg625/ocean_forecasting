@@ -128,8 +128,20 @@ def solve_kae(
         raise ValueError(f"unknown init {init!r}")
     z.requires_grad_(True)
     opt = torch.optim.Adam([z], lr=lr)
-    K = ad.generator(par).detach()
-    phis = [torch.matrix_exp(K * float(t)) for t in taus]  # precomputed once
+    K = ad.generator(par)
+    if hasattr(K, "apply"):  # structured operator (CT-KAE detail latent), never dense
+        steps = [lambda z, t=float(t): K.apply(z, t) for t in taus]
+    else:
+        K = K.detach()
+        phis = [torch.matrix_exp(K * float(t)) for t in taus]  # precomputed once
+        steps = [
+            (
+                (lambda z, p=p: torch.bmm(p, z.unsqueeze(-1)).squeeze(-1))
+                if p.dim() == 3
+                else (lambda z, p=p: z @ p.T)
+            )
+            for p in phis
+        ]
     bg = getattr(ad, "background", None)
     if objective is None:
         objective = "bg" if bg is not None else "base"
@@ -138,13 +150,12 @@ def solve_kae(
         mu, Binv = bg["mu"].to(dev), bg["Binv"].to(dev)
         s2 = float(prob.noise_std) ** 2 + float(bg["sigma_m"]) ** 2
     # observed entries per problem (masks broadcast over channels)
-    n_ent = float(sum((mask[j] * torch.ones_like(y[j])).sum() for j in range(len(phis)))) / len(prob.sim)
+    n_ent = float(sum((mask[j] * torch.ones_like(y[j])).sum() for j in range(len(steps)))) / len(prob.sim)
 
     def _sse(zz):
         out = 0.0
-        for j, phi in enumerate(phis):
-            zt = torch.bmm(phi, zz.unsqueeze(-1)).squeeze(-1) if phi.dim() == 3 else zz @ phi.T
-            out = out + ((ad.decode(zt) - y[j]) * mask[j]).pow(2).flatten(1).sum(1)
+        for j, step in enumerate(steps):
+            out = out + ((ad.decode(step(zz)) - y[j]) * mask[j]).pow(2).flatten(1).sum(1)
         return out  # [B]
 
     hist = {"iter": [], "loss": [], "rel_t0": []}
@@ -153,15 +164,10 @@ def solve_kae(
         opt.zero_grad(set_to_none=True)
         if objective == "base":
             loss = 0.0
-            for j, phi in enumerate(phis):
-                zt = (
-                    torch.bmm(phi, z.unsqueeze(-1)).squeeze(-1)
-                    if phi.dim() == 3
-                    else z @ phi.T
-                )
-                pred = ad.decode(zt)
+            for j, step in enumerate(steps):
+                pred = ad.decode(step(z))
                 loss = loss + ((pred - y[j]) * mask[j]).pow(2).mean()
-            loss = loss / len(phis)
+            loss = loss / len(steps)
         elif objective == "bg":
             dz = z - mu
             prior = 0.5 * ((dz @ Binv) * dz).sum(1)

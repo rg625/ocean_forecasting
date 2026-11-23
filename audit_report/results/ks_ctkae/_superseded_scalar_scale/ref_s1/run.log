@@ -1,0 +1,15 @@
+=== init_scales 2026-11-01T15:19:31+00:00
+{"source": "data/ks/train.nc", "kae_run": "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ctkae_ks/ks_ref_s1_20261101_145829", "kae_latent_init_scale": 357.97894287109375, "unet_state_init_scale": 1.0, "note": "kae_latent_init_scale: per-element std of the CT-KAE encoder latents on the TRAINING split (data_assimilation.ks.models_io.kae_latent_scale); U-Net scale copied from da_results_v2/init_scales.json."}
+--- exit=0 2026-11-01T15:19:37+00:00
+=== fc 2026-11-01T15:19:37+00:00
+2026-11-01 15:19:43,081 [INFO] KAE latent D=256 | U-Net best_model.pth | SDA (paper) k=4 blanket=9 N=128 C=4 tau=0.5 Gamma=scalar | tuned lr 0.01/0.01
+2026-11-01 15:19:43,082 [INFO] data data/ks/da_test_long.nc: 32 trajectories x 5000 frames = 500.0 t.u. = 22.2 T_L
+2026-11-01 15:19:43,082 [INFO] === FC. FREE-RUNNING FORECAST from the EXACT true state ===
+2026-11-01 15:19:43,084 [INFO]   32 trajectories, 210 lead times, max 4800 frames = 480.0 t.u. = 21.3 T_L
+2026-11-01 15:19:48,507 [INFO]   KAE-expm  rel-L2 @1 T_L 1.9021 | @5 T_L 1.2207 | skill lost at 6.8 t.u. = 0.30 T_L | 5.4s
+2026-11-01 15:19:49,406 [INFO]   KAE-rk4   rel-L2 @1 T_L 1.9043 | @5 T_L 1.2191 | skill lost at 6.8 t.u. = 0.30 T_L | 0.9s
+2026-11-01 15:20:01,215 [INFO]   UNet      rel-L2 @1 T_L 0.0038 | @5 T_L 0.4961 | skill lost at 209.5 t.u. = 9.29 T_L | 11.8s
+2026-11-01 15:20:01,222 [INFO]   KAE encode/decode round trip on these states: 0.00710 (a floor for KAE forecasting, not for KAE assimilation)
+2026-11-01 15:20:01,223 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/ref_s1/long/FC_forecast.npz
+--- exit=0 2026-11-01T15:20:02+00:00
+=== DONE 2026-11-01T15:20:02+00:00

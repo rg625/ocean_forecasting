@@ -1,0 +1,34 @@
+# Conditional continuous-time KAE (models/ct_kae.py) on TRA.
+# Train: train.nc minus the validation Mach numbers; val: held-out Ma (never a test case).
+run_name: ctkae_block
+out_root: model_outputs_ctkae
+seed: 0
+data:
+  train_file: data/acdm/128_tra/train.nc
+  val_ma: [0.60, 0.75]
+model:
+  latent_dim: 256
+  widths: [64, 128, 256]
+  blocks_per_stage: 2
+  n_frames: 2
+  cond_ref: [0.7]
+  cond_scale: [0.1]
+  film_encoder: true
+  film_decoder: true
+  cond_generator: true
+  cond_fixed_point: true
+  generator: block
+train:
+  steps: 20000
+  batch: 16
+  lr: 3.0e-4
+  k_start: 10
+  k_max: 60
+  curriculum_frac: 0.5
+  n_dec: 8
+  strides: [2]
+  w_rec: 1.0
+  w_pred: 1.0
+  w_lat: 0.1
+  w_amp: 0.0
+  val_every: 1000

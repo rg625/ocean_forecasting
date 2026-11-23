@@ -1,0 +1,167 @@
+%==========================================================================================
+\section{Follow-up (22 October): where the remaining error comes from, and five attempts to reduce it}\label{sec:round4}
+
+This section asks why the fair-horizon model (\S\ref{sec:fairh8}) still trails the U-Net,
+and reports five attempts to fix it. All attempts keep the requirements: exactly linear
+latent dynamics, continuous time, Mach conditioning, forecasting-only end-to-end training,
+and the 2 $\to$ 8 horizon. Details are in \texttt{EXPERIMENT\_RESULTS.md} \S14 and
+\texttt{LITERATURE\_REVIEW\_V3.md}.
+
+\subsection{Diagnosis}\label{sec:diag4}
+
+\textbf{The first-step error is all reconstruction.} I split the one-step error on the test
+set into two parts: encoding and decoding the current frame, and the error added by one
+linear time step (\texttt{scripts/lead1\_split.py}).
+
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+One-step error, interp ($\times10^{-3}$) & reconstruction & added by the linear step & total\\
+\midrule
+fair 2 $\to$ 8, latent 256 & 0.317 & 0.008 & 0.298\\
+fair 2 $\to$ 8, latent 128 & 0.382 & 0.010 & 0.361\\
+ACDM-setting training (2 $\to$ 1) & 0.092 & 0.022 & 0.088\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{But the first step explains only part of the gap.} Gap in MSE to each baseline, by
+lead (interp):
+
+\begin{center}\small
+\begin{tabular}{lcccccc}
+\toprule
+ & 60-step average & lead 1 & lead 10 & lead 20 & lead 30 & lead 58\\
+\midrule
+vs ACDM  & 0.47 & 0.23 & 0.18 & 0.54 & 0.92 & 0.03\\
+vs U-Net & 1.96 & 0.24 & 0.35 & 1.13 & 2.16 & 3.58\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{itemize}
+\item Against ACDM, the reconstruction error is about half of the gap.
+\item Against the U-Net it is about one eighth. The rest grows with lead time.
+\end{itemize}
+
+\textbf{What grows.} I projected the error onto the true trajectory's own POD modes
+(\texttt{scripts/phase\_drift.py}).
+\begin{itemize}
+\item The shedding frequency is accurate: within 0.2--1.5\% on extrapolation, against
+  ACDM 2.7\% and U-Net 1.2\%.
+\item Excess error over the U-Net at lead 30:
+  \begin{itemize}
+  \item 49\% lies outside the span of the true trajectory (blurred or misplaced structure);
+  \item 32\% is in POD modes 3--10 (harmonics and secondary modes);
+  \item 8\% is in the shedding pair.
+  \end{itemize}
+\item At lead 58 the shedding pair carries 33\% (phase error 26--37$^\circ$ vs 14$^\circ$ for
+  the U-Net), and the outside-span part 53\%.
+\end{itemize}
+
+\textbf{Checks on the trained model, at inference only} (\texttt{scripts/infer\_ablate.py}).
+\begin{itemize}
+\item \textbf{Damping helps.} Scaling every oscillator's damping by 1 / 0.5 / 0.25 / 0
+  gives interp 3.43 / 3.58 / 3.68 / 3.81. The damping hedges uncertain components, and the
+  modes that carry most of the latent are already almost neutral.
+\item \textbf{The dynamics contain no harmonics.} At most 0.5\% of the latent's temporal
+  variance sits at or above twice the shedding frequency. Harmonics of the wake come only
+  from the decoder.
+\end{itemize}
+
+\textbf{The flow is only partly periodic} (training data only;
+\texttt{scripts/shedding\_freq.py}).
+\begin{itemize}
+\item Below Ma 0.875 the shedding frequency is $2.45\pm0.16$ per time unit. It scatters by
+  6.5\% between neighbouring Mach numbers.
+\item Ma 0.88--0.89 is a separate regime at about 6.3.
+\item On average only 57\% of the dominant mode's spectrum lies on the harmonic lattice.
+\end{itemize}
+
+\subsection{Literature}\label{sec:lit4}
+
+Two source-verified reviews covered about 47 papers.
+\begin{itemize}
+\item \textbf{Most remedies target a problem this model does not have.} Pushforward, input
+  noise, unrolling and test-time correction all target autoregressive drift. Here every lead
+  is one exact matrix exponential from true input frames.
+\item \textbf{Evidence on Tra itself} (our re-scoring of the official checkpoints):
+  \begin{itemize}
+  \item spectral refinement (PDE-Refiner) scores 7.50 / 5.61;
+  \item every latent model in the ACDM paper scores 6.4--7.4 on interpolation, so the
+    CT-KAE is already the best latent model on this benchmark;
+  \item only the stabilised pixel-space U-Nets are ahead (1.53 / 1.66 unrolled, 1.83 / 1.42
+    with input noise).
+  \end{itemize}
+\item \textbf{The two constraint-compatible ideas both reviews ranked highest:}
+  \begin{itemize}
+  \item a harmonic-lattice generator (Bagheri 2013; Lange et al.\ 2021);
+  \item multi-start temporal consistency (tcKAE, Nayak et al.\ 2024).
+  \end{itemize}
+  No paper reports a linear-latent model reaching the stabilised U-Net under comparable
+  constraints.
+\end{itemize}
+
+\subsection{Five attempts}\label{sec:attempts4}
+
+All runs used seed 0 and \texttt{last.pth}. The success criterion was fixed before the
+runs: interp $\le 3.19$ (two seed standard deviations below the plain model's mean) with
+extrap $\le 2.29$. DA is the range over the six df = 9 sweeps.
+
+\begin{center}\footnotesize
+\begin{tabular}{lcccccc}
+\toprule
+Seed 0 & interp & extrap & long & lead 1 & lead 58 & DA df = 9\\
+\midrule
+\textbf{fair 2 $\to$ 8, latent 256 (reference)} & \textbf{3.43} & \textbf{1.67} & 16.80 & 0.261 & \textbf{8.17} & \textbf{0.091--0.095}\\
++ detail latent, advection        & 8.85 & 5.53 & 16.98 & \textbf{0.021} & 15.8 & 0.142--0.176\\
++ detail latent, decay only       & 16.44 & 9.80 & 24.52 & 0.026 & 18.3 & 0.199--0.217\\
++ detail latent, advection, decay floor & 12.79 & 5.99 & 24.73 & 0.030 & 21.5 & 0.292--0.306\\
+harmonic lattice (64 of 128 pairs) & 3.87 & 2.29 & \textbf{15.35} & 0.272 & 9.77 & 0.154--0.163\\
+multi-start consistency           & 4.79 & 2.71 & 16.32 & 0.217 & 12.1 & 0.099--0.104\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Result: none met the criterion.}
+\begin{itemize}
+\item \textbf{Detail latent.}
+  \begin{itemize}
+  \item \emph{Design:} a spatial latent with a Fourier-diagonal advection and decay generator.
+    It is exactly linear, which is tested against the dense matrix exponential to $10^{-9}$.
+  \item \emph{What it fixes:} the first step, to 0.02--0.03, as good as ACDM and the U-Net.
+  \item \emph{What goes wrong:} the model moves the near-term dynamics into the detail
+    latent. The oscillators go static or leave the shedding frequency, and the decoder never
+    learns to forecast without the detail. Beyond the 8-frame window the forecast collapses,
+    and a decay floor does not prevent it.
+  \end{itemize}
+\item \textbf{Harmonic lattice.}
+  \begin{itemize}
+  \item The long rollout improves slightly; 15.35 is below all three reference seeds.
+  \item Interpolation and DA get worse.
+  \item This is consistent with the irregular, partly non-periodic shedding found above.
+  \end{itemize}
+\item \textbf{Multi-start consistency.}
+  \begin{itemize}
+  \item The first step improves (0.217), and so do the DA tuning error and the encode-init
+    floor.
+  \item The 60-step forecast and the df = 9 sweeps get worse.
+  \end{itemize}
+\end{itemize}
+
+\subsection{Conclusion}\label{sec:concl4}
+
+\begin{itemize}
+\item \textbf{The binding constraint is the 8-frame supervised window.} Every change that
+  makes the near term sharper also gives the model a way to do well within 8 frames that
+  does not carry beyond them. Nothing in a forecasting-only, 8-frame objective penalises
+  that.
+\item \textbf{The plain fair-horizon model remains the best} of everything tried. It is the
+  best latent model on Tra, level with ACDM on extrapolation, ahead of it on the 240-step
+  rollout, and about 2.7$\times$ better than ACDM and the U-Net at df = 9 data
+  assimilation.
+\item \textbf{What would still move the gap to the U-Net.} The one remaining lever with a
+  clear mechanism is relaxing the horizon rule: the same 8 frames spread over a longer
+  physical time span, which constrains frequencies and phases better. That is a decision
+  about the comparison protocol, not a modelling fix.
+\end{itemize}

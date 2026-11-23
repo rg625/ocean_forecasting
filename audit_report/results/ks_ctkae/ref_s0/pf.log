@@ -1,0 +1,7 @@
+2026-11-01 15:58:26,581 [INFO] KAE latent D=256 | U-Net best_model.pth | SDA (paper) k=4 blanket=9 N=128 C=4 tau=0.5 Gamma=scalar | tuned lr 0.03/0.01
+2026-11-01 15:58:26,581 [INFO] data data/ks/da_test_long.nc: 32 trajectories x 5000 frames = 500.0 t.u. = 22.2 T_L
+2026-11-01 15:58:26,581 [INFO] === PF. FORECAST AFTER ASSIMILATION ===
+2026-11-01 15:59:12,580 [INFO]   KAE-expm  analysis 0.0365 | @1 T_L 1.6776 | @5 T_L 1.5391 | skill lost at 7.6 t.u. = 0.34 T_L | 46s
+2026-11-01 16:00:10,985 [INFO]   KAE-rk4   analysis 0.0367 | @1 T_L 1.6713 | @5 T_L 1.7141 | skill lost at 7.6 t.u. = 0.34 T_L | 58s
+2026-11-01 16:05:55,392 [INFO]   UNet      analysis 0.1472 | @1 T_L 0.0026 | @5 T_L 0.0031 | skill lost at inf t.u. = inf T_L | 344s
+2026-11-01 16:05:55,393 [INFO] saved -> /home/rg625/mnt/ocean_forecasting_impl/audit_report/results/ks_ctkae/ref_s0/long/PF_post_da_forecast.npz

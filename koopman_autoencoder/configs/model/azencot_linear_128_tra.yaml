@@ -1,0 +1,40 @@
+# Azencot Operator Model Configuration (Azencot et al. 2019)
+# Paper-faithful implementation with single dynamics matrix A
+# z_{t+1} = A @ z
+
+height: 64
+width: 128
+hidden_dims: [64, 128, 256]
+block_size: 2
+kernel_size: 3
+conv_kwargs:
+  padding: 1
+  padding_mode: reflect
+
+latent_dim: 128
+cond_embedding_dim: 128
+cond_type: adaln
+operator_mode: linear
+
+transformer:
+  num_layers: 2
+  nhead: 4
+  ff_mult: 2
+  max_len: 1000
+  dropout: 0.1
+
+predict_cond: true
+cond_grad_enabled: false
+disturb_std: 0.005
+is_continuous: false
+
+rank: null  # No low-rank adaptation for azencot (simple direct matrix)
+use_attention: false
+spectral: false
+
+# KEY: Use Azencot operator instead of Discrete
+operator_type: azencot  # NEW: Selects AzencotKoopmanOperator
+
+# Spectral radius of A at init. 1.0 puts A exactly on the stability boundary;
+# the reference driver defaults to 0.99.
+init_scale: 0.99

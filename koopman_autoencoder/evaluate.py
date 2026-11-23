@@ -146,12 +146,15 @@ def tensordict_to_eval_array_with_cond(
     B = input_arr.shape[0]
     H, W = input_arr.shape[-2:]
 
-    # Concatenate last 2 input frames with predicted sequence (excluding last 2 of pred)
-    # This matches the notebook's temporal stitching logic
-    last_input_frame = input_arr[:, -1:, :, :, :]
-    predicted_arr_sliced = predicted_arr[:, :-1, :, :, :]
+    # The ground-truth files hold the input window at frames [0, L_in) and the model
+    # predicts frames L_in, L_in + 1, ...  Stitch ALL input frames in front of the
+    # predictions (dropping the overhang) so that saved frame k is ground-truth frame k.
+    # Keeping only the last input frame (as in a5f4796) shifts every prediction one
+    # frame early relative to the ground truth it is scored against.
+    n_in = input_arr.shape[1]
+    predicted_arr_sliced = predicted_arr[:, : predicted_arr.shape[1] - n_in]
 
-    full_seq = np.concatenate([last_input_frame, predicted_arr_sliced], axis=1)
+    full_seq = np.concatenate([input_arr, predicted_arr_sliced], axis=1)
 
     # Add Re channel
     re_vals = input_seq_td["cond_input"].cpu().numpy()
@@ -370,6 +373,11 @@ def main():
         "--regime", type=str, default="tra", help="Regime (stable/full)"
     )
     parser.add_argument("--ckpt", type=int, default=199, help="Checkpoint index")
+    parser.add_argument(
+        "--keep_going",
+        action="store_true",
+        help="Log and skip a failing eval case instead of aborting",
+    )
     parser.add_argument("--gpu", type=int, default=0, help="GPU ID")
     parser.add_argument(
         "--base_dir",
@@ -423,6 +431,8 @@ def main():
             evaluator.save_results(results)
         except Exception:
             logger.exception(f"Evaluation failed for case {case}")
+            if not args.keep_going:
+                raise  # a stale npz from an earlier run must not survive silently
             continue
 
 

@@ -1,0 +1,264 @@
+{
+ "repo": "/home/rg625/mnt/ocean_forecasting_audit/koopman_autoencoder",
+ "n_params": 11167883,
+ "n_trainable": 11167883,
+ "first_loss": {
+  "loss_recon": 2.6718287467956543,
+  "loss_pred": 0.4228377938270569,
+  "loss_phys": 1.2109323740005493,
+  "loss_latent": 0.8863636255264282,
+  "total_loss": 5.191962242126465
+ },
+ "grad_groups[n,none,zero]": {
+  "shared_expansion_map.Re": [
+   4,
+   4,
+   0
+  ],
+  "shared_expansion_map.Ma": [
+   4,
+   0,
+   4
+  ],
+  "shared_expansion_map.forcing": [
+   4,
+   4,
+   0
+  ],
+  "encoder.init_conv": [
+   2,
+   0,
+   0
+  ],
+  "encoder.backbone": [
+   54,
+   0,
+   0
+  ],
+  "encoder.attention": [
+   5,
+   0,
+   0
+  ],
+  "encoder.to_latent": [
+   9,
+   0,
+   0
+  ],
+  "history_encoder.transformer": [
+   24,
+   0,
+   0
+  ],
+  "decoder.expansion_map": [
+   12,
+   12,
+   0
+  ],
+  "decoder.from_latent": [
+   2,
+   0,
+   0
+  ],
+  "decoder.layers": [
+   30,
+   0,
+   0
+  ],
+  "decoder.final_conv": [
+   2,
+   0,
+   0
+  ],
+  "koopman_operator.dynamics": [
+   8,
+   0,
+   4
+  ],
+  "re_predictor.re_predictor": [
+   4,
+   4,
+   0
+  ]
+ },
+ "params_without_gradient": [
+  [
+   "shared_expansion_map.Re.embedder.centers",
+   "None",
+   15
+  ],
+  [
+   "shared_expansion_map.Re.embedder.log_gamma",
+   "None",
+   15
+  ],
+  [
+   "shared_expansion_map.Re.embedder.projection.weight",
+   "None",
+   2048
+  ],
+  [
+   "shared_expansion_map.Re.embedder.projection.bias",
+   "None",
+   128
+  ],
+  [
+   "shared_expansion_map.Ma.embedder.centers",
+   "zero",
+   15
+  ],
+  [
+   "shared_expansion_map.Ma.embedder.log_gamma",
+   "zero",
+   15
+  ],
+  [
+   "shared_expansion_map.Ma.embedder.projection.weight",
+   "zero",
+   2048
+  ],
+  [
+   "shared_expansion_map.Ma.embedder.projection.bias",
+   "zero",
+   128
+  ],
+  [
+   "shared_expansion_map.forcing.embedder.centers",
+   "None",
+   15
+  ],
+  [
+   "shared_expansion_map.forcing.embedder.log_gamma",
+   "None",
+   15
+  ],
+  [
+   "shared_expansion_map.forcing.embedder.projection.weight",
+   "None",
+   2048
+  ],
+  [
+   "shared_expansion_map.forcing.embedder.projection.bias",
+   "None",
+   128
+  ],
+  [
+   "decoder.expansion_map.Re.embedder.centers",
+   "None",
+   15
+  ],
+  [
+   "decoder.expansion_map.Re.embedder.log_gamma",
+   "None",
+   15
+  ],
+  [
+   "decoder.expansion_map.Re.embedder.projection.weight",
+   "None",
+   1024
+  ],
+  [
+   "decoder.expansion_map.Re.embedder.projection.bias",
+   "None",
+   64
+  ],
+  [
+   "decoder.expansion_map.Ma.embedder.centers",
+   "None",
+   15
+  ],
+  [
+   "decoder.expansion_map.Ma.embedder.log_gamma",
+   "None",
+   15
+  ],
+  [
+   "decoder.expansion_map.Ma.embedder.projection.weight",
+   "None",
+   1024
+  ],
+  [
+   "decoder.expansion_map.Ma.embedder.projection.bias",
+   "None",
+   64
+  ],
+  [
+   "decoder.expansion_map.forcing.embedder.centers",
+   "None",
+   15
+  ],
+  [
+   "decoder.expansion_map.forcing.embedder.log_gamma",
+   "None",
+   15
+  ],
+  [
+   "decoder.expansion_map.forcing.embedder.projection.weight",
+   "None",
+   1024
+  ],
+  [
+   "decoder.expansion_map.forcing.embedder.projection.bias",
+   "None",
+   64
+  ],
+  [
+   "koopman_operator.dynamics.hypnet.net.0.weight",
+   "zero",
+   4096
+  ],
+  [
+   "koopman_operator.dynamics.hypnet.net.0.bias",
+   "zero",
+   32
+  ],
+  [
+   "koopman_operator.dynamics.hypnet.net.2.weight",
+   "zero",
+   1024
+  ],
+  [
+   "koopman_operator.dynamics.hypnet.net.2.bias",
+   "zero",
+   32
+  ],
+  [
+   "re_predictor.re_predictor.0.weight",
+   "None",
+   2048
+  ],
+  [
+   "re_predictor.re_predictor.0.bias",
+   "None",
+   16
+  ],
+  [
+   "re_predictor.re_predictor.2.weight",
+   "None",
+   16
+  ],
+  [
+   "re_predictor.re_predictor.2.bias",
+   "None",
+   1
+  ]
+ ],
+ "n_params_without_gradient": 17237,
+ "roundtrip_max_abs_diff": 0.0,
+ "eval_determinism_max_abs_diff": 0.0,
+ "median_step_seconds_by_config": {
+  "as_trainer(anomaly+nan_hooks)": 4.7114307172596455,
+  "no_anomaly": 1.0342901535332203,
+  "no_anomaly_no_hooks": 0.2805367074906826
+ },
+ "peak_mem_GB": 6.70173184,
+ "n_nan_hook_modules": 165,
+ "forward_phase_ms_median(model.timings)": {
+  "encode": 10.741439819335938,
+  "rollout": 3.0812160968780518,
+  "decode": 48.40345764160156,
+  "total": 70.06617736816406
+ },
+ "forward_incl_loss_s_median": 0.13457318395376205,
+ "backward_s_median": 0.14500796422362328
+}

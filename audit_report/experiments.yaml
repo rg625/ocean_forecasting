@@ -1,0 +1,139 @@
+# Experiment registry for the KAE audit (machine-readable).
+# status: planned | done | blocked. Every run must record: git_hash, full resolved Hydra
+# config, seed, checkpoint path, wall-clock, peak memory, and the metrics block below.
+#
+# Common protocol (all experiments unless stated):
+#   data: TRA, train Ma = 0.53-0.59, 0.61-0.63, 0.69-0.74, 0.76-0.89
+#         val  Ma = 0.60, 0.75  (held out, NEW; replaces val.nc = interp)
+#         test: gt_interp (T=60), gt_extrap (T=60), gt_longer (T=240), gt_longer_1000 stride 2
+#   seeds: [0, 1, 2]
+#   budget: 200 epochs or equal wall-clock to the corrected baseline, whichever first
+#   selection: val ACC at lead 60 (except E3, which tests this choice)
+#   metrics: per-lead RMSE (fluid, normalised) and ACC vs training climatology; first lead with
+#            ACC < 0.6; fluct-energy ratio at 60 and 240; recon floor; paper-convention MSE;
+#            Mach sensitivity; step time
+#   comparison: paired over identical cases; report mean +- s.e. over seeds;
+#               "better" = difference larger than 2 s.e.
+#   scripts: audit_report/scripts/tra_rollout_diagnostics.py, benchmark_table.py
+
+reference_results:
+  kae_run20260821_ep199:  {interp_first_acc_below_0.6: 27, extrap: ">58", longer: 28,
+                           mse_1e-3: {interp: 6.37, extrap: 1.59, longer: 16.91},
+                           energy_ratio_240: 0.25, recon_floor_rmse: [0.13, 0.17]}
+  pod_dmd2_r128:          {interp_first_acc_below_0.6: 53, extrap: ">58", longer: 27,
+                           mse_1e-3: {interp: 6.06, extrap: 3.86, longer: 13.41}}
+  train_climatology:      {mse_1e-3: {interp: 16.76, extrap: 17.39, longer: 15.83}}
+  acdm_r20:               {mse_1e-3: {interp: 2.81, extrap: 1.99, longer: 22.51}}
+
+experiments:
+  - id: E0
+    name: corrected_baseline
+    status: planned
+    hypothesis: Fixes BUG-02..06 and the new val split do not degrade short-horizon skill; conditioning becomes active.
+    change: Current TRA config on the audit branch (honor_conv_kwargs=false), new val split, 3 seeds.
+    expected: Mach sensitivity > 0; interp/extrap MSE within 10% of the reference.
+    failure: Mach sensitivity still 0, or MSE > 20% worse.
+    decision: Becomes the reference for all later experiments.
+
+  - id: E1
+    name: stable_generator
+    status: planned
+    hypothesis: A structurally stable generator with exact propagation removes transient growth (QG/KS) without hurting TRA.
+    baseline: E0
+    change: Generator variants (one at a time) - (a) diagonal complex lambda = -softplus(a) + i*omega, ring init; (b) A = S - (L L^T + eps I). Both propagated with matrix_exp / exp.
+    expected: Spectral abscissa <= 0 by construction; peak ||exp(kdtA)|| <= 1 for (b); TRA first ACC<0.6 lead unchanged or later.
+    failure: Short-horizon (lead 10) RMSE worse by more than 2 s.e.
+    decision: Keep the variant with the better lead-60 ACC; carry it into E2.
+
+  - id: E2
+    name: training_horizon
+    status: planned
+    hypothesis: Damping of shedding modes (DYN-01) comes from the 8-step objective; training on >= 1 shedding period keeps them near-neutral.
+    baseline: E0 (and E1 winner)
+    change: Latent rollout length 8 -> 30 -> 60; decoded loss on 8 random steps; nothing else.
+    expected: Energy ratio at 240 rises from 0.25 to > 0.6; first ACC<0.6 lead on interp > 53 (beats POD-DMD2).
+    failure: Energy ratio < 0.4 at 240, or lead-10 RMSE worse by more than 2 s.e.
+    decision: "Gate for the long-horizon claim: if neither E1 x E2 cell beats POD-DMD2 on interp beyond lead 30, stop claiming long-horizon forecasting skill (see FINAL_AUDIT.md section 16 D)."
+
+  - id: E3
+    name: checkpoint_selection
+    status: planned
+    hypothesis: Selecting by 8-step val total_loss picks checkpoints that are worse at the deployment horizon.
+    baseline: E0
+    change: Selection rule val total_loss vs val ACC@60 vs val RMSE@240 (same training runs, no retraining).
+    expected: Different epochs chosen; ACC@60 rule improves test lead-60 ACC.
+    decision: Adopt the rule that maximises test metrics averaged over seeds; document it.
+
+  - id: E4
+    name: latent_loss_cleanup
+    status: planned
+    hypothesis: The smoothness penalty on encoder outputs and non-detached targets bias against oscillatory latents (LOSS-02).
+    baseline: E2 winner
+    change: (a) remove smoothness term; (b) stop-grad latent targets; (c) both.
+    expected: Shedding-mode Re(lambda) closer to 0; energy ratio up.
+    failure: Latent collapse (per-dim std or effective rank drop by > 50%).
+
+  - id: E5
+    name: conditioning
+    status: planned
+    hypothesis: Explicit Mach conditioning improves interp/extrap over inferring Mach from two frames.
+    baseline: E0
+    change: (a) operator-only conditioning (fixed LoRA); (b) + encoder FiLM/adaln implemented; (c) none.
+    expected: (a)/(b) better on extrap; check Mach sensitivity.
+
+  - id: E6
+    name: representation_floor
+    status: planned
+    hypothesis: The recon floor (0.13-0.17) above the POD projection floor (0.12) comes from single-query pooling, ever-on spectral norm, or decoder dropout.
+    baseline: E0
+    change: One at a time - flatten+linear bottleneck; honor_conv_kwargs=true with spectral=false; decoder dropout 0.
+    expected: Recon floor < 0.12 on interp/longer.
+    decision: Gate - representation changes are kept only if they lower the recon floor AND do not worsen lead-30 ACC.
+
+  - id: E7
+    name: history
+    status: planned
+    hypothesis: (history+present)/2 with present-only targets (ENC-01) wastes the history.
+    baseline: E0
+    change: single frame vs consistent history encoder vs 2-frame delay embedding concatenated.
+
+  - id: E8
+    name: precision
+    status: planned
+    change: bf16 encoder/decoder, fp32 latent rollout.
+    expected: 1.5-2x faster; per-lead metrics within seed noise.
+
+  - id: E9
+    name: torch_compile
+    status: planned
+    change: torch.compile(encoder), torch.compile(decoder).
+    expected: 1.2-1.5x faster; identical metrics within tolerance.
+
+  - id: X1
+    name: external_baselines_tra
+    status: planned
+    change: ACDM benchmark U-Net_tn, U-Net_ut, FNO (public code/weights); Lange periodic Koopman; BOP-DMD. Same splits and metrics.
+
+  - id: X2
+    name: qg_statistical_benchmark
+    status: blocked
+    blocked_by: DATA-01 (regenerate test set)
+    change: Thermalizer protocol (UNet +- thermalizer) vs KAE on spectra, autocorrelation, distributional metrics, time-to-instability.
+
+done:
+  - id: B1
+    name: linear_pod_baselines
+    status: done
+    result: results/linear_baselines_r128.json, results/benchmark_table_tra.json
+  - id: B2
+    name: kae_long_horizon_diagnostics
+    status: done
+    result: results/tra_rollout_{gt_interp,gt_extrap,gt_longer,longer1000}.json
+  - id: B3
+    name: operator_spectra
+    status: done
+    result: results/spectrum_{tra_run20260821_ep199,tra_best,ks,qg}.json
+  - id: B4
+    name: profile_and_gradient_flow
+    status: done
+    result: results/smoke_profile_{baseline,after_fixes}.json

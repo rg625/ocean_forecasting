@@ -1,0 +1,50 @@
+{
+ "protocol": {
+  "steps": 240,
+  "batch": 1,
+  "warmup": 2,
+  "reps": 5,
+  "statistic": "median",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "testset": "longer (transonic Ma 0.64-0.65)",
+  "decode": "bf16 autocast, 32 frames per decoder call",
+  "vram": "peak allocated, all loaded models included",
+  "weights_MB_per_model": 94.17579650878906,
+  "runs": [
+   "model_outputs_ctkae/H8_d256_s0_20261021_012013",
+   "model_outputs_ctkae/H8_d256_s1_20261021_163431",
+   "model_outputs_ctkae/H8_d256_s2_20261021_174342"
+  ],
+  "sigma": 0.04
+ },
+ "rows": [
+  {
+   "readout": "mirror + lpm",
+   "decodes_per_step": 2,
+   "rollout_ms": 182.6498565673828,
+   "ms_per_step": 0.7610410690307617,
+   "peak_vram_MB": 1397.806640625,
+   "all_ms": [
+    186.9862060546875,
+    184.4969024658203,
+    182.6498565673828,
+    182.5095672607422,
+    182.58738708496094
+   ]
+  },
+  {
+   "readout": "3 seeds, mirror + lpm",
+   "decodes_per_step": 6,
+   "rollout_ms": 500.443359375,
+   "ms_per_step": 2.0851806640625,
+   "peak_vram_MB": 2673.314453125,
+   "all_ms": [
+    500.44091796875,
+    500.76568603515625,
+    500.35028076171875,
+    500.443359375,
+    500.60595703125
+   ]
+  }
+ ]
+}
