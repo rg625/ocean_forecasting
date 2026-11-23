@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import partial
 import logging
 import time
 from pathlib import Path
@@ -34,7 +35,12 @@ from data_assimilation.tra.bridge import REGIMES, PhysicalData, REPO, rel_l2
 from data_assimilation.tra.adapters import TurbpredAdapter
 from data_assimilation.tra.kae_adapter import KAEAdapter
 from data_assimilation.tra.protocol import build_problem, canonical
-from data_assimilation.tra.fourdvar import solve_kae, solve_autoregressive
+from data_assimilation.tra.fourdvar import (
+    solve_autoregressive,
+    solve_kae,
+    solve_kae_data,
+    solve_unet_latent,
+)
 from data_assimilation.tra.verify_adapters import MODELS, DIFF_OPTS
 
 logger = logging.getLogger("tra_da")
@@ -44,6 +50,7 @@ DATA = {
     "test": "data/acdm/128_tra/gt_interp.nc",
     "val": "data/acdm/128_tra/gt_extrap.nc",
     "long": "data/acdm/128_tra/gt_longer.nc",
+    "train": "data/acdm/128_tra/train.nc",  # only for the KAE latent background (mu, B)
 }
 
 
@@ -66,8 +73,68 @@ class Bench:
             self._cache[key] = PhysicalData(DATA[split], "tra", self.dev)
         return self._cache[key]
 
+    def kae_background(self, ad) -> Dict:
+        """Gaussian latent background + representation error for the KAE's default
+        objective (fourdvar.solve_kae, objective 'bg').  Computed once per output dir from
+        the TRAINING split (mu, B) and the VALIDATION regime (sigma_m), then cached."""
+        from data_assimilation.tra.fourdvar import latent_background, representation_error
+
+        if "kae_bg" in self._cache:
+            return self._cache["kae_bg"]
+        f = Path(self.a.out_dir) / "kae_background.pt"
+        if f.is_file():
+            bg = torch.load(f, map_location=self.dev)
+        else:
+            mu, Binv = latent_background(ad, self.data("train"))
+            ad.background = None
+            kt = self.tuning.get("KAE", {})
+            vp = build_problem(
+                self.data("val"), name="sigma_m", n_problems=24, seed=7,
+                offsets=pinned_schedule(self.a), noise_std=0.0, obs_frac=1.0,
+            )
+            sm = representation_error(
+                ad, vp, self.data("val"), iters=self.a.iters,
+                lr=kt.get("lr", 0.03), init=kt.get("init", "obs"),
+            )
+            bg = {"mu": mu, "Binv": Binv, "sigma_m": sm}
+            Path(self.a.out_dir).mkdir(parents=True, exist_ok=True)
+            torch.save(bg, f)
+        logger.info(f"KAE objective: Gaussian background, sigma_m = {float(bg['sigma_m']):.4f}")
+        self._cache["kae_bg"] = bg
+        return bg
+
+    def unet_background(self, ad, noise_std: float, n: int = 4096, seed: int = 0):
+        """R20: diagonal Gaussian background for the U-Net control (model units): pixel-wise mean
+        and variance of n random TRAINING windows; s2 = noise^2 + sigma_m^2 with the KAE's sigma_m
+        (same R as the KAE 'bg' objective)."""
+        if "unet_bg" not in self._cache:
+            tr = self.data("train")
+            g = np.random.default_rng(seed)
+            k = ad.n_control_frames
+            sims = torch.as_tensor(g.integers(0, tr.n_sim, n), device=self.dev)
+            ts = torch.as_tensor(g.integers(k, tr.n_t - 1, n), device=self.dev)
+            acc, acc2 = 0.0, 0.0
+            for lo in range(0, n, 256):
+                w = ad.to_model(tr.window(sims[lo:lo + 256], ts[lo:lo + 256] - (k - 1), k)).double()
+                acc = acc + w.sum(0); acc2 = acc2 + (w * w).sum(0)
+            mu = acc / n; var = (acc2 / n - mu * mu).clamp_min(1e-6)
+            sm = float(self.kae_background(self.model("KAE"))["sigma_m"])
+            self._cache["unet_bg"] = {"mu": mu.float(), "var": var.float(), "sigma_m": sm}
+        bg = self._cache["unet_bg"]
+        return {"mu": bg["mu"], "var": bg["var"], "s2": noise_std ** 2 + bg["sigma_m"] ** 2}
+
     def model(self, name: str):
-        if name == "KAE":
+        if name == "UNet-latent":  # R14 hybrid: U-Net dynamics, KAE latent control
+            from types import SimpleNamespace
+
+            kw = {}
+            if getattr(self.a, "kae_config", None):
+                kw["config_path"] = self.a.kae_config
+            return SimpleNamespace(
+                unet=self.model("UNet"),
+                kae=KAEAdapter(self.a.kae_run, self.regime, self.dev, **kw),
+            )
+        if name in ("KAE", "KAE-data", "KAE-data-rec", "KAE-data-pb", "KAE-data-pbrec"):
             # the March ablation checkpoints predate the current architecture; they need
             # their own model config and, for no_history, a single conditioning frame
             kw = {}
@@ -75,7 +142,12 @@ class Bench:
                 kw["config_path"] = self.a.kae_config
             if getattr(self.a, "kae_input_frames", 0):
                 kw["input_frames"] = self.a.kae_input_frames
-            return KAEAdapter(self.a.kae_run, self.regime, self.dev, **kw)
+            ad = KAEAdapter(self.a.kae_run, self.regime, self.dev, **kw)
+            if name == "KAE" and getattr(self.a, "kae_objective", "bg") == "bg":
+                ad.background = self.kae_background(ad)
+            return ad
+        if name in ("UNet-pb", "UNet-bgx"):
+            name = "UNet"
         return TurbpredAdapter(
             self.base / MODELS[name] / "Model.pth",
             self.regime,
@@ -99,7 +171,22 @@ class Bench:
     ) -> Dict:
         if init is None:
             init = self.tuning.get(name, {}).get("init", "climatology")
-        fn = solve_kae if name == "KAE" else solve_autoregressive
+        if name in ("UNet-pb", "UNet-bgx"):  # R20: U-Net with the KAE pull-back start / a background
+            kw = {}
+            if name == "UNet-pb":
+                kw = {"init": "pullback", "kae": self.model("KAE")}
+            else:
+                kw = {"init": init, "bgx": self.unet_background(ad, float(prob.noise_std))}
+            return solve_autoregressive(ad, data, prob, iters=iters, lr=lr, seed=seed,
+                                        track_every=track_every, **kw)
+        fn = {
+            "KAE": solve_kae,
+            "KAE-data": solve_kae_data,
+            "KAE-data-rec": partial(solve_kae_data, score="reconstruction"),
+            "KAE-data-pb": solve_kae_data,
+            "KAE-data-pbrec": partial(solve_kae_data, score="reconstruction"),
+            "UNet-latent": solve_unet_latent,
+        }.get(name, solve_autoregressive)
         return fn(
             ad,
             data,
@@ -109,6 +196,10 @@ class Bench:
             seed=seed,
             track_every=track_every,
             init=init,
+            **(
+                {"control_frames": self.a.kae_data_frames}
+                if name.startswith("KAE-data") else {}
+            ),
         )
 
 
@@ -472,9 +563,17 @@ def _solve_diffusion(
     td = json.loads(tdp.read_text())[name] if tdp.is_file() else None
     gam = td["gamma"] if td else b.a.gamma
     corr = td["corrections"] if td else b.a.corrections
+    sig = max(prob.noise_std, b.a.sigma_y_floor)
+    if getattr(b.a, "sda_noise_units", "normalised") == "physical":
+        # R25: the noise is added in PHYSICAL units, the SDA residual lives in model-normalised
+        # units, so channel c sees sigma / std_c. Floor per channel; the parameter channel is exact.
+        fs = ad.fstd.reshape(-1).to(b.dev)
+        sig_c = torch.clamp(float(prob.noise_std) / fs, min=b.a.sigma_y_floor)
+        sig_c = torch.cat([sig_c, torch.full((ad.n_params,), b.a.sigma_y_floor, device=b.dev)])
+        sig = sig_c.view(1, 1, -1, 1, 1)
     sda = BlanketSDA(
         sc,
-        sigma_y=max(prob.noise_std, b.a.sigma_y_floor),
+        sigma_y=sig,
         gamma=gam,
         corrections=corr,
         tau=b.a.tau,
@@ -619,6 +718,15 @@ def _sweep(
                     "wall_s": time.perf_counter() - t0_,
                     **cfg,
                 }
+                # R25: "mean" is the average SINGLE-DRAW error; also record the error of the
+                # posterior mean of the n_samples draws (same cost) and the per-problem values
+                if ana is not None:
+                    _s = torch.as_tensor(prob.sim, device=b.dev)
+                    _t = torch.as_tensor(prob.t0, device=b.dev)
+                    _pm = rel_l2(torch.as_tensor(ana, device=b.dev), data.frames(_s, _t), data.mask_for(_s))
+                    row[m]["posterior_mean"] = float(_pm.mean())
+                    row[m]["per_problem_posterior_mean"] = _pm.cpu().numpy().ravel().tolist()
+                row[m]["per_problem"] = np.asarray(v, dtype=float).ravel().tolist()
                 fields[f"{pt['tag']}__{m}__analysis"] = ana[: b.a.n_fields_saved]
                 logger.info(
                     f"        {m:9s} rel-L2 {v.mean():.4f} ± "
@@ -881,7 +989,7 @@ def exp_forecast(b, out, tuning):
         .numpy()
     )
 
-    for m in FOURDVAR + DIFFUSION:  # every model rolls forward from the truth
+    for m in [x for x in FOURDVAR + DIFFUSION if x in b.a.methods]:  # every model rolls forward from the truth
         ad = b.model(m)
         with torch.no_grad():
             if m == "KAE":
@@ -1874,7 +1982,7 @@ def _solve_all(b, out, tuning, data, prob, seed):
 
     res = {}
     nB = int(b.a.solve_batch) or len(prob.sim)
-    for m in FOURDVAR + DIFFUSION:
+    for m in [x for x in FOURDVAR + DIFFUSION if x in b.a.methods]:
         ad = b.model(m)
         t0_ = time.perf_counter()
         if m in DIFFUSION:
@@ -2156,7 +2264,7 @@ def exp_regimes(b, out, tuning):
             data,
             name=f"R_{split}",
             n_problems=b.a.n_regime,
-            offsets=canonical(),
+            offsets=pinned_schedule(b.a) if getattr(b.a, "regime_pinned", False) else canonical(),
             seed=900,
             noise_std=b.a.noise,
             obs_frac=b.a.obs_frac,
@@ -2168,9 +2276,15 @@ def exp_regimes(b, out, tuning):
         )
         res = _solve_all(b, out, tuning, data, prob, seed=900)
         row = {"problem": prob.meta(), "data_file": DATA[split]}
+        # per-problem parameter (Mach) so results can be broken down by physical parameter
+        row["param_per_problem"] = (
+            data.params_for(torch.as_tensor(prob.sim, device=b.dev)).float().cpu().numpy().ravel().tolist()
+        )
+        row["sim_per_problem"] = np.asarray(prob.sim).ravel().tolist()
         for m, (v, wall) in res.items():
             st = summarise(v, clusters=prob.sim)
             st["wall_s"] = wall
+            st["per_problem"] = np.asarray(v, dtype=float).ravel().tolist()
             row[m] = st
             logger.info(
                 f"        {m:9s} {fmt(st)}  (naive CI would be "
@@ -2178,7 +2292,7 @@ def exp_regimes(b, out, tuning):
                 f"clustered ±{(st.get('ci95_cluster_halfwidth') or float('nan')):.4f})"
             )
         rows[split] = row
-        (out / "R_regimes.json").write_text(
+        (out / ("R_regimes_pinned.json" if getattr(b.a, "regime_pinned", False) else "R_regimes.json")).write_text(
             json.dumps(
                 {
                     "meta": {
@@ -2545,6 +2659,12 @@ def main():
     )
     ap.add_argument("--sections", nargs="+", default=["tune", "headline"])
     ap.add_argument(
+        "--kae-objective", choices=["bg", "base"], default="bg",
+        help="KAE 4D-Var objective: 'bg' (default since the ICLR 2027 revision) = explicit "
+        "observation error + Gaussian latent background; 'base' = the unweighted misfit used "
+        "for the submitted paper's numbers",
+    )
+    ap.add_argument(
         "--regime",
         default="test",
         choices=["test", "long", "val"],
@@ -2579,6 +2699,8 @@ def main():
     ap.add_argument("--n-samples", type=int, default=4)
     ap.add_argument("--chunk", type=int, default=2)
     ap.add_argument("--sigma-y-floor", type=float, default=0.05)
+    ap.add_argument("--sda-noise-units", choices=["normalised", "physical"], default="normalised",
+                    help="R25: express the SDA likelihood noise in model units (sigma/std_c) when the noise is physical")
     ap.add_argument("--gamma", type=float, default=1e-2)
     ap.add_argument("--corrections", type=int, default=1)
     ap.add_argument("--tau", type=float, default=0.5)
@@ -2621,6 +2743,13 @@ def main():
     ap.add_argument(
         "--methods", nargs="+", default=["KAE", "UNet", "FNO", "ACDM", "ACDM-ncn"]
     )
+    ap.add_argument(
+        "--kae-data-frames",
+        type=int,
+        default=0,
+        help="frames of physical control for the KAE-data ablation. 0 matches the "
+        "U-Net's own conditioning window, so both controls have the same dimension",
+    )
     ap.add_argument("--forecast-frames", type=int, default=50)
     ap.add_argument("--spacetime-frames", type=int, default=30)
     ap.add_argument("--n-spacetime", type=int, default=3)
@@ -2649,6 +2778,10 @@ def main():
         nargs="+",
         default=["test", "long", "val"],
         help="splits for --sections regimes; 'val' is the TUNING regime",
+    )
+    ap.add_argument(
+        "--regime-pinned", action="store_true",
+        help="regimes section: use the pinned schedule (--pin-delta-f) instead of canonical()",
     )
     ap.add_argument(
         "--n-regime",
@@ -2719,6 +2852,23 @@ def main():
         tuning = tune(b, a.out_dir)
     elif tp.is_file():
         tuning = json.loads(tp.read_text())
+    ablations = [
+        m for m in ("KAE-data", "KAE-data-rec", "KAE-data-pb", "KAE-data-pbrec") if m in a.methods
+    ]
+    if tuning and ablations:
+        # the ablation inherits the U-Net's frozen settings verbatim; tuning it separately
+        # would confound the control-variable comparison it exists to make
+        tuning = {
+            **tuning,
+            **{m: {**tuning["UNet"], "copied_from": "UNet"} for m in ablations},
+        }
+        if "KAE-data-pb" in tuning:  # same settings, the KAE's own warm start
+            tuning["KAE-data-pb"] = {**tuning["KAE-data-pb"], "init": "pullback"}
+        if "KAE-data-pbrec" in tuning:  # pull-back start, scored on decode(encode(x0))
+            tuning["KAE-data-pbrec"] = {**tuning["KAE-data-pbrec"], "init": "pullback"}
+        if not a.kae_data_frames:
+            a.kae_data_frames = b.model("UNet").n_control_frames
+        logger.info(f"KAE-data control: {a.kae_data_frames} frame(s) ending at t0")
     if tuning:
         b.tuning = tuning
         picked = {

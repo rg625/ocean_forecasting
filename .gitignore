@@ -32,6 +32,15 @@
 *.dict
 *.loss
 *.pdf
+*.aux
+*.log
+*.fdb_latexmk
+*.fls
+*.md
+*.bib
+*.sh
+*.sty
+
 
 
 wget-log
@@ -52,3 +61,5 @@ wget-log
 **/koopman_autoencoder/model_outputs_old/
 **/autoreg-pde-diffusin/
 **/wandb/
+
+**/thermalizer/

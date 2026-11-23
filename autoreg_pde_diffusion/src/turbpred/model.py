@@ -183,6 +183,8 @@ class PredictionModel(nn.Module):
                 "direct-ddim+First",
                 "direct-ddpm",
                 "direct-ddim",
+                "direct-ddpm+Uncond",
+                "direct-ddim+Uncond",
                 "direct-ddpm+Prev",
                 "direct-ddim+Prev",
                 "direct-ddpm+2Prev",
@@ -206,6 +208,10 @@ class PredictionModel(nn.Module):
                         + len(self.p_d.simFields)
                         + len(self.p_d.simParams)
                     )
+                elif self.p_md.arch in ["direct-ddpm+Uncond", "direct-ddim+Uncond"]:
+                    # Unconditional snapshot DDPM: no conditioning frame, generate a
+                    # single state from pure noise (invariant-distribution baseline).
+                    condChannels = 0
                 elif self.p_md.arch in [
                     "direct-ddpm+First",
                     "direct-ddim+First",
@@ -394,6 +400,8 @@ class PredictionModel(nn.Module):
             "refiner",
             "direct-ddpm",
             "direct-ddim",
+            "direct-ddpm+Uncond",
+            "direct-ddim+Uncond",
             "direct-ddpm+First",
             "direct-ddim+First",
             "direct-ddpm+Prev",
@@ -690,6 +698,13 @@ class PredictionModel(nn.Module):
                 )
                 data = d[:, randIndex : randIndex + 1]
 
+            elif "+Uncond" in self.p_md.arch:
+                # Unconditional snapshot training: pick a random frame as the target and
+                # pass an empty (0-channel) conditioning so the model denoises from noise.
+                randIndex = torch.randint(0, sizeSeq, (1,), device=d.device)
+                data = d[:, randIndex : randIndex + 1]
+                conditioning = data[:, :, 0:0]  # [B, 1, 0, H, W]
+
             else:
                 if "+Prev" in self.p_md.arch:
                     prevSteps = 2
@@ -748,6 +763,20 @@ class PredictionModel(nn.Module):
                 for i in range(1, sizeSeq):
                     cond = torch.concat((d[:, 0:1], prediction[:, i - 1 : i]), dim=2)
                     result = self.modelDecoder(conditioning=cond, data=d[:, i - 1 : i])
+                    if self.p_d.simParams:
+                        result[:, :, -len(self.p_d.simParams) :] = d[
+                            :, i : i + 1, -len(self.p_d.simParams) :
+                        ]  # replace simparam prediction with true values
+                    prediction[:, i : i + 1] = result
+
+            elif "+Uncond" in self.p_md.arch:
+                # Unconditional inference: every frame is an INDEPENDENT snapshot sampled
+                # from pure noise (no autoregression, no initial-state conditioning).
+                for i in range(sizeSeq):
+                    result = self.modelDecoder(
+                        conditioning=d[:, i : i + 1, 0:0],  # empty conditioning
+                        data=d[:, i : i + 1],
+                    )
                     if self.p_d.simParams:
                         result[:, :, -len(self.p_d.simParams) :] = d[
                             :, i : i + 1, -len(self.p_d.simParams) :

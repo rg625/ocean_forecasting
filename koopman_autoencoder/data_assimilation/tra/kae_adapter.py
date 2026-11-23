@@ -154,14 +154,19 @@ class KAEAdapter:
         )
 
     def _cond(self, param_phys: torch.Tensor, n_t: int = 1) -> torch.Tensor:
-        """The normalised control parameter as a plain [B, n_t] tensor.
+        """The RAW control parameter (training convention) as a plain [B, n_t] tensor.
 
         ``present_encoding`` slices ``cond_input[..., -1:]`` to take the present frame's
         condition, so this must be a Tensor (the trainer passes one too), never a
         TensorDict -- the conditioning encoder is an RBF layer that operates on tensors.
         """
-        _, _, pm, ps = self._norm
-        v = (param_phys.to(self.dev).float() - pm) / ps
+        # RAW parameter values, as models/dataloader.py passes them during training (cond_input /
+        # cond_target are never normalised there; the model's own PhysicalNormalizer inside the
+        # expansion map does it).  This used to pass (p - TRA_MEAN)/TRA_STD, i.e. normalised twice,
+        # which evaluated a conditioned generator at a meaningless parameter value.  It was invisible
+        # for every published checkpoint because their LoRA branch never trained (K independent of
+        # the parameter; forecasts are identical either way), and surfaced once it did (R13, Nov 2026).
+        v = param_phys.to(self.dev).float()
         return v.view(-1, 1).expand(-1, n_t)
 
     def _td(self, x_norm: torch.Tensor) -> TensorDict:

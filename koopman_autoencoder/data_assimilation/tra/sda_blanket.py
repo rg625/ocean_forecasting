@@ -106,7 +106,10 @@ class BlanketSDA:
         tau: float = 0.5,
     ):
         self.s = score
-        self.sigma_y = float(sigma_y)
+        # float: one noise level for every channel (original behaviour, bit-identical);
+        # tensor broadcastable to [B, N, C, H, W]: per-channel level in the coordinates of the
+        # residual (model-normalised units), e.g. sigma_phys / channel_std (R25).
+        self.sigma_y = sigma_y if torch.is_tensor(sigma_y) else float(sigma_y)
         self.gamma = float(gamma)
         self.corrections = int(corrections)
         self.tau = float(tau)
@@ -122,7 +125,10 @@ class BlanketSDA:
             # Sigma_y + (sigma^2/mu^2) Gamma, the paper's covariance, scalar Gamma here
             ratio = float((self.s.sqrt_1mac[ti] / self.s.sqrt_ac[ti]) ** 2)
             cov = self.sigma_y**2 + ratio * self.gamma
-            nll = 0.5 * (r**2).sum() / cov
+            if torch.is_tensor(cov):
+                nll = 0.5 * (r**2 / cov).sum()
+            else:
+                nll = 0.5 * (r**2).sum() / cov
             g = torch.autograd.grad(nll, xg)[0]
         prior = -eps / self.s.sqrt_1mac[ti]
         return prior - g

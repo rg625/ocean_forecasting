@@ -17,8 +17,14 @@ import numpy as np
 import torch
 
 from data_assimilation.ks.exp_geometry import schedule
-from data_assimilation.ks.init_utils import init_kwargs
-from data_assimilation.ks.methods import KAE4DVar, SolveConfig, UNet4DVar
+from data_assimilation.ks.init_utils import informed_state, init_kwargs
+from data_assimilation.ks.methods import (
+    KAE4DVar,
+    KAEData4DVar,
+    KAEDataRec4DVar,
+    SolveConfig,
+    UNet4DVar,
+)
 from data_assimilation.ks.protocol import DT, build_problem, rel_l2
 from data_assimilation.ks.da_ks_experiments_3way import Bench, add_common_args
 
@@ -26,6 +32,9 @@ STYLE = {
     "KAE": ("#1b7837", "KAE"),
     "UNet": ("#d6604d", "U-Net 4D-Var"),
     "SDA": ("#762a83", "SDA"),
+    "KAE-data": ("#35978f", "KAE 4D-Var, data space (ablation)"),
+    "KAE-data-rec": ("#01665e", "KAE 4D-Var, data space, decode(encode($x_0$))"),
+    "KAE-data-pb": ("#8c510a", "KAE 4D-Var, data space, pulled-back warm start"),
 }
 
 
@@ -58,6 +67,12 @@ def main():
         "one method at a time still produces a usable file and figure",
     )
     ap.add_argument("--iters", type=int, default=8000)
+    ap.add_argument(
+        "--kae-objective", choices=["bg", "base"], default="bg",
+        help="'bg' (default since the ICLR 2027 revision): explicit observation error + "
+        "Gaussian latent background (background.py); 'base': unweighted misfit (submitted "
+        "paper, and the stored deltaf_fine.json)",
+    )
     ap.add_argument("--n-problems", type=int, default=24)
     ap.add_argument("--seed", type=int, default=101)
     a = ap.parse_args()
@@ -73,6 +88,13 @@ def main():
     if a.unet_tuning.is_file():
         unet_hp.update(json.loads(a.unet_tuning.read_text())["best"])
     print(f"frozen: KAE {kae_hp} | U-Net {unet_hp} | methods {a.methods}", flush=True)
+    if a.kae_objective == "bg" and "KAE" in a.methods:
+        from data_assimilation.ks.background import latent_prior, representation_error
+        from data_assimilation.ks.protocol import KSData
+
+        mu_z, Binv_z = latent_prior(kae, KSData(Path("data/ks/train.nc"), dev))
+        val_ks = KSData(Path("data/ks/val.nc"), dev)
+    sigma_m = {}
     by_df = {}
     if a.json.is_file():  # merge with earlier legs of the same sweep
         for r in json.loads(a.json.read_text())["rows"]:
@@ -88,6 +110,8 @@ def main():
                         "n_problems": a.n_problems,
                         "seed": a.seed,
                         "kae_hp": kae_hp,
+                        "kae_objective": a.kae_objective,
+                        "sigma_m": sigma_m,
                         "unet_hp": unet_hp,
                         "delta_l_frames": 25,
                         "N": 5,
@@ -123,10 +147,16 @@ def main():
             if meth == "KAE":
                 m = KAE4DVar(kae, K, D, 1.0, "expm")
                 ik = init_kwargs(kae_hp["init"], kae, K, prob, dev)
+                bgd = None
+                if a.kae_objective == "bg":
+                    sm = sigma_m.setdefault(
+                        str(df), representation_error(kae, K, val_ks, fr, a.iters, kae_hp["lr"])
+                    )
+                    bgd = {"mu": mu_z, "Binv": Binv_z, "s2": float(sm) ** 2}  # clean: sigma_obs = 0
                 r = m.solve(
                     prob,
                     b.data,
-                    SolveConfig(iters=a.iters, lr=kae_hp["lr"], seed=a.seed, **ik),
+                    SolveConfig(iters=a.iters, lr=kae_hp["lr"], seed=a.seed, background=bgd, **ik),
                 )
                 with torch.no_grad():
                     v = (
@@ -137,8 +167,18 @@ def main():
                         .cpu()
                         .numpy()
                     )
-            elif meth == "UNet":
-                mu = UNet4DVar(b.unet, init_scale=b.x_scale, checkpoint_every=-1)
+            elif meth in ("UNet", "KAE-data", "KAE-data-rec", "KAE-data-pb"):
+                # KAE-data is the ablation: the U-Net's physical control, first guess,
+                # learning rate and budget, with the KAE as the forward map
+                mu = (
+                    UNet4DVar(b.unet, init_scale=b.x_scale, checkpoint_every=-1)
+                    if meth == "UNet"
+                    else {
+                        "KAE-data": KAEData4DVar,
+                        "KAE-data-rec": KAEDataRec4DVar,
+                        "KAE-data-pb": KAEData4DVar,
+                    }[meth](kae, K, init_scale=b.x_scale)
+                )
                 i = int(np.argmin(prob.taus))
                 uik = (
                     {
@@ -148,6 +188,13 @@ def main():
                     if unet_hp["init"] == "obs"
                     else {"init": unet_hp["init"]}
                 )
+                if meth == "KAE-data-pb":
+                    # the KAE's own warm start instead of copying y_1: the nearest
+                    # observation encoded, pulled back to t_0 and decoded
+                    uik = {
+                        "init": "given",
+                        "init_value": informed_state(kae, K, prob, dev),
+                    }
                 r = mu.solve(
                     prob,
                     b.data,
@@ -178,8 +225,11 @@ def main():
             )
             save()
         print(f"=== {meth} leg complete ===", flush=True)
-    rows = [by_df[k] for k in sorted(by_df)]
+    plot([by_df[k] for k in sorted(by_df)], a.iters, a.n_problems, a.out_dir)
 
+
+def plot(rows, iters: int, n_problems: int, out_dir: Path):
+    """Write ks_deltaf_fine.png and an untitled copy, ks_deltaf_fine_notitle.png."""
     x = [r["delta_f"] for r in rows]
     fig, ax = plt.subplots(figsize=(7.8, 4.9))
     for k, (col, lab) in STYLE.items():
@@ -212,12 +262,16 @@ def main():
         ylabel=r"analysis rel-$L_2$ at $t_0$",
         xticks=x[::2],
         title=f"$\\delta_f$ one frame at a time, $\\delta_l=25$ and $N=5$ pinned\n"
-        f"{a.iters} iterations, $n={a.n_problems}$, settings frozen on validation",
+        f"{iters} iterations, $n={n_problems}$, settings frozen on validation",
     )
     ax.grid(alpha=0.3, which="both")
     ax.legend(fontsize=8)
     fig.tight_layout()
-    out = a.out_dir / "ks_deltaf_fine.png"
+    out = out_dir / "ks_deltaf_fine.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    print("wrote", out)
+    ax.set_title("")
+    out = out_dir / "ks_deltaf_fine_notitle.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     print("wrote", out)
 

@@ -12,15 +12,21 @@ plt.style.use("seaborn-v0_8-whitegrid")
 
 cmap = sns.color_palette("icefire", as_cmap=True)
 
-datasetName = "extrap"
+datasetName = "longer"
 modelMinMax = (0, 1)
 evalMinMax = (0, 1)
 sequenceMinMax = (0, 1)
 # sequenceMinMax = (8, 9)
+# frame indices; the panel label is index + 1, so "longer" ends at t = 240, the last
+# step of the 240-step rollout the paper reports.  The wide spacing used for the _play
+# variant is kept alongside it rather than overwritten.
+longerSteps = [9, 49, 129, 239]          # t =  10,  50, 130, 240
+# longerSteps = [99, 249, 749, 996]      # t = 100, 250, 750, 997   (the _play variant)
+outputSuffix = ""                        # "_play" for the variant above
 timeSteps = (
     [14, 29, 44, 59]
     if datasetName in ["lowRey", "highRey", "varReyIn", "interp", "extrap"]
-    else ([9, 49, 129, 209] if datasetName in ["longer"] else [9, 39, 69, 99])
+    else (longerSteps if datasetName in ["longer"] else [9, 39, 69, 99])
 )
 spatialZoom = (
     [[20, 84], [0, 64]]
@@ -35,7 +41,7 @@ spatialZoom = (
 field = "pres"
 
 predictionFolder = (
-    "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results/sampling/%s"
+    "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/results/%s"
     % datasetName
 )
 outputFolder = "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results"
@@ -54,9 +60,9 @@ models = {
     # "U-Net-tn": "unet-m2-noise0.01.npz",
     # "Refiner": "refiner-r4_std%s.npz"
     # % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
-    "ACDM-ncn": "acdm-r%d_ncn.npz" % (100 if datasetName in ["zInterp"] else 20),
+    # "ACDM-ncn": "acdm-r%d_ncn.npz" % (100 if datasetName in ["zInterp"] else 20),
     "ACDM": "acdm-r%d.npz" % (100 if datasetName in ["zInterp"] else 20),
-    "RK4": "continous_linear_128_tra.npz",
+    "KAE": "continous_linear_128_tra.npz",
     # "EXP": "continous_linear_128_exp.npz",
 }
 
@@ -163,17 +169,17 @@ for i in range(len(modelNames)):
             frameData[i][j], interpolation="nearest", cmap=cmap, norm=norm
         )
         mse_val = mseData[i][j]
-        axs[i, j].text(
-            0.5,
-            0.95,
-            f"MSE={mse_val:.2e}",
-            transform=axs[i, j].transAxes,
-            ha="center",
-            va="top",
-            fontsize=7,
-            color="black",
-            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1.5),
-        )
+        # axs[i, j].text(
+        #     0.5,
+        #     0.95,
+        #     f"MSE={mse_val:.2e}",
+        #     transform=axs[i, j].transAxes,
+        #     ha="center",
+        #     va="top",
+        #     fontsize=7,
+        #     color="black",
+        #     bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1.5),
+        # )
 # Reduce space between rows/columns
 fig.subplots_adjust(
     left=0.05,
@@ -200,5 +206,7 @@ fig.colorbar(im, cax=cbar_ax)
 cbar_ax.tick_params(labelsize=8)
 
 fig.savefig(
-    f"{outputFolder}/data_{datasetName}_{field}_play.pdf", dpi=250, bbox_inches="tight"
+    f"{outputFolder}/data_{datasetName}_{field}{outputSuffix}.pdf",
+    dpi=250,
+    bbox_inches="tight",
 )

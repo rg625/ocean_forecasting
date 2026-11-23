@@ -32,6 +32,28 @@ testSets = {
         simParams=["mach"],
         printLevel="sim",
     ),
+    "interp": TurbulenceDataset(
+        "Test Extrapolate Mach 0.50-0.52",
+        ["data"],
+        filterTop=["128_tra"],
+        filterSim=[(0, 3)],
+        filterFrame=[(0, 1000)],
+        sequenceLength=[[500, 2]],
+        simFields=["dens", "pres"],
+        simParams=["mach"],
+        printLevel="sim",
+    ),
+    "longer": TurbulenceDataset(
+        "Test Extrapolate Mach 0.50-0.52",
+        ["data"],
+        filterTop=["128_tra"],
+        filterSim=[(0, 3)],
+        filterFrame=[(0, 1000)],
+        sequenceLength=[[500, 2]],
+        simFields=["dens", "pres"],
+        simParams=["mach"],
+        printLevel="sim",
+    ),
 }
 dataTransformationFieldIndices = [
     0,
@@ -61,6 +83,28 @@ models = {
             "128_unet-m2-noise0.01_00/Model.pth",
             "128_unet-m2-noise0.01_01/Model.pth",
             "128_unet-m2-noise0.01_02/Model.pth",
+        ],
+        {"extrap": 1, "interp": 1, "longer": 1},
+        {
+            "numEvals": 1,
+        },
+    ),
+    "fno-16modes-m2": (
+        [
+            "128_fno-16modes-m2_00/Model.pth",
+            "128_fno-16modes-m2_01/Model.pth",
+            "128_fno-16modes-m2_02/Model.pth",
+        ],
+        {"extrap": 1, "interp": 1, "longer": 1},
+        {
+            "numEvals": 1,
+        },
+    ),
+    "fno-32modes-m2": (
+        [
+            "128_fno-32modes-m2_00/Model.pth",
+            "128_fno-32modes-m2_01/Model.pth",
+            "128_fno-32modes-m2_02/Model.pth",
         ],
         {"extrap": 1, "interp": 1, "longer": 1},
         {

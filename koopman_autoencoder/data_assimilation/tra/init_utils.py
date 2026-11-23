@@ -65,3 +65,30 @@ def informed_latent(ad, data, prob, dev) -> torch.Tensor:
             if back.dim() == 3
             else z @ back.T
         )
+
+
+def informed_latent_reg(ad, data, prob, dev, lam: float = 1e-2) -> torch.Tensor:
+    """Regularised pull-back warm start (ICLR 2027 revision, R15).
+
+    ``informed_latent`` applies e^{-K tau_1} to E(y_1).  For a stiff generator (strongly damped
+    modes, very negative Re(lambda)) that inverse amplifies whatever error E(y_1) carries along
+    those modes by e^{|Re lambda| tau_1} (||e^{-K 0.9}|| ranges from 5 to 1e6 across retrains).
+    Here z_0 = argmin ||e^{K tau_1} z - E(y_1)||^2 + lam ||z - mu||^2 instead: modes the forward
+    map damps below sqrt(lam) are set to the prior mean (mu = ad.background['mu'] when the KAE
+    has a Gaussian background, else 0) rather than amplified.
+    """
+    w = informed_window(ad, prob, dev)
+    par = data.params_for(torch.as_tensor(prob.sim, device=dev))
+    _, tau1 = nearest_observation(ad, prob, dev)
+    with torch.no_grad():
+        z1 = ad.encode(w, par).double()  # [B, D]
+        K = ad.generator(par).detach().double()
+        A = torch.matrix_exp(K * (tau1 * ad.dt_train))
+        B, D = z1.shape
+        if A.dim() == 2:
+            A = A.unsqueeze(0).expand(B, D, D)
+        bg = getattr(ad, "background", None)
+        mu = (bg["mu"].double().to(dev) if bg is not None else torch.zeros(D, device=dev, dtype=torch.float64))
+        AtA = A.transpose(1, 2) @ A + lam * torch.eye(D, device=dev, dtype=torch.float64)
+        rhs = (A.transpose(1, 2) @ z1.unsqueeze(-1)).squeeze(-1) + lam * mu
+        return torch.linalg.solve(AtA, rhs).float()

@@ -28,8 +28,8 @@ if __name__ == "__main__":
     # torch.manual_seed(1)
     # torch.cuda.manual_seed(1)
 
-    ### ACDM
-    modelName = "2D_Tra/128_acdm-r20"
+    ### Unconditional snapshot DDPM (invariant-distribution baseline; was: ACDM)
+    modelName = "2D_Tra/128_uncond-ddpm"
     p_d = DataParams(
         batch=64,
         augmentations=["normalize"],
@@ -41,11 +41,11 @@ if __name__ == "__main__":
         simParams=["mach"],
         normalizeMode="machMixed",
     )
-    p_t = TrainingParams(epochs=3100, lr=0.0001)
+    p_t = TrainingParams(epochs=500, lr=0.0001)
     p_l = LossParams()
     p_me = None
     p_md = ModelParamsDecoder(
-        arch="direct-ddpm+Prev",
+        arch="direct-ddpm+Uncond",
         diffSteps=20,
         diffSchedule="linear",
         diffCondIntegration="noisy",
@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
     trainSet = TurbulenceDataset(
         "Training",
-        ["data"],
+        ["/home/rg625/mnt/ocean_forecasting/data"],
         filterTop=["128_tra"],
         filterSim=[[0, 1, 2, 14, 15, 16, 17, 18]],
         excludefilterSim=True,
@@ -93,7 +93,7 @@ if __name__ == "__main__":
     testSets = {
         "extrap": TurbulenceDataset(
             "Test Extrapolate Mach 0.50-0.52",
-            ["data"],
+            ["/home/rg625/mnt/ocean_forecasting/data"],
             filterTop=["128_tra"],
             filterSim=[(0, 3)],
             filterFrame=[(500, 750)],
@@ -104,7 +104,7 @@ if __name__ == "__main__":
         ),
         "interp": TurbulenceDataset(
             "Test Interpolate Mach 0.66-0.68",
-            ["data"],
+            ["/home/rg625/mnt/ocean_forecasting/data"],
             filterTop=["128_tra"],
             filterSim=[(16, 19)],
             filterFrame=[(500, 750)],
@@ -115,7 +115,7 @@ if __name__ == "__main__":
         ),
         "longer": TurbulenceDataset(
             "Test Longer Rollout Mach 0.64-0.65",
-            ["data"],
+            ["/home/rg625/mnt/ocean_forecasting/data"],
             filterTop=["128_tra"],
             filterSim=[(14, 16)],
             filterFrame=[(0, 1000)],

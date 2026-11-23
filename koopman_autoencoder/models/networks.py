@@ -222,9 +222,15 @@ class ConvEncoder(nn.Module):
         shared_expansion_map: Optional[nn.ModuleDict] = None,
         use_attention: bool = True,  # Default to False for cleaner dynamics
         spectral: bool = False,
+        latent_norm: bool = True,
         **kwargs
     ):
         super().__init__()
+        # latent_norm: affine-free LayerNorm on the encoder output.  Every published KAE
+        # checkpoint (KS, TRA, Inc; Aug-Sep 2026) was trained with it; it was removed by
+        # mistake before a5f4796, which degraded the KS round trip from 0.009 to ~0.13.
+        # Set model.conv_kwargs.latent_norm=false only for checkpoints trained without it.
+        self.latent_norm = latent_norm
         self.cond_type = cond_type
         self.use_attention = use_attention
         self.cond_expansion_type = cond_expansion_type
@@ -336,6 +342,9 @@ class ConvEncoder(nn.Module):
         if self.cond_type == "late_fusion" and cond_emb is not None:
             z = torch.cat([z, cond_emb], dim=1)
             # Note: ensure you project z back to latent_dim here if you concatenate
+
+        if self.latent_norm:
+            z = F.layer_norm(z, (z.shape[-1],))
 
         return z
 

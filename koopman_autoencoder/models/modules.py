@@ -50,6 +50,10 @@ class KoopmanConfig:
     cond_expansion_type: Optional[str] = None
     rank: Optional[int] = 32  # For Low-Rank Adaptation (Linear Mode)
     hidden_dim: int = 32  # Width for Hypnets and MLPs
+    # Which part of the linear generator the parameter-conditioned LoRA update acts on:
+    # "both" = skew (rotation) and symmetric (growth/decay) parts; "skew" = rotation only, so the
+    # real parts of K's eigenvalues stay bounded by the parameter-independent sym(D) (stable).
+    lora_target: str = "both"
     init_scale: float = 1.0  # Azencot forward-operator init scaling (spectral radius)
     integrator: str = "rk4"
     rtol: float = 1e-5
@@ -119,6 +123,27 @@ class BaseKoopmanOperator(nn.Module, abc.ABC):
 
         if config.mode == KoopmanMode.MLP and config.cond_embedding_dim is not None:
             self.conditioner = AdaLNMLP(config.latent_dim, config.cond_embedding_dim)
+
+    def _init_lora_factors(self, n_lora: int) -> None:
+        """Make the low-rank (LoRA) conditioning trainable.
+
+        KoopmanHypnet zero-initialises its last layer, which is right for ADDITIVE outputs but
+        not for LoRA, where the hypnet emits both factors u and v and the update is u v^T: with
+        u = v = 0 the gradient w.r.t. each factor is proportional to the other, i.e. exactly
+        zero, so the conditioning branch can never leave zero (every checkpoint trained before
+        Nov 2026 has an all-zero last layer).  Standard LoRA keeps one factor at zero (so the
+        model still starts from the base dynamics) and initialises the other randomly: here u
+        stays zero and the v rows of each [u; v] block get a small random init.
+        Output layout per block: [u (rank*D) | v (rank*D)], n_lora blocks (W and D updates).
+        """
+        if self.hypnet is None or not self.config.rank:
+            return
+        r, D = int(self.config.rank), int(self.config.latent_dim)
+        last = self.hypnet.net[-1]
+        with torch.no_grad():
+            for b in range(n_lora):
+                v0 = b * 2 * r * D + r * D
+                nn.init.normal_(last.weight[v0 : v0 + r * D], std=last.in_features ** -0.5)
 
     def _build_hypnet(self, output_dim: int) -> Optional[KoopmanHypnet]:
         assert (
@@ -240,6 +265,8 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
                     output_dim = config.latent_dim * 2 * config.rank * 2
 
                 self.hypnet = self._build_hypnet(output_dim)
+                if config.rank > 0:
+                    self._init_lora_factors(2)
 
             self._init_stable_weights()
 
@@ -335,7 +362,8 @@ class ContinuousKoopmanOperator(BaseKoopmanOperator):
             uv_w, uv_d = uv_all.chunk(2, dim=1)
 
             W = self._compute_lora_update(W, uv_w, self.config.rank)
-            D = self._compute_lora_update(D, uv_d, self.config.rank)
+            if getattr(self.config, "lora_target", "both") == "both":
+                D = self._compute_lora_update(D, uv_d, self.config.rank)
 
         # Skew part
         W_T = W.transpose(1, 2) if W.ndim == 3 else W.T
@@ -461,6 +489,7 @@ class DiscreteKoopmanOperator(BaseKoopmanOperator):
             if config.rank is not None:
                 output_dim = config.latent_dim * 2 * config.rank * 2
                 self.hypnet = self._build_hypnet(output_dim)
+                self._init_lora_factors(2)
 
             self._init_stable_weights()
             self._init_backward_weights()
@@ -635,6 +664,7 @@ class AzencotKoopmanOperator(BaseKoopmanOperator):
                 # Hypernetwork predicts LoRA updates to A
                 output_dim = config.latent_dim * 2 * config.rank
                 self.hypnet = self._build_hypnet(output_dim)
+                self._init_lora_factors(1)
 
             self._init_consistent_weights()
 

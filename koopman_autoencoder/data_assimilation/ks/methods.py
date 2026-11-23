@@ -9,6 +9,7 @@ is frozen.  The methods differ solely in the control variable and the propagator
 
     Continuous KAE : c = z0 in R^D,  G = decoder( expm(K tau_i) z0 )
     U-Net 4D-Var   : c = x0 in R^X,  G = F_theta^{n_i}(x0),  n_i = tau_i / dt
+    KAE data space : c = x0 in R^X,  G = decoder( expm(K tau_i) encoder(x0) )  (ablation)
 
 Both implementations roll out **once** to the furthest observation time and tap the
 intermediate states, which is the efficient (and therefore fair) way to evaluate a
@@ -25,6 +26,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import torch
 
+from data_assimilation.ks.init_utils import encode_field
 from data_assimilation.ks.protocol import DT, KSData, Problem, masked_rel_l2, rel_l2
 
 
@@ -37,6 +39,9 @@ class SolveConfig:
     init: str = "random"  # "random" | "zero" | "given" (uses init_value)
     init_value: Optional[torch.Tensor] = None  # starting control for init="given"
     reg: float = 0.0  # weight of the min-norm prior on the control
+    # Full Bayesian objective (ICLR 2027 revision default for the KAE; see background.py):
+    # {"mu": [D], "Binv": [D, D], "s2": sigma_obs^2 + sigma_m^2}.  None = unweighted misfit.
+    background: Optional[Dict] = None
     track_every: int = 0  # 0 disables per-iteration diagnostics
     seed: int = 0
 
@@ -132,9 +137,17 @@ class Assimilator:
             opt.zero_grad(set_to_none=True)
             pred = self.predict_at(c, taus, prep)  # [n_obs, B, X]
             diff = (pred - y) * mask[:, None, :]
-            loss = (diff**2).sum() / mask[:, None, :].expand_as(pred).sum().clamp_min(
-                1.0
-            )
+            if cfg.background is not None:
+                bg = cfg.background
+                n_ent = mask.sum().clamp_min(1.0)  # observed entries per problem
+                dz = c - bg["mu"]
+                prior = 0.5 * ((dz @ bg["Binv"]) * dz).sum(1)
+                sse = (diff**2).sum(dim=(0, 2))
+                loss = (sse / (2 * bg["s2"]) + prior).sum() / (B * n_ent)
+            else:
+                loss = (diff**2).sum() / mask[:, None, :].expand_as(pred).sum().clamp_min(
+                    1.0
+                )
             if cfg.reg > 0:
                 loss = loss + cfg.reg * (c**2).mean()
             loss.backward()
@@ -300,6 +313,76 @@ class KAE4DVar(Assimilator):
             done = int(n[j])
             outs[j] = self._decode(z)
         return torch.stack(outs)
+
+
+# ---------------------------------------------------------------------------
+class KAEData4DVar(Assimilator):
+    """Ablation: physical-space 4D-Var over ``x0`` through the frozen KAE.
+
+        G(x0, tau) = decoder( expm(K tau) encoder(x0) )
+
+    The control, its initialisation, the analysis (``x0`` itself) and the objective are
+    exactly those of ``UNet4DVar``; only the forward map differs.  Set against
+    ``KAE4DVar`` it isolates the choice of control variable (physical x0 vs latent z0)
+    with the model held fixed.
+    """
+
+    name = "KAE-data"
+    control_kind = "physical x0"
+
+    def __init__(self, model, K: torch.Tensor, init_scale: float = 1.0):
+        self.model = model
+        self.K = K
+        self._init_scale = init_scale
+
+    def control_shape(self, B):
+        return (B, 64)
+
+    def init_scale(self):
+        return self._init_scale
+
+    def _decode(self, z: torch.Tensor) -> torch.Tensor:
+        return self.model.decode(z)["u"].squeeze(-1)  # [B, H=X, W=1] -> [B, X]
+
+    def prepare(self, taus: np.ndarray) -> Dict:
+        return {"phis": [torch.matrix_exp(self.K * float(t)) for t in taus]}
+
+    def predict_at(self, x0, taus, prep):
+        z0 = encode_field(self.model, x0)
+        return torch.stack([self._decode(z0 @ phi.T) for phi in prep["phis"]])
+
+    def eval_counts(self, taus):
+        n_obs = len(taus)
+        return {
+            "encoder": 1.0,
+            "decoder": n_obs,
+            "propagation_steps": 0.0,
+            "network": n_obs + 1.0,
+        }
+
+    def analysis_field(self, x0):
+        return x0
+
+    @torch.no_grad()
+    def forecast(self, x0: torch.Tensor, taus: Sequence[float]) -> torch.Tensor:
+        z0 = encode_field(self.model, x0)
+        return torch.stack(
+            [self._decode(z0 @ torch.matrix_exp(self.K * float(t)).T) for t in taus]
+        )
+
+
+class KAEDataRec4DVar(KAEData4DVar):
+    """``KAEData4DVar`` scored on decode(encode(x0)) instead of the raw control.
+
+    The optimisation is identical; only the reported analysis differs.  The encoder
+    ignores most input directions, so the raw ``x0`` drifts along them unconstrained;
+    one pass through the autoencoder removes that drift.
+    """
+
+    name = "KAE-data-rec"
+
+    def analysis_field(self, x0):
+        return self._decode(encode_field(self.model, x0))
 
 
 # ---------------------------------------------------------------------------

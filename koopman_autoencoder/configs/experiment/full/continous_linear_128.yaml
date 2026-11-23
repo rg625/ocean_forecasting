@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - /data: full
+  - /data: eval
   - /model: continous_linear_128_full
   - /metric: base
   - /training: full

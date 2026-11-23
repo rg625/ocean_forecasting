@@ -208,13 +208,31 @@ class Campaign:
             return UNet4DVar(self.unet, init_scale=self.x_scale, checkpoint_every=-1)
         raise KeyError(name)
 
-    def cfg(self, name: str, iters: Optional[int] = None, seed: int = 0) -> SolveConfig:
-        """Hyper-parameters chosen on validation; KAE-rk4 inherits KAE-expm's."""
+    def cfg(self, name: str, iters: Optional[int] = None, seed: int = 0,
+            prob=None) -> SolveConfig:
+        """Hyper-parameters chosen on validation; KAE-rk4 inherits KAE-expm's.
+
+        ``init="obs"`` is the warm start: the earliest observation, pulled back to t_0
+        through the KAE's own operator for the latent control, and taken as the physical
+        state for the autoregressive one.  ``solve`` itself only knows random/zero/given,
+        so the translation happens here and needs the problem to read y_1 off.
+        """
         key = "KAE-expm" if name.startswith("KAE") else name
         hp = self.hp[key]
-        return SolveConfig(
-            iters=iters or self.args.iters, lr=hp["lr"], init=hp["init"], seed=seed
-        )
+        ik = {"init": hp["init"]}
+        if hp["init"] == "obs":
+            if prob is None:
+                raise ValueError(
+                    f"{name}: init='obs' needs the problem; pass prob= to cfg()")
+            if name.startswith("KAE"):
+                from data_assimilation.ks.init_utils import informed_init
+                ik = {"init": "given",
+                      "init_value": informed_init(self.kae, self.K, prob, self.dev)}
+            else:
+                j = int(np.argmin(prob.taus))
+                ik = {"init": "given",
+                      "init_value": torch.as_tensor(prob.y[j], device=self.dev)}
+        return SolveConfig(iters=iters or self.args.iters, lr=hp["lr"], seed=seed, **ik)
 
     # -- generic runner ------------------------------------------------------
     def run(
@@ -520,7 +538,7 @@ class Campaign:
             store: Dict[str, np.ndarray] = {}
             for mname in ["KAE-expm", "UNet-4DVar"]:
                 m = self.method(mname)
-                cfg = self.cfg(mname, self.args.horizon_iters, self.args.seed)
+                cfg = self.cfg(mname, self.args.horizon_iters, self.args.seed, prob=prob)
                 cfg.track_every = max(1, self.args.horizon_iters // 200)
                 res = m.solve(prob, self.data, cfg)
                 ev = evaluate_solution(m, res["control"], prob, self.data)

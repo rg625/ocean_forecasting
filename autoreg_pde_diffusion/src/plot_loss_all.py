@@ -122,9 +122,10 @@ if not load:
             # "U-Net-tn": "unet-m2-noise0.01.npz",
             # "Refiner": "refiner-r4_std%s.npz"
             # % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
-            "ACDM-ncn": "acdm-r%d_ncn.npz"
-            % (100 if datasetName in ["zInterp"] else 20),
-            "ACDM": "acdm-r%d.npz" % (100 if datasetName in ["zInterp"] else 20),
+            # "ACDM-ncn": "acdm-r%d_ncn.npz"
+            # % (100 if datasetName in ["zInterp"] else 20),
+            # "ACDM": "acdm-r%d.npz" % (100 if datasetName in ["zInterp"] else 20),
+            # "Tra Continous Linear 128": "azencot_linear_128_tra.npz",
             "Tra Continous Linear 128": "continous_linear_128_tra.npz",
             # "Inc Continous Linear 128": "continous_linear_128_stable.npz",
             # "Continous Linear 1024": "continous_linear_1024.npz",
@@ -298,8 +299,8 @@ for i in range(len(datasets)):
 
     posX = [
         0.0,
-        1.0,
-        2.5,
+        # 1.0,
+        # 2.5,
         # 3.5,
         # 5.0,
         # 6.0,

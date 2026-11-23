@@ -37,8 +37,35 @@ def informed_init(kae, K: torch.Tensor, problem, device) -> torch.Tensor:
         return z @ torch.matrix_exp(-K * float(problem.taus[i])).T
 
 
+def informed_state(kae, K: torch.Tensor, problem, device) -> torch.Tensor:
+    """decode(e^{-K tau_1} enc(y_1)): the pulled-back first guess, in data space."""
+    with torch.no_grad():
+        return kae.decode(informed_init(kae, K, problem, device))["u"].squeeze(-1)
+
+
 def init_kwargs(mode: str, kae, K, problem, device) -> dict:
     """SolveConfig kwargs for the requested initialisation."""
     if mode == "obs":
         return {"init": "given", "init_value": informed_init(kae, K, problem, device)}
     return {"init": mode}
+
+
+def informed_init_reg(kae, K: torch.Tensor, problem, device, lam: float = 1e-2, mu=None) -> torch.Tensor:
+    """Regularised pull-back (ICLR 2027 revision, R15): argmin ||e^{K tau_1} z - E(y_1)||^2 + lam ||z - mu||^2.
+
+    Same first guess as ``informed_init`` for well-conditioned generators, but modes the forward map
+    damps below sqrt(lam) are set to ``mu`` (0 if None) instead of being amplified by e^{|Re lambda| tau_1}.
+    """
+    i = int(np.argmin(problem.taus))
+    y = torch.as_tensor(problem.y[i], device=device)
+    m = torch.as_tensor(problem.mask[i], device=device)
+    if float(m.min()) < 1.0:
+        y = y * m
+    with torch.no_grad():
+        z1 = encode_field(kae, y).double()
+        A = torch.matrix_exp(K.double() * float(problem.taus[i]))
+        D = A.shape[0]
+        mu_ = torch.zeros(D, device=device, dtype=torch.float64) if mu is None else mu.double().to(device)
+        lhs = A.T @ A + lam * torch.eye(D, device=device, dtype=torch.float64)
+        rhs = z1 @ A + lam * mu_  # rows: (A^T z1)^T
+        return torch.linalg.solve(lhs, rhs.T).T.float()
