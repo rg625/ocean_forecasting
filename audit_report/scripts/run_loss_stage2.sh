@@ -5,8 +5,8 @@
 # (10, 11, 12; seed 0 was used for screening), each with the test evaluation and the full
 # DA suite (df9 + df1, lr grid 0.3-10); then each change alone at 20k steps (seed 10) for
 # attribution. Exact gradient accumulation (accum 2) so jobs fit beside other GPU users.
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
 wait_gpu () { until [ $(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1) -ge 8000 ]; do sleep 60; done; }
 BASE="--config=configs/ctkae/fair_h8.yaml model.latent_dim=256 train.steps=20000 train.accum=2"

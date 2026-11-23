@@ -3,7 +3,7 @@
 # harmonic-lattice generator (fair_h8_harm.yaml), then multi-start consistency
 # (fair_h8_tc.yaml); same pipeline as run_detail.sh. Pre-registered success: 60-step
 # interp MSE <= 3.19 with extrap <= 2.29.
-S=/home/rg625/mnt/ocean_forecasting_impl/audit_report/scripts
+S="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 P=/tmp/claude-1003/-home-rg625-mnt-ocean-forecasting/563da406-8943-47fe-a8f7-28eddbd027a5/scratchpad
 until grep -q "ALL DONE" $P/detailfloor.log; do sleep 60; done
 VARIANTS="harm tc" bash $S/run_detail.sh

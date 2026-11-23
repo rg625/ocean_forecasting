@@ -5,15 +5,14 @@
     python h8_summary.py [--json out.json]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(
-    "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ctkae"
-)
+ROOT = REPO_ROOT / "koopman_autoencoder/model_outputs_ctkae"
 SWEEPS = {
     "df9": [
         "G4_delta_l",

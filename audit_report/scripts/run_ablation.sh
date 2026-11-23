@@ -9,8 +9,8 @@
 # starts are serialised (gpu_start) and each job is tried up to three times.
 #   usage: run_ablation.sh WORKER_ID
 W=${1:-0}
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
 Q=$S/ablation_queue.txt
 LOCK=model_outputs_ctkae/ablation_state; mkdir -p $LOCK

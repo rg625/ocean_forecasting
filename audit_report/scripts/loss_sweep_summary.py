@@ -5,6 +5,7 @@ S = mean over {interp, extrap, longer} of MSE / MSE(R) + da_df9 / da_df9(R)
     python loss_sweep_summary.py [--prefix LS_] [--json out.json]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 from pathlib import Path
@@ -14,9 +15,7 @@ ap.add_argument("--prefix", default="LS_")
 ap.add_argument("--ref", default="R")
 ap.add_argument("--json", default=None)
 args = ap.parse_args()
-root = Path(
-    "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ctkae"
-)
+root = REPO_ROOT / "koopman_autoencoder/model_outputs_ctkae"
 rows: dict = {}
 for f in sorted(root.glob(f"{args.prefix}*/test_score.json")):
     j = json.loads(f.read_text())

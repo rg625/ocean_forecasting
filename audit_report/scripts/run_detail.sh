@@ -3,8 +3,8 @@
 # strictly sequential. Each: train -> test eval (+ dt / Ma checks) -> one-step error split
 # -> adapter check (structured generator through solve_kae) -> DA tune + df9 sweeps.
 # Target fixed before the runs: interp lead-1 <= 0.12, lead-10 <= 0.466 (H8_d256_s0).
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
 for v in ${VARIANTS:-detail decay}; do
   name=H8${v}_d256

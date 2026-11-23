@@ -3,6 +3,7 @@
 python summarize_runs.py [RUN_ROOT] [--json out.json]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 from pathlib import Path
@@ -11,7 +12,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument(
     "root",
     nargs="?",
-    default="/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/model_outputs_ctkae",
+    default=str(REPO_ROOT / "koopman_autoencoder/model_outputs_ctkae"),
 )
 ap.add_argument("--json", default=None)
 ap.add_argument(

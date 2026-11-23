@@ -15,17 +15,17 @@ Usage:
     python linear_baselines.py --rank 128 --json out.json
 """
 
+from _paths import MAIN_ROOT
 import argparse
 import json
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
 import xarray as xr
 
-REPO = Path("/home/rg625/mnt/ocean_forecasting/koopman_autoencoder")
+REPO = MAIN_ROOT / "koopman_autoencoder"
 sys.path.insert(0, str(REPO))
 from models.dataloader import TRA_MEAN, TRA_STD  # noqa: E402
 

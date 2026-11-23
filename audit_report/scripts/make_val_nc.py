@@ -7,10 +7,11 @@ No test file is read.
     python make_val_nc.py
 """
 
+from _paths import REPO_ROOT
 import numpy as np
 import xarray as xr
 
-ROOT = "/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder/data/acdm/128_tra"
+ROOT = str(REPO_ROOT / "koopman_autoencoder/data/acdm/128_tra")
 ds = xr.open_dataset(f"{ROOT}/train.nc")
 VAL_MA = (0.60, 0.75)
 segs = []

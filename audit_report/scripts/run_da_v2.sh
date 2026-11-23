@@ -9,8 +9,8 @@
 # (DF9_SECTIONS selects which).
 set -u
 LABEL=$1; KIND=$2; RUN=$3; CKPT=${4:-}  # empty: the adapter's default checkpoint
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 LRS=${LRS:-"0.03 0.1 0.3 1.0"}; DF9_ONLY=${DF9_ONLY:-0}
 OUT=model_outputs_ctkae/${DA_ROOT:-da_v2}/$LABEL; mkdir -p $OUT/df9 $OUT/df1

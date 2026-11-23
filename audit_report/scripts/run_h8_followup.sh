@@ -4,8 +4,8 @@
 #     v2 search ended at its top value (1.0) while still improving. d256 gets the full DA
 #     suite at the newly chosen rate; d128 is only re-tuned.
 #  2. Seeds 1 and 2 of H8 latent 256: train, test forecast eval, DA tune + df9 sweeps.
-cd /home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder
-PY=/home/rg625/anaconda3/envs/samudra/bin/python
+source "$(dirname "${BASH_SOURCE[0]}")/../../env.sh"
+cd "$OCEAN_REPO/koopman_autoencoder"
 S=../audit_report/scripts
 export LRS="0.3 1.0 3.0 10.0" DA_ROOT=da_v3
 d256=$(ls -d model_outputs_ctkae/H8_d256_s0_* | tail -1)

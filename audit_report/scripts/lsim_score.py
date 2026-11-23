@@ -9,6 +9,7 @@ reported number is mean +- std over (models, samples, sequences), x10 (the paper
     python lsim_score.py --baselines acdm-r20 unet-m8      # validation against the ACDM paper
 """
 
+from _paths import MAIN_ROOT
 import argparse
 import sys
 from pathlib import Path
@@ -17,7 +18,7 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).parent
-ACDM = Path("/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src")
+ACDM = MAIN_ROOT / "autoreg_pde_diffusion/src"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ACDM))
 from benchmark_suite import UNTIMED, load_gt, load_pred  # noqa: E402

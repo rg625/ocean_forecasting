@@ -13,6 +13,7 @@ plus val_mse240 / val_mse60 of the run's own final validation log entry.
     python val_score.py RUN_DIR [--ckpt last.pth] [--json out.json]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 import sys
@@ -21,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-REPO = Path("/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder")
+REPO = REPO_ROOT / "koopman_autoencoder"
 sys.path.insert(0, str(REPO))
 from data_assimilation.tra.bridge import REGIMES, PhysicalData  # noqa: E402
 from data_assimilation.tra.ctkae_adapter import CTKAEAdapter  # noqa: E402

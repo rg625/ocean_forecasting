@@ -12,6 +12,7 @@ MSE x1e-3 in physical units, obstacle zeroed, as benchmark_suite.
     python lead1_split.py RUN_DIR [--ckpt last.pth] [--json out.json]
 """
 
+from _paths import REPO_ROOT
 import argparse
 import json
 import sys
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import torch
 
-REPO = Path("/home/rg625/mnt/ocean_forecasting_impl/koopman_autoencoder")
+REPO = REPO_ROOT / "koopman_autoencoder"
 sys.path.insert(0, str(REPO))
 from eval_ctkae import load_model  # noqa: E402
 from models.ct_data import denormalise, load_eval_case  # noqa: E402

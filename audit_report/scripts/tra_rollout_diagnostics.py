@@ -15,6 +15,7 @@ Usage:
         --data FILE.nc --steps 600 --t0 20 150 300 --json out.json
 """
 
+from _paths import MAIN_ROOT
 import argparse
 import json
 import sys
@@ -28,7 +29,7 @@ import xarray as xr
 import yaml
 from tensordict import TensorDict
 
-REPO = Path("/home/rg625/mnt/ocean_forecasting/koopman_autoencoder")
+REPO = MAIN_ROOT / "koopman_autoencoder"
 sys.path.insert(0, str(REPO))
 from models.autoencoder import KoopmanAutoencoder  # noqa: E402
 from models.dataloader import TRA_MEAN, TRA_STD  # noqa: E402
