@@ -1,6 +1,7 @@
 """Train the conditional continuous-time KAE (models/ct_kae.py) on TRA.
 
-    python train_ctkae.py --config configs/ctkae/base.yaml [key=value ...]
+    python train_ctkae.py --config=configs/ctkae/base.yaml [key=value ...]   (with "=": a
+    space-separated path is not read and the defaults are used)
 
 Objective (all distances channel-weighted, see ct_data.channel_weights):
     L = w_rec  * |D(E(x_t)) - x_t|^2                  (rec_norm / pred_norm = l1: |.| instead)
