@@ -24,13 +24,14 @@ an ablation.
   required: with a space the file is ignored and the defaults are used).
 - Checkpoints (not in git): `model_outputs_ctkae/AB_back001_s{0,1,2}_*` in the
   `ocean_forecasting_impl` folder; use `last.pth`.
-- Forecast readout: LPM mirror average, `audit_report/scripts/postproc3/sharp.py` (`lpm`).
+- Forecast readout: LPM mirror average, `koopman_autoencoder/models/readout.py` (`lpm`).
 - DA: `python -m data_assimilation.tra.exp_tra --kae-kind ctkae --kae-run RUN --kae-ckpt last.pth --kae-mirror --kae-avg lpm`.
   Not yet run with the revised objective's background (`--kae-objective bg` falls back to the
   unweighted misfit for the CT-KAE).
 
 ## History
 
-Results, reports and figures of the research branches are not on `master`. They are kept under
+Results, reports, figures and the research scripts (`audit_report/`) of the research branches
+are not on `master`. They are kept under
 the tags `archive/*`, e.g. `archive/impl-ct-kae` (CT-KAE study, KS matched runs) and
 `archive/rares-updated_model`.

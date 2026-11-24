@@ -3,7 +3,7 @@
 # config of model_outputs_ctkae/AB_back001_s{0,1,2} (seeds 0-2), so changes to the training
 # defaults do not change this model. Train:
 #   python train_ctkae.py --config=configs/ctkae/tra_back001.yaml [seed=1 ...]
-# Forecast readout: LPM mirror average (audit_report/scripts/postproc3/sharp.py, lpm).
+# Forecast readout: LPM mirror average (models/readout.py, lpm).
 # DA: data_assimilation/tra/exp_tra.py --kae-kind ctkae --kae-run RUN --kae-ckpt last.pth
 #     --kae-mirror --kae-avg lpm
 run_name: tra_back001

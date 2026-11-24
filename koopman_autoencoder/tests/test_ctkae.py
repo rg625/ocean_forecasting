@@ -1,6 +1,6 @@
 """Tests for the conditional continuous-time KAE (models/ct_kae.py, models/ct_data.py).
 
-cd koopman_autoencoder && python -m pytest ../audit_report/tests -q
+cd koopman_autoencoder && python -m pytest tests -q
 """
 
 import sys
@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 
-KAE = Path(__file__).resolve().parents[2] / "koopman_autoencoder"
+KAE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KAE))
 
 from models.ct_data import DT_RAW, TraWindows, denormalise, to_acdm_layout  # noqa: E402

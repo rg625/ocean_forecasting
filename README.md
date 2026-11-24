@@ -108,12 +108,12 @@ per active branch:
 
 New worktree:
 
-    git fetch origin && git worktree add ../ocean_forecasting_impl impl/ct-kae
+    git fetch origin && git worktree add -b my-branch ../ocean_forecasting_impl origin/master
     bash ../ocean_forecasting_impl/setup_worktree.sh     # links data/ and LSiM.pth from the main checkout
 
 Machine-specific settings (python interpreter, main checkout) are in `env.sh`, which the
-scripts source; overrides go in an untracked `env.local.sh`. Python scripts in
-`audit_report/scripts` get the same roots from `_paths.py`. On HPC, CT-KAE jobs go through
+scripts source; overrides go in an untracked `env.local.sh`. Python scripts get the same
+roots from `koopman_autoencoder/_paths.py`. On HPC, CT-KAE jobs go through
 `koopman_autoencoder/training_scripts/ctkae_hpc.sbatch` (usage in its header).
 Data and checkpoints are not in git; copy them with `rsync -avP`.
 Note that `.gitignore` ignores `*.sh` and `*.yaml`, so new ones need `git add -f`.

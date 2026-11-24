@@ -1,7 +1,7 @@
 #!/bin/bash
 # CT-KAE jobs on CSD3. Submit from anywhere inside the worktree you want to run:
-#   sbatch koopman_autoencoder/training_scripts/ctkae_hpc.sbatch audit_report/scripts/run_full.sh
-#   sbatch koopman_autoencoder/training_scripts/ctkae_hpc.sbatch train_ctkae.py --config=configs/ctkae/fair_h8.yaml seed=1
+#   sbatch koopman_autoencoder/training_scripts/ctkae_hpc.sbatch path/to/job.sh
+#   sbatch koopman_autoencoder/training_scripts/ctkae_hpc.sbatch train_ctkae.py --config=configs/ctkae/tra_back001.yaml seed=1
 # A *.sh argument runs that script (paths relative to the repo root); anything else is passed
 # to $PY from koopman_autoencoder/. Override resources on the command line, e.g. --time=4:00:00.
 #SBATCH --job-name=ctkae

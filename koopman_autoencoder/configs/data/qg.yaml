@@ -8,7 +8,7 @@ train_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_tr
 val_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_val.nc"
 # test_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_test_short.nc"
 # WARNING: qg_test.nc sims 0-9, t < 500 equal qg_train.nc sims 0-9 (up to a per-file
-# z-score rescale, see audit_report/FINAL_AUDIT.md DATA-01). Only score forecasts that
+# z-score rescale, see audit_report/FINAL_AUDIT.md DATA-01 in tag archive/impl-ct-kae). Only score forecasts that
 # start at t >= 500 (plus a decorrelation gap), or regenerate the test set.
 test_file: "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/qg/qg_test.nc"
 input_sequence_length: 4

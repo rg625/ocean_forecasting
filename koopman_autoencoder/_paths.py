@@ -1,4 +1,4 @@
-"""Machine-independent roots for the audit scripts (the Python side of env.sh).
+"""Machine-independent roots for the scripts (the Python side of env.sh).
 
 REPO_ROOT is this checkout / worktree; MAIN_ROOT is the main checkout on this machine, where
 data, the LSiM weights and legacy runs live (env OCEAN_MAIN overrides it).
@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _main_root() -> Path:

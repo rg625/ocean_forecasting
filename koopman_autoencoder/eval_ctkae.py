@@ -5,7 +5,7 @@
 1. Benchmark cases (gt_interp / gt_extrap / gt_longer, frames 0.1 apart): input = frames
    0,1, prediction = frames 2..T-1 from ONE exact latent propagation. The ground truth
    rebuilt from the .nc files is asserted equal to the ACDM groundTruth.dict, then
-   scored with audit_report/scripts/benchmark_suite.score (same code as every baseline).
+   scored with benchmark_suite.score (same code as every baseline).
 2. --dt_test: zero-shot temporal resolution on gt_<case>_subsample_1.nc (frames 0.05
    apart): the input window keeps the training spacing (frames 0 and 2), the model is
    queried at every 0.05 lead; errors at half-step leads (never trained on when
@@ -24,7 +24,6 @@ import torch
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parent / "audit_report" / "scripts"))
 from benchmark_suite import load_gt, score, train_climatology  # noqa: E402
 from models.ct_data import load_eval_case, to_acdm_layout  # noqa: E402
 from models.ct_kae import CTKAE, CTKAEConfig, mixture_nodes  # noqa: E402
