@@ -78,7 +78,7 @@ class Trainer:
             num_visual_batches,
         )
         # Autograd anomaly mode + a NaN hook on every module make a TRA step ~16x
-        # slower (4.6 s -> 0.28 s, audit_report/results/smoke_profile_*.json); the
+        # slower (4.6 s -> 0.28 s, smoke_profile_*.json, tag archive/impl-ct-kae); the
         # non-finite-loss guard in _run_one_epoch already skips bad batches.
         self.debug_nan_checks = debug_nan_checks
         self._nan_hook_handles: List = []

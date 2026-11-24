@@ -1,6 +1,6 @@
 """Regression tests for the second batch of legacy-model fixes (issues.json IDs).
 
-cd koopman_autoencoder && python -m pytest ../audit_report/tests -q
+cd koopman_autoencoder && python -m pytest tests -q
 """
 
 import sys
@@ -10,7 +10,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-KAE = Path(__file__).resolve().parents[2] / "koopman_autoencoder"
+KAE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KAE))
 
 from models.autoencoder import KoopmanAutoencoder  # noqa: E402

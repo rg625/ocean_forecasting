@@ -1,9 +1,10 @@
-"""Regression tests for the confirmed bugs in audit_report/FINAL_AUDIT.md (IDs in names).
+"""Regression tests for the confirmed bugs of the audit (IDs in names; the audit report,
+audit_report/FINAL_AUDIT.md, is in git tag archive/impl-ct-kae).
 
 Each test fails on the original code (commit 79713ce) and passes after the fix.
 Runs on CPU in a few seconds:
 
-    cd koopman_autoencoder && python -m pytest ../audit_report/tests -q
+    cd koopman_autoencoder && python -m pytest tests -q
 """
 
 import sys
@@ -15,7 +16,7 @@ import pytest
 import torch
 from tensordict import TensorDict
 
-KAE = Path(__file__).resolve().parents[2] / "koopman_autoencoder"
+KAE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KAE))
 
 from models.modules import KoopmanOperator  # noqa: E402

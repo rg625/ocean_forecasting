@@ -279,14 +279,8 @@ class Bench:
     @staticmethod
     def _lpm(avg, members, mask):
         """localized probability-matched mean of the averaged analysis onto the member
-        analyses, per problem (audit_report/scripts/postproc3/sharp.py)"""
-        import sys
-
-        sys.path.insert(
-            0,
-            str(Path(__file__).resolve().parents[3] / "audit_report/scripts/postproc3"),
-        )
-        from sharp import lpm
+        analyses, per problem (models/readout.py)"""
+        from models.readout import lpm
 
         out = np.empty_like(avg)
         for i in range(len(avg)):
