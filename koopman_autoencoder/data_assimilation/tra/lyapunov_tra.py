@@ -110,7 +110,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--regime", default="long", choices=list(DATA))
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results_tra"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/tra/main"))
     ap.add_argument("--theiler", type=int, default=12)
     ap.add_argument("--horizon", type=int, default=40)
     ap.add_argument("--max-ref", type=int, default=200)

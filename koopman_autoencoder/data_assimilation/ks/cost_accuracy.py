@@ -13,7 +13,7 @@ both axes are measured:
 Also draws a large posterior ensemble so that coverage and calibration are estimated from
 enough samples to mean something.
 
-    python -m data_assimilation.ks.cost_accuracy --out da_results_sda_paper/cost_accuracy.json
+    python -m data_assimilation.ks.cost_accuracy --out da_results/ks/sda_paper/cost_accuracy.json
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def main():
         help="ensemble size for the calibration run",
     )
     ap.add_argument(
-        "--out", type=Path, default=Path("da_results_sda_paper/cost_accuracy.json")
+        "--out", type=Path, default=Path("da_results/ks/sda_paper/cost_accuracy.json")
     )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument(
@@ -77,9 +77,9 @@ def main():
         test=args.test,
         kae_run=args.kae_run,
         unet_ckpt=Path("model_outputs_ks/unet1d/rollout10_extended2/best_model.pth"),
-        sda_config=Path("da_results_sda_paper/frozen_config.json"),
-        tuning=Path("da_results_v2/tuning.json"),
-        init_scales=Path("da_results_v2/init_scales.json"),
+        sda_config=Path("da_results/ks/sda_paper/frozen_config.json"),
+        tuning=Path("da_results/ks/paper_campaign/tuning.json"),
+        init_scales=Path("da_results/ks/paper_campaign/init_scales.json"),
         device=args.device,
         n_samples=1,
         chunk=4,

@@ -449,7 +449,7 @@ def exp_S1_single_obs(b: Bench, out: Path, a) -> None:
     the error between two independent states, that observation carries no usable
     information about t_0 any more.
     """
-    TL = json.loads(Path("da_results_sda_paper/lyapunov.json").read_text())[
+    TL = json.loads(Path("da_results/ks/sda_paper/lyapunov.json").read_text())[
         "lyapunov_time"
     ]
     logger.info("=== S1. A SINGLE observation, swept in distance from t_0 ===")
@@ -518,9 +518,9 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     add_common_args(ap)
-    # da_results_geometry holds the original delta_f = 1 campaign (and the C1 sweep the
+    # da_results/ks/geometry_df1 holds the original delta_f = 1 campaign (and the C1 sweep the
     # notebook still reads); the default keeps a pinned re-run from overwriting it
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results_geometry_df9"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/ks/geometry_df9"))
     ap.add_argument("--sections", nargs="+", default=["C1", "C3", "NL", "JS", "C2"])
     ap.add_argument(
         "--methods",
@@ -611,7 +611,7 @@ def main():
     )
     a.out_dir.mkdir(parents=True, exist_ok=True)
     b = Bench(a)
-    lam = json.loads(Path("da_results_sda_paper/lyapunov.json").read_text())
+    lam = json.loads(Path("da_results/ks/sda_paper/lyapunov.json").read_text())
     logger.info(
         f"lambda_1 = {lam['lambda_1_mean']:.5f}  T_L = {lam['lyapunov_time']:.2f} t.u."
         f" = {lam['lyapunov_time'] / DT:.0f} frames"

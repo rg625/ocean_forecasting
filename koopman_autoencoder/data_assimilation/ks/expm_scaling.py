@@ -18,7 +18,7 @@ import torch
 
 from data_assimilation.ks.da_ks_experiments_3way import load_kae
 
-OUT = Path("da_results_sda_paper")
+OUT = Path("da_results/ks/sda_paper")
 
 
 def bench(fn, n=60, warmup=10, cuda=False):

@@ -48,7 +48,7 @@ def main():
     ap.add_argument("--eps", type=float, default=1e-7)
     ap.add_argument("--spinup", type=float, default=50.0)
     ap.add_argument(
-        "--out", type=Path, default=Path("da_results_sda_paper/lyapunov.json")
+        "--out", type=Path, default=Path("da_results/ks/sda_paper/lyapunov.json")
     )
     args = ap.parse_args()
     logging.basicConfig(

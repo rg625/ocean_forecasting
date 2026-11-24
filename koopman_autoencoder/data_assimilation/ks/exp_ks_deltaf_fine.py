@@ -47,16 +47,16 @@ def main():
     ap.add_argument(
         "--kae-tuning",
         type=Path,
-        default=Path("da_results_geometry_df9/kae_tuning.json"),
+        default=Path("da_results/ks/geometry_df9/kae_tuning.json"),
     )
     ap.add_argument(
         "--unet-tuning",
         type=Path,
-        default=Path("da_results_geometry_df9/unet_tuning.json"),
+        default=Path("da_results/ks/geometry_df9/unet_tuning.json"),
     )
     ap.add_argument("--out-dir", type=Path, default=Path("figs"))
     ap.add_argument(
-        "--json", type=Path, default=Path("da_results_geometry_df9/deltaf_fine.json")
+        "--json", type=Path, default=Path("da_results/ks/geometry_df9/deltaf_fine.json")
     )
     ap.add_argument("--deltas", type=int, nargs="+", default=list(range(1, 21)))
     ap.add_argument(

@@ -24,7 +24,7 @@ All statistics use a BATCH of trajectories (z0 is [B, D]) so N-trajectory statis
 a single DA solve, not N solves.
 
 Run (training env):
-    python -m data_assimilation.ks.da_ks_experiments --out-dir da_results
+    python -m data_assimilation.ks.da_ks_experiments --out-dir da_results/ks/da_ks_experiments
 """
 
 import argparse
@@ -580,7 +580,7 @@ def main():
     )
     ap.add_argument("--ckpt", type=Path, default=None)
     ap.add_argument("--val", type=Path, default=Path("data/ks/val.nc"))
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/ks/da_ks_experiments"))
     ap.add_argument("--dt", type=float, default=0.1)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--seed", type=int, default=0)

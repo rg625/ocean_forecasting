@@ -33,7 +33,7 @@ def main():
     ap.add_argument("--test", type=Path, default=Path("data/ks/da_test.nc"))
     ap.add_argument("--out-dir", type=Path, default=Path("figs"))
     ap.add_argument(
-        "--json", type=Path, default=Path("da_results_geometry_df9/lr_sweep.json")
+        "--json", type=Path, default=Path("da_results/ks/geometry_df9/lr_sweep.json")
     )
     ap.add_argument("--deltas", type=int, nargs="+", default=[1, 9])
     ap.add_argument("--lrs", type=float, nargs="+", default=[0.01, 0.03, 0.1, 0.3])

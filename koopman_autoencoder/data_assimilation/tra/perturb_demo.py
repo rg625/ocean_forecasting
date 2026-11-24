@@ -198,7 +198,7 @@ def main():
         store["mask"] = om.cpu().numpy()
     tag = "" if a.perturb_frames == "window" else "_t0only"
     np.savez_compressed(
-        f"da_results_tra/perturbed_{a.kind}_{a.where}{tag}.npz", **store
+        f"da_results/tra/main/perturbed_{a.kind}_{a.where}{tag}.npz", **store
     )
 
     # how the perturbation itself evolves: error at frame k relative to error at frame 0
@@ -231,7 +231,7 @@ def main():
             f"{m:9s} "
             + " ".join(f"{gg[k] / gg[0]:8.3f}" for k in (0, 1, 2, 5, 12, T - 1))
         )
-    print(f"\nsaved -> da_results_tra/perturbed_{a.kind}_{a.where}{tag}.npz")
+    print(f"\nsaved -> da_results/tra/main/perturbed_{a.kind}_{a.where}{tag}.npz")
 
 
 if __name__ == "__main__":

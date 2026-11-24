@@ -52,7 +52,7 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results_long"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/ks/long_horizon"))
     add_common_args(ap)
     ap.add_argument(
         "--horizons",
@@ -76,7 +76,7 @@ def main():
 
     b = Bench(a)
     dev, cuda = b.dev, b.dev.type == "cuda"
-    TL = json.loads(Path("da_results_sda_paper/lyapunov.json").read_text())[
+    TL = json.loads(Path("da_results/ks/sda_paper/lyapunov.json").read_text())[
         "lyapunov_time"
     ]
     rows = []

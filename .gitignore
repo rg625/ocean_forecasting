@@ -69,3 +69,7 @@ koopman_autoencoder/model_outputs_ctkae/
 # Research outputs (results, reports, figures): kept out of the code branch.
 # Full history up to the Nov 2026 merge: tag archive/impl-ct-kae.
 audit_report/
+
+# DA results and archived runs (local data, indexed in koopman_autoencoder/RESULTS.md)
+koopman_autoencoder/da_results/
+koopman_autoencoder/model_outputs_archive/

@@ -31,7 +31,7 @@ def main():
     ap.add_argument("--test", type=Path, default=Path("data/ks/da_test.nc"))
     ap.add_argument("--out-dir", type=Path, default=Path("figs"))
     ap.add_argument(
-        "--json", type=Path, default=Path("da_results_geometry_df9/kae512_budget.json")
+        "--json", type=Path, default=Path("da_results/ks/geometry_df9/kae512_budget.json")
     )
     ap.add_argument("--delta-f", type=int, default=9)
     ap.add_argument("--iters", type=int, default=200_000)

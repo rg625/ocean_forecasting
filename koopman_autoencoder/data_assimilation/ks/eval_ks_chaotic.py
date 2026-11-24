@@ -59,7 +59,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     add_common_args(ap)
     ap.add_argument(
-        "--out", type=Path, default=Path("da_results_geometry_df9/chaotic.json")
+        "--out", type=Path, default=Path("da_results/ks/geometry_df9/chaotic.json")
     )
     ap.add_argument("--n-keep", type=int, default=16)
     ap.add_argument("--n-candidates", type=int, default=200)

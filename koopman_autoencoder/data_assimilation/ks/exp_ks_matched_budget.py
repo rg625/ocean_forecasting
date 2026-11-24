@@ -29,7 +29,7 @@ def main():
     add_common_args(ap)
     ap.add_argument("--out-dir", type=Path, default=Path("figs"))
     ap.add_argument(
-        "--json", type=Path, default=Path("da_results_geometry_df9/matched_budget.json")
+        "--json", type=Path, default=Path("da_results/ks/geometry_df9/matched_budget.json")
     )
     ap.add_argument("--delta-f", type=int, default=9)
     ap.add_argument(

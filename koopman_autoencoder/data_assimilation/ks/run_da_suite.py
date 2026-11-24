@@ -4,7 +4,7 @@
 
 Reproduces the entire campaign end to end:
 
-    python -m data_assimilation.ks.run_da_suite --stage all --out-dir da_results_v2
+    python -m data_assimilation.ks.run_da_suite --stage all --out-dir da_results/ks/paper_campaign
 
 Stages
 ------
@@ -876,7 +876,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--stage", nargs="+", default=["all"], choices=STAGES + ["all"])
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results_v2"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/ks/paper_campaign"))
     ap.add_argument("--test", type=Path, default=Path("data/ks/da_test.nc"))
     ap.add_argument("--train", type=Path, default=Path("data/ks/train.nc"))
     ap.add_argument(
@@ -890,9 +890,9 @@ def main():
         type=Path,
         default=Path("model_outputs_ks/unet1d/rollout10_base/best_model.pth"),
     )
-    ap.add_argument("--tuning", type=Path, default=Path("da_results_v2/tuning.json"))
+    ap.add_argument("--tuning", type=Path, default=Path("da_results/ks/paper_campaign/tuning.json"))
     ap.add_argument(
-        "--init-scales", type=Path, default=Path("da_results_v2/init_scales.json")
+        "--init-scales", type=Path, default=Path("da_results/ks/paper_campaign/init_scales.json")
     )
     ap.add_argument("--n-problems", type=int, default=64)
     ap.add_argument("--n-problems-sweep", type=int, default=32)

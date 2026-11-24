@@ -53,7 +53,7 @@ def main():
     # and blanked the other two. It takes a regime and an output directory for the same
     # reason every other section does.
     ap.add_argument("--regime", default="test", choices=["test", "long", "val"])
-    ap.add_argument("--out-dir", default="da_results_tra")
+    ap.add_argument("--out-dir", default="da_results/tra/main")
     a = ap.parse_args()
     dev = torch.device("cuda")
     reg = REGIMES["tra"]
@@ -67,7 +67,7 @@ def main():
     prob = build_problem(
         data, name="ID", n_problems=a.n_problems, offsets=canonical(), seed=100
     )
-    tuning = json.loads(open("da_results_tra/tuning.json").read())
+    tuning = json.loads(open("da_results/tra/main/tuning.json").read())
     base = REPO / "autoreg_pde_diffusion" / "pretrained_models" / "models_tra"
     sim = torch.as_tensor(prob.sim, device=dev)
     t0 = torch.as_tensor(prob.t0, device=dev)

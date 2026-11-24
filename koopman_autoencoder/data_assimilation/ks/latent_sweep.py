@@ -14,7 +14,7 @@ recipe, 200 epochs, rollout 10, hidden [64,128,256], circular padding; only
 Every method sees the same observations, masks, noise realisation, initialisation rule,
 learning rate, seed and iteration budget; only ``latent_dim`` varies.
 
-    python -m data_assimilation.ks.latent_sweep --out da_results_latentdim/sweep.json
+    python -m data_assimilation.ks.latent_sweep --out da_results/ks/latent_sweep/sweep.json
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def main():
     ap.add_argument("--dims", type=int, nargs="+", default=[32, 64, 128, 256, 512])
     ap.add_argument("--train", type=Path, default=Path("data/ks/train.nc"))
     ap.add_argument("--test", type=Path, default=Path("data/ks/da_test.nc"))
-    ap.add_argument("--out", type=Path, default=Path("da_results_latentdim/sweep.json"))
+    ap.add_argument("--out", type=Path, default=Path("da_results/ks/latent_sweep/sweep.json"))
     ap.add_argument("--iters", type=int, default=2000)
     ap.add_argument("--lr", type=float, default=1e-2)
     ap.add_argument("--n-problems", type=int, default=48)

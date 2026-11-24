@@ -5,7 +5,7 @@ trajectories, when choosing how to initialise its control variable.  Both scales
 therefore computed once on ``data/ks/train.nc``, written to a JSON file, and read from
 that file by the tuning and campaign scripts.  Nothing recomputes them at test time.
 
-    python -m data_assimilation.ks.init_scales --out da_results_v2/init_scales.json
+    python -m data_assimilation.ks.init_scales --out da_results/ks/paper_campaign/init_scales.json
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def main():
         type=Path,
         default=Path("model_outputs_ks/continous_linear_128/rollout_10"),
     )
-    ap.add_argument("--out", type=Path, default=Path("da_results_v2/init_scales.json"))
+    ap.add_argument("--out", type=Path, default=Path("da_results/ks/paper_campaign/init_scales.json"))
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 

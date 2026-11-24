@@ -34,7 +34,7 @@ that section's furthest observation fits inside the window; where it does not, i
 are NaN and the reason is recorded in `sda_coverage` rather than the point being dropped.
 
 Run:
-    python -m data_assimilation.ks.da_ks_experiments_3way --out-dir da_results_3way
+    python -m data_assimilation.ks.da_ks_experiments_3way --out-dir da_results/ks/da_ks_experiments_3way
 """
 
 from __future__ import annotations
@@ -842,12 +842,12 @@ def add_common_args(ap):
     ap.add_argument(
         "--sda-config",
         type=Path,
-        default=Path("da_results_sda_paper/frozen_config.json"),
+        default=Path("da_results/ks/sda_paper/frozen_config.json"),
         help="frozen paper-faithful SDA settings",
     )
-    ap.add_argument("--tuning", type=Path, default=Path("da_results_v2/tuning.json"))
+    ap.add_argument("--tuning", type=Path, default=Path("da_results/ks/paper_campaign/tuning.json"))
     ap.add_argument(
-        "--init-scales", type=Path, default=Path("da_results_v2/init_scales.json")
+        "--init-scales", type=Path, default=Path("da_results/ks/paper_campaign/init_scales.json")
     )
     ap.add_argument(
         "--iters-kae",
@@ -900,7 +900,7 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results_3way"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/ks/da_ks_experiments_3way"))
     add_common_args(ap)
     ap.add_argument("--sections", nargs="+", default=list("ABCDEFGHIJ"))
     args = ap.parse_args()

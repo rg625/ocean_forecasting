@@ -41,7 +41,7 @@ def main():
     ap.add_argument(
         "--json",
         type=Path,
-        default=Path("da_results_geometry_df9/equal_wallclock.json"),
+        default=Path("da_results/ks/geometry_df9/equal_wallclock.json"),
     )
     ap.add_argument("--delta-f", type=int, nargs="+", default=[1, 9])
     ap.add_argument("--kae-iters", type=int, default=8000)

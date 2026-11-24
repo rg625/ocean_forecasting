@@ -74,7 +74,7 @@ def main():
     ap.add_argument("--test", type=Path, default=Path("data/ks/da_test.nc"))
     ap.add_argument("--n-states", type=int, default=2048)
     ap.add_argument(
-        "--out", type=Path, default=Path("da_results_sda_paper/ae_roundtrip.json")
+        "--out", type=Path, default=Path("da_results/ks/sda_paper/ae_roundtrip.json")
     )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()

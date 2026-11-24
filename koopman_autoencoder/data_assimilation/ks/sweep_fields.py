@@ -31,7 +31,7 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--sweep", default="C1_delta_f")
-    ap.add_argument("--geo-dir", type=Path, default=Path("da_results_geometry"))
+    ap.add_argument("--geo-dir", type=Path, default=Path("da_results/ks/geometry_df1"))
     add_common_args(ap)
     ap.add_argument("--n-fields", type=int, default=2)
     ap.add_argument(

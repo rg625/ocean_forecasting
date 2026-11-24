@@ -35,7 +35,7 @@ def main():
     add_common_args(ap)
     ap.add_argument("--out-dir", type=Path, default=Path("figs"))
     ap.add_argument(
-        "--json", type=Path, default=Path("da_results_geometry_df9/deltaf_break.json")
+        "--json", type=Path, default=Path("da_results/ks/geometry_df9/deltaf_break.json")
     )
     ap.add_argument(
         "--deltas", type=int, nargs="+", default=[1, 2, 4, 8, 12, 16, 24, 32, 48, 64]
