@@ -28,7 +28,7 @@ def main():
     add_common_args(ap)
     ap.add_argument("--out-dir", type=Path, default=Path("figs"))
     ap.add_argument(
-        "--json", type=Path, default=Path("da_results_geometry_df9/noise_forecast.json")
+        "--json", type=Path, default=Path("da_results/ks/geometry_df9/noise_forecast.json")
     )
     ap.add_argument("--n-problems", type=int, default=24)
     ap.add_argument("--frames", type=int, default=50)

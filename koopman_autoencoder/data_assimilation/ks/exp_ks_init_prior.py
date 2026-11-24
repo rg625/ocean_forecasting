@@ -73,7 +73,7 @@ def main():
     ap.add_argument("--test", type=Path, default=Path("data/ks/da_test.nc"))
     ap.add_argument("--train", type=Path, default=Path("data/ks/train.nc"))
     ap.add_argument(
-        "--json", type=Path, default=Path("da_results_geometry_df9/init_prior.json")
+        "--json", type=Path, default=Path("da_results/ks/geometry_df9/init_prior.json")
     )
     ap.add_argument("--deltas", type=int, nargs="+", default=[1, 9, 16])
     ap.add_argument(

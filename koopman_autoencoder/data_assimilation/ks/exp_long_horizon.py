@@ -46,7 +46,7 @@ logger = logging.getLogger("longhorizon")
 
 
 def lyap():
-    d = json.loads(Path("da_results_sda_paper/lyapunov.json").read_text())
+    d = json.loads(Path("da_results/ks/sda_paper/lyapunov.json").read_text())
     return float(d["lyapunov_time"])
 
 
@@ -478,7 +478,7 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results_long"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/ks/long_horizon"))
     add_common_args(ap)
     ap.add_argument("--sections", nargs="+", default=["FC", "HL", "LB"])
     ap.add_argument("--t0-min", type=int, default=100)

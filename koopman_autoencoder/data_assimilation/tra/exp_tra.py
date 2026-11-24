@@ -2745,7 +2745,7 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--out-dir", type=Path, default=Path("da_results_tra"))
+    ap.add_argument("--out-dir", type=Path, default=Path("da_results/tra/main"))
     ap.add_argument("--device", default="cuda")
     ap.add_argument(
         "--kae-run",

@@ -76,7 +76,7 @@ def main():
     )
     ap.add_argument("--test", type=Path, default=Path("data/ks/da_test.nc"))
     ap.add_argument(
-        "--out", type=Path, default=Path("da_results_geometry_df9/kae512.json")
+        "--out", type=Path, default=Path("da_results/ks/geometry_df9/kae512.json")
     )
     ap.add_argument(
         "--tuning",
