@@ -25,6 +25,7 @@ from models.dataloader import (
 from models.trainer import Trainer
 from models.metrics import Metric
 from models.utils import (
+    git_state,
     load_checkpoint,
     load_datasets,
 )
@@ -183,8 +184,13 @@ def main(cfg: DictConfig):
             cond_grad_enabled=cfg.model.cond_grad_enabled,
             disturb_std=cfg.model.disturb_std,
             is_continuous=cfg.model.is_continuous,
+            operator_type=cfg.model.operator_type,
             rank=cfg.model.rank,
             cond_expansion_type=cfg.data.selection_param,
+            use_attention=cfg.model.use_attention,
+            spectral=cfg.model.spectral,
+            honor_conv_kwargs=cfg.model.honor_conv_kwargs,
+            dt=cfg.model.dt,
             **cfg.model.conv_kwargs,
         ).to(device)
         # model = torch.compile(model)
@@ -196,7 +202,7 @@ def main(cfg: DictConfig):
 
     # --- Optimizer, Loss, Metrics, and Scheduler ---
     model_params = model.module.parameters() if is_ddp else model.parameters()
-    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr)
+    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr, weight_decay=1e-3)
     if cfg.loss.get("ssim_weight", None) is not None:
         criterion = KoopmanLoss(to_unit_range=train_dataset.to_unit_range, **cfg.loss)
     else:
@@ -285,6 +291,13 @@ def main(cfg: DictConfig):
             save_latest_every=cfg.training.save_latest_every,
             num_visual_batches=cfg.training.num_visual_batches,
             precision=cfg.training.precision,
+            debug_nan_checks=cfg.training.debug_nan_checks,
+            drop_prob=cfg.training.drop_prob,
+            consistent_latent_targets=cfg.training.consistent_latent_targets,
+            run_metadata={
+                "config": OmegaConf.to_container(cfg, resolve=True),
+                "git": git_state(Path(__file__).parent),
+            },
         )
         logger.info("Trainer initialized.")
     except Exception as e:

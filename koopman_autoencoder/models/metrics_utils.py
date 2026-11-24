@@ -245,6 +245,33 @@ def run_exp_kae_rollout(
     )  # Remove batch dim
 
 
+def run_kae_stable_rollout(
+    model,
+    input_seq: TensorDict,
+    rollout_steps: int,
+    return_xpreds: Optional[bool] = True,
+    dt=0.1,
+    gamma=0.017,
+) -> TensorDict:
+    """Performs a long rollout for a Koopman Autoencoder (KAE) model."""
+    input_seq = input_seq.unsqueeze(0).to(DEVICE)
+
+    with torch.no_grad():
+        predicted_td = model.forward_stabilized(
+            x=input_seq, seq_length=rollout_steps, stabilization_gamma=gamma, dt=dt
+        )
+        save_timing_to_json(
+            timing_data=model.timings,
+            model_name="kae_model",
+            filename="kae_model_timings_exp.json",
+        )
+    # logger.info(f"Saved Diffusion timings to: kae_model_timings.json")
+
+    return (
+        predicted_td.x_preds.squeeze(0) if return_xpreds else predicted_td
+    )  # Remove batch dim
+
+
 def kae_rollout_wrapper(
     model, input_seq, metadata: dict, rollout_steps: int, dataset=None
 ):

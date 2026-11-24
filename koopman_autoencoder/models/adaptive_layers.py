@@ -138,6 +138,10 @@ class AdaGN(nn.Module):
         self.norm = nn.GroupNorm(num_groups, num_channels, affine=False)
         # Project condition to Scale (gamma) and Shift (beta)
         self.projection = sn_linear(cond_dim, num_channels * 2)
+        # Start as Identity (Standard GroupNorm) to stabilize early training
+        nn.init.zeros_(self.projection.weight)
+        if self.projection.bias is not None:
+            nn.init.zeros_(self.projection.bias)
 
     def forward(self, x: Tensor, cond: Tensor) -> Tensor:
         # x: [B, C, H, W]
@@ -148,5 +152,9 @@ class AdaGN(nn.Module):
         # Unsqueeze for broadcasting over H, W
         gamma = gamma.unsqueeze(2).unsqueeze(3)
         beta = beta.unsqueeze(2).unsqueeze(3)
+        # Prevent the physics from scaling the features by more than 3x
+        # or shifting them by huge amounts.
+        gamma = torch.clamp(gamma, -0.9, 3.0)
+        beta = torch.clamp(beta, -5.0, 5.0)
 
         return self.norm(x) * (1 + gamma) + beta

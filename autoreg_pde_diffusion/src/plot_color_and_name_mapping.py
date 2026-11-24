@@ -129,6 +129,7 @@ modelRemap = {
     "Refiner-r8-std0.00001": r"$\mathit{Refiner}_{\mathit{R8,\sigma1e-5}}$",
     "Refiner-r8-std0.000001": r"$\mathit{Refiner}_{\mathit{R8,\sigma1e-6}}$",
     "Refiner-r8-std0.0000001": r"$\mathit{Refiner}_{\mathit{R8,\sigma1e-7}}$",
+    "KAE": r"$\mathit{KAE}$",
 }
 
 datasetRemap = {
@@ -143,6 +144,7 @@ datasetRemap = {
 
 fieldIndexRemap = {
     "lowRey": {"velX": 0, "velY": 1, "pres": 2, "vort": [0, 1]},
+    "stable": {"velX": 0, "velY": 1, "pres": 2, "vort": [0, 1]},
     "highRey": {"velX": 0, "velY": 1, "pres": 2, "vort": [0, 1]},
     "varReyIn": {"velX": 0, "velY": 1, "pres": 2, "vort": [0, 1]},
     "extrap": {"velX": 0, "velY": 1, "dens": 2, "pres": 3, "vort": [0, 1]},
@@ -154,6 +156,7 @@ fieldIndexRemap = {
 lossRelevantFieldRemap = {
     "lowRey": (0, 3),
     "highRey": (0, 3),
+    "stable": (0, 3),
     "varReyIn": (0, 3),
     "extrap": (0, 4),
     "interp": (0, 4),
@@ -163,6 +166,12 @@ lossRelevantFieldRemap = {
 
 clampRemap = {
     "lowRey": {
+        "velX": (-0.3, 0.9),
+        "velY": (-0.5, 0.5),
+        "pres": (-0.012, 0.012),
+        "vort": (-0.25, 0.25),
+    },
+    "stable": {
         "velX": (-0.3, 0.9),
         "velY": (-0.5, 0.5),
         "pres": (-0.012, 0.012),
@@ -255,7 +264,7 @@ def getColormapAndNorm(dataset: str, field: str):
     norm = None
 
     if field == "vort":
-        if dataset in ["lowRey", "highRey", "varReyIn"]:
+        if dataset in ["lowRey", "highRey", "varReyIn", "stable"]:
             cmap = "icefire"
 
         elif dataset in ["interp", "extrap", "longer"]:

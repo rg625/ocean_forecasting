@@ -32,6 +32,15 @@
 *.dict
 *.loss
 *.pdf
+*.aux
+*.log
+*.fdb_latexmk
+*.fls
+*.md
+*.bib
+*.sh
+*.sty
+
 
 
 wget-log
@@ -52,3 +61,14 @@ wget-log
 **/koopman_autoencoder/model_outputs_old/
 **/autoreg-pde-diffusin/
 **/wandb/
+
+**/thermalizer/
+# CT-KAE run outputs (checkpoints, logs)
+koopman_autoencoder/model_outputs_ctkae/
+
+# Research outputs (results, reports, figures): kept out of the code branch.
+# Full history up to the Nov 2026 merge: tag archive/impl-ct-kae.
+audit_report/results/
+audit_report/report/
+audit_report/literature/
+audit_report/scripts/ablation_queue.txt

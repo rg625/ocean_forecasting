@@ -1,0 +1,14 @@
+# Discrete-time Azencot loss configuration
+# Implements: loss = alpha*loss_fwd + lamb*loss_identity + nu*loss_bwd + eta*loss_consist
+# Reference: Azencot et al., "Discovering and Forecasting Extreme Events via Persistent Homology"
+
+alpha: 1.0          # Forward prediction weight
+lamb: 1.0          # Identity/reconstruction weight (scaled by steps)
+nu: 0.1             # Backward loss weight
+eta: 0.01            # Matrix consistency weight
+
+loss_type: "l2"
+use_backward: true   # Genuine backward rollout loss via the learned backward operator B
+sigma_blur: null     # Optional Gaussian blur for smoothing
+
+# Discrete-specific: no spectral/physics losses

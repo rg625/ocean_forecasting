@@ -3,7 +3,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, cast
+from typing import List, Optional, cast, TypedDict, Dict
 
 import numpy as np
 import torch
@@ -25,28 +25,63 @@ from models.metrics_utils import run_kae_rollout
 # --- Configuration ---
 
 
+class EvalCase(TypedDict):
+    train_file: str
+    val_file: str
+    test_file: str
+    rollout_steps: int
+
+
+EVAL_CASES: Dict[str, EvalCase] = {
+    "interp": dict(
+        train_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_interp.nc",
+        val_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_interp.nc",
+        test_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_interp.nc",
+        rollout_steps=60,
+    ),
+    "extrap": dict(
+        train_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_extrap.nc",
+        val_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_extrap.nc",
+        test_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_extrap.nc",
+        rollout_steps=60,
+    ),
+    "longer": dict(
+        train_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_longer.nc",
+        val_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_longer.nc",
+        test_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_tra/gt_longer.nc",
+        rollout_steps=240,
+    ),
+    "highRey": dict(
+        train_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_highRey_stable.nc",
+        val_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_highRey_stable.nc",
+        test_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_highRey_stable.nc",
+        rollout_steps=60,
+    ),
+    "lowRey": dict(
+        train_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_lowRey_stable.nc",
+        val_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_lowRey_stable.nc",
+        test_file="/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/data/acdm/128_inc/gt_lowRey_stable.nc",
+        rollout_steps=60,
+    ),
+}
+
+
 @dataclass
 class EvalConfig:
-    """
-    Configuration dataclass to manage experiment parameters.
-    Matches the naming and path logic found in the reference notebook.
-    """
-
-    # Experiment Identifiers
-    model_arch: str = "discrete"  # Matches notebook typo/folder naming
+    model_arch: str = "discrete"
     model_type: str = "mlp"
     dimension: int = 128
     regime: str = "full"
     ckpt_index: int = 199
 
-    # Paths
     base_output_dir: Path = Path("./model_outputs_full")
     config_dir: str = "experiment"
-    result_dir: Path = Path("./results/sampling/lowRey")
+    result_dir: Path = Path("./results/sampling")
 
-    # Data Parameters
-    rollout_steps: int = 240
+    rollout_steps: int = 60
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    eval_case: str = ""  # interp / extrap / longer
 
     @property
     def experiment_name(self) -> str:
@@ -54,17 +89,17 @@ class EvalConfig:
 
     @property
     def config_path(self) -> str:
-        # e.g. experiment/stable/continous_linear_64
         return f"{self.config_dir}/{self.regime}/{self.experiment_name}"
 
     @property
     def checkpoint_path(self) -> Path:
-        # Matches notebook: ./model_outputs_{REGIME}/{MODEL}_{TYPE}_{DIMENSION}/checkpoints/epoch_{CKPT_INDEX}.pth
-        # Use base_output_dir corresponding to the regime (stable or full)
         return (
             self.base_output_dir
             / self.experiment_name
-            / "checkpoints"
+            # / "run-20260129_110558/checkpoints"
+            # / "run-20260131_160228/checkpoints"
+            # / "run-20260724_163900/checkpoints"
+            / "run-20260821_031121/checkpoints"
             / f"epoch_{self.ckpt_index}.pth"
         )
 
@@ -84,7 +119,7 @@ logger = setup_logging()
 # --- Helper Functions ---
 
 
-def tensordict_to_eval_array_with_re(
+def tensordict_to_eval_array_with_cond(
     input_seq_td: TensorDict,
     predicted_seq_td: TensorDict,
     variables: List[str] = ["v_x", "v_y", "rho", "p"],
@@ -111,12 +146,15 @@ def tensordict_to_eval_array_with_re(
     B = input_arr.shape[0]
     H, W = input_arr.shape[-2:]
 
-    # Concatenate last 2 input frames with predicted sequence (excluding last 2 of pred)
-    # This matches the notebook's temporal stitching logic
-    last_input_frame = input_arr[:, -2:, :, :, :]
-    predicted_arr_sliced = predicted_arr[:, :-2, :, :, :]
+    # The ground-truth files hold the input window at frames [0, L_in) and the model
+    # predicts frames L_in, L_in + 1, ...  Stitch ALL input frames in front of the
+    # predictions (dropping the overhang) so that saved frame k is ground-truth frame k.
+    # Keeping only the last input frame (as in a5f4796) shifts every prediction one
+    # frame early relative to the ground truth it is scored against.
+    n_in = input_arr.shape[1]
+    predicted_arr_sliced = predicted_arr[:, : predicted_arr.shape[1] - n_in]
 
-    full_seq = np.concatenate([last_input_frame, predicted_arr_sliced], axis=1)
+    full_seq = np.concatenate([input_arr, predicted_arr_sliced], axis=1)
 
     # Add Re channel
     re_vals = input_seq_td["cond_input"].cpu().numpy()
@@ -147,12 +185,36 @@ class KoopmanEvaluator:
 
     def _initialize(self):
         logger.info(f"Initializing Evaluator: {self.cfg.experiment_name}")
-        logger.info(f"Using Regime: {self.cfg.regime} from {self.cfg.base_output_dir}")
 
-        # 1. Load Config
+        # 1. Load config
         self.exp_cfg = load_config(self.cfg.config_path)
 
-        # 2. Load Datasets
+        # 2. PATCH DATA FILES FIRST (CRITICAL)
+        case_cfg = EVAL_CASES[self.cfg.eval_case]
+
+        data_root = (
+            Path(self.exp_cfg.data.data_dir)
+            / "acdm"
+            / f"{self.cfg.dimension}_{self.cfg.regime}"
+        )
+
+        self.exp_cfg.data.train_file = str(data_root / case_cfg["train_file"])
+        self.exp_cfg.data.val_file = str(data_root / case_cfg["val_file"])
+        self.exp_cfg.data.test_file = str(data_root / case_cfg["test_file"])
+
+        # rollout steps
+        self.cfg.rollout_steps = case_cfg["rollout_steps"]
+        self.exp_cfg.data.max_sequence_length = self.cfg.rollout_steps - 2
+        self.exp_cfg.data.subsample = 1
+
+        logger.info(
+            f"Using data files:\n"
+            f"  train: {self.exp_cfg.data.train_file}\n"
+            f"  val:   {self.exp_cfg.data.val_file}\n"
+            f"  test:  {self.exp_cfg.data.test_file}"
+        )
+
+        # 3. NOW load datasets (after patch)
         self.train_dataset, self.val_dataset, test_dataset = load_datasets(self.exp_cfg)
         assert self.val_dataset is not None, "Expected validation dataset to be loaded"
         assert self.train_dataset is not None, "Expected training dataset to be loaded"
@@ -182,8 +244,11 @@ class KoopmanEvaluator:
             cond_grad_enabled=self.exp_cfg.model.cond_grad_enabled,
             disturb_std=None,
             is_continuous=self.exp_cfg.model.is_continuous,
+            operator_type=self.exp_cfg.model.operator_type,
             rank=self.exp_cfg.model.rank,
+            spectral=self.exp_cfg.model.spectral,
             cond_expansion_type=self.exp_cfg.data.selection_param,
+            use_attention=self.exp_cfg.model.use_attention,
             **self.exp_cfg.model.conv_kwargs,
         ).to(self.device)
 
@@ -254,7 +319,7 @@ class KoopmanEvaluator:
                 pred_denorm = self.train_loader.denormalize(predicted_seq)
 
                 # Format and append
-                arr = tensordict_to_eval_array_with_re(
+                arr = tensordict_to_eval_array_with_cond(
                     input_seq_td=input_denorm,
                     predicted_seq_td=pred_denorm,
                     variables=(
@@ -308,6 +373,11 @@ def main():
         "--regime", type=str, default="tra", help="Regime (stable/full)"
     )
     parser.add_argument("--ckpt", type=int, default=199, help="Checkpoint index")
+    parser.add_argument(
+        "--keep_going",
+        action="store_true",
+        help="Log and skip a failing eval case instead of aborting",
+    )
     parser.add_argument("--gpu", type=int, default=0, help="GPU ID")
     parser.add_argument(
         "--base_dir",
@@ -315,10 +385,15 @@ def main():
         default=None,
         help="Base path to logs. If None, derived from regime.",
     )
+    parser.add_argument("--out_dir", type=str, default="./results/sampling")
+
     parser.add_argument(
-        "--out_dir", type=str, default="./results/sampling/lowRey", help="Output path"
+        "--eval_cases",
+        nargs="+",
+        choices=EVAL_CASES.keys(),
+        required=True,
+        help="Evaluation cases to run (space-separated)",
     )
-    parser.add_argument("--rollout_steps", type=int, default=60, help="Rollout steps")
 
     args = parser.parse_args()
 
@@ -326,52 +401,39 @@ def main():
     type_val = args.type
     arch_val = args.arch
     regime_val = args.regime
-    rollout_steps = args.rollout_steps
 
-    # Logic to parse --config_name if provided from bash loop
-    if args.config_name:
-        try:
-            parts = args.config_name.strip("/").split("/")
-            if len(parts) > 1:
-                regime_val = parts[0]
-                exp_name = parts[-1]
-            else:
-                exp_name = parts[0]
-
-            exp_parts = exp_name.split("_")
-            if len(exp_parts) >= 3:
-                arch_val = exp_parts[0]
-                type_val = exp_parts[1]
-                dim_val = int(exp_parts[2])
-        except Exception as e:
-            logger.error(f"Failed to parse config_name '{args.config_name}': {e}")
-            sys.exit(1)
-
-    # Automatically set base_dir based on regime if not provided
-    # Matches notebook logic: f"./model_outputs_{REGIME}"
     base_dir_val = (
         Path(args.base_dir) if args.base_dir else Path(f"./model_outputs_{regime_val}")
     )
 
-    config = EvalConfig(
-        model_arch=arch_val,
-        model_type=type_val,
-        dimension=dim_val,
-        regime=regime_val,
-        ckpt_index=args.ckpt,
-        base_output_dir=base_dir_val,
-        result_dir=Path(args.out_dir),
-        rollout_steps=rollout_steps,
-        device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu",
-    )
+    for case in args.eval_cases:
+        logger.info("=" * 60)
+        logger.info(f"Running Evaluation Case: {case}")
+        logger.info("=" * 60)
 
-    try:
-        evaluator = KoopmanEvaluator(config)
-        results = evaluator.run_validation_rollouts()
-        evaluator.save_results(results)
-    except Exception:
-        logger.exception("Evaluation failed.")
-        sys.exit(1)
+        out_dir = Path(args.out_dir) / case
+        config = EvalConfig(
+            model_arch=arch_val,
+            model_type=type_val,
+            dimension=dim_val,
+            regime=regime_val,
+            ckpt_index=args.ckpt,
+            base_output_dir=base_dir_val,
+            result_dir=out_dir,
+            rollout_steps=EVAL_CASES[case]["rollout_steps"],
+            device=f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu",
+            eval_case=case,
+        )
+
+        try:
+            evaluator = KoopmanEvaluator(config)
+            results = evaluator.run_validation_rollouts()
+            evaluator.save_results(results)
+        except Exception:
+            logger.exception(f"Evaluation failed for case {case}")
+            if not args.keep_going:
+                raise  # a stale npz from an earlier run must not survive silently
+            continue
 
 
 if __name__ == "__main__":

@@ -113,9 +113,11 @@ class DiffusionModel(nn.Module):
 
         # combine batch and sequence dimension for decoder processing
         d = torch.reshape(data, (-1, data.shape[2], data.shape[3], data.shape[4]))
+        # Use the explicit (batch*seq) size from d rather than -1 so a 0-channel
+        # (unconditional) conditioning tensor reshapes unambiguously.
         cond = torch.reshape(
             conditioning,
-            (-1, conditioning.shape[2], conditioning.shape[3], conditioning.shape[4]),
+            (d.shape[0], conditioning.shape[2], conditioning.shape[3], conditioning.shape[4]),
         )
 
         # TRAINING

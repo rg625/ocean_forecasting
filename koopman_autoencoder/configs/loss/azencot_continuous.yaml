@@ -1,0 +1,17 @@
+# Continuous-time Azencot loss configuration
+# Includes spectral (FFT) and temporal consistency losses
+
+alpha: 1.0          # Forward prediction weight
+beta: 1.0           # Latent consistency weight
+loss_type: "l1"
+
+physics_weight: 1.0
+gamma_time: 1.0      # Temporal gradient (velocity)
+gamma_space: 1.0     # Spatial gradient (Sobolev)
+gamma_spectral: 1.0  # FFT consistency
+
+ssim_weight: null
+re_weight: null
+stability_weight: 0.0
+weighting_type: "uniform"
+sigma_blur: null

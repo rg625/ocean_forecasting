@@ -1,0 +1,243 @@
+"""Build the CT-KAE ablation table from finished run_ablation.sh jobs (partial results fine).
+
+Per run: Tra_ext / Tra_int / Tra_long MSE on all frames (ACDM-paper convention, x1e-3) and
+LSiM (x1e-1) from test_score.json; DA = mean analysis error over every point of the four df9
+sweeps of the paper's Table 11 (window length, number of observations, sensor coverage,
+noise), from model_outputs_ctkae/da_abl. Per row: mean +- s.d. over seeds, and the paired
+change vs the reference run of the same seed (mean over seeds).
+
+    python ablation_table.py [--out audit_report/results/ablation_table]
+"""
+
+from _paths import REPO_ROOT
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+
+ROOT = REPO_ROOT
+OUT = ROOT / "koopman_autoencoder/model_outputs_ctkae"
+STATE = OUT / "ablation_state"
+SWEEPS = ("G4_delta_l", "G5_n_obs", "G3_sparsity", "G2_noise")
+RES = ROOT / "audit_report/results"
+# baselines on the same cases and scorers: MSE (all frames) from the benchmark suite, LSiM
+# from lsim_score.py (results/lsim_baselines.json), DA from the df9 sweeps of the original
+# checkout (same problems: gt_interp, 8 problems per point, seed 200, 500 iterations)
+BASE_DA = Path(
+    "/home/rg625/mnt/ocean_forecasting/koopman_autoencoder/da_results_tra_df9"
+)
+BASELINES = [  # (label, benchmark-suite key, DA key)
+    ("ACDM (official, r20)", "acdm-r20", "ACDM"),
+    ("U-Net_ut (official, unrolled 8)", "unet-m8", "UNet"),
+    ("U-Net_tn (official, training noise 0.01)", "unet-m2-noise0.01", None),
+    ("Original KAE (paper checkpoint; DA only)", None, "KAE"),
+]
+LABELS = {
+    "ref": "Full model (2 -> 8, latent 256, block generator, FiLM Ma)",
+    "nocond": "- Mach conditioning (encoder, decoder, generator)",
+    "dense": "Generator: dense, unconstrained",
+    "hurwitz": "Generator: Hurwitz (J - R)",
+    "d128": "Latent 128",
+    "d512": "Latent 512",
+    "frames1": "1 input frame (no history)",
+    "onestep": "One-step training (2 -> 1)",
+    "mu": "+ conditional fixed point mu(Ma)",
+    "norec": "- reconstruction loss",
+    "nopred": "- prediction loss",
+    "nolat": "- forward latent consistency",
+    "noamp": "- amplitude loss",
+    "back": "+ backward latent consistency (0.1)",
+    "back003": "+ backward latent consistency (0.03)",
+    "back001": "+ backward latent consistency (0.01)",
+    "cos": "+ directional cosine (0.1)",
+    "energy": "+ latent energy (0.1)",
+    "sobt": "+ temporal Sobolev (0.1)",
+    "sobx": "+ spatial Sobolev (0.1)",
+    "spec": "+ spectral loss (0.1)",
+    "cosw": "Prediction weighting: cosine over leads (original KAE)",
+    "ndec4": "Supervise 4 random of the 8 leads (first and last always)",
+    "fine": "Random target times on the 0.05 grid within the 0.8 horizon",
+    "manoise": "+ Mach-number noise (s.d. 0.005)",
+    "innoise": "+ input-frame noise (s.d. 0.01, normalised units)",
+    "latnoise": "+ latent noise per step (0.005 x rms z; original disturb_std)",
+    "combo_lm": "+ latent noise + Mach noise",
+    "combo_lmn": "+ latent noise + Mach noise + 4 random of 8 leads",
+    "genonly": "Mach conditioning in the generator only (encoder, decoder Mach-free)",
+    "l1": "L1 pixel distance (rec and pred)",
+    "l1rec": "L1 reconstruction, L2 prediction (original KAE)",
+    "hedge": "+ hedged readout (forecast decay separate from the state dynamics)",
+    "hedge_back": "+ hedged readout + backward latent consistency (0.1)",
+}
+GROUPS = [
+    ("Reference", ["ref"]),
+    (
+        "Architecture and training",
+        ["nocond", "dense", "hurwitz", "d128", "d512", "frames1", "onestep", "mu"],
+    ),
+    ("Loss terms used (removed)", ["norec", "nopred", "nolat", "noamp"]),
+    (
+        "Loss terms of the original KAE (added)",
+        ["back", "back003", "back001", "cos", "energy", "sobt", "sobx", "spec", "cosw"],
+    ),
+    ("Regularisation", ["ndec4", "fine", "manoise", "innoise", "latnoise"]),
+    ("Regularisation combined", ["combo_lm", "combo_lmn"]),
+    ("Candidate improvements", ["genonly", "l1", "l1rec", "hedge", "hedge_back"]),
+]
+KEYS = [
+    ("extrap_mse_all", "Tra_ext MSE"),
+    ("interp_mse_all", "Tra_int MSE"),
+    ("longer_mse_all", "Tra_long MSE"),
+    ("extrap_lsim", "Tra_ext LSiM"),
+    ("interp_lsim", "Tra_int LSiM"),
+    ("longer_lsim", "Tra_long LSiM"),
+    ("da", "DA df9"),
+]
+
+
+def da_mean(run: Path):
+    d = OUT / "da_abl" / f"ctkae_{run.name}" / "df9"
+    vals = []
+    for s in SWEEPS:
+        p = d / f"{s}.json"
+        if not p.exists():
+            return None
+        vals += [
+            r["KAE"]["mean"] for r in json.loads(p.read_text())["rows"] if "KAE" in r
+        ]
+    return float(np.mean(vals)) if vals else None
+
+
+def collect(score_file: str = "test_score.json"):
+    """Per tag and seed: forecasting scores from RUN/<score_file> (test_score.json, or
+    test_score_mix.json for the time-scale mixture readout) and DA from da_abl (the DA does
+    not depend on the forecast readout)."""
+    rows: dict = {}
+    for f in sorted(STATE.glob("*.done")):
+        key = f.stem
+        tag, seed = key.rsplit("_s", 1)
+        run = Path(f.read_text().strip())
+        run = run if run.is_absolute() else OUT.parent / run
+        if not (run / score_file).exists():
+            print(f"warning: {key}: no {score_file} in {run}, skipped", file=sys.stderr)
+            continue
+        ts = json.loads((run / score_file).read_text())
+        rec = {k: ts.get(k) for k, _ in KEYS if k != "da"}
+        rec["da"] = da_mean(run)
+        rows.setdefault(tag, {})[int(seed)] = rec
+    return rows
+
+
+def baselines():
+    suite = json.loads((RES / "benchmark_suite_baselines.json").read_text())
+    ls = json.loads((RES / "lsim_baselines.json").read_text())
+    da: dict = {}
+    for sw in SWEEPS:
+        for r in json.loads((BASE_DA / f"{sw}.json").read_text())["rows"]:
+            for k, v in r.items():
+                if isinstance(v, dict) and "mean" in v:
+                    da.setdefault(k, []).append(v["mean"])
+    out = []
+    for lab, key, dk in BASELINES:
+        o = {}
+        for c in ("extrap", "interp", "longer"):
+            o[f"{c}_mse_all"] = suite[c][key]["mse_all"] if key else None
+            o[f"{c}_lsim"] = ls.get(key, {}).get(f"{c}_lsim") if key else None
+        o["da"] = float(np.mean(da[dk])) if dk else None
+        out.append((lab, o))
+    return out
+
+
+def fmt(v, sd=None, digits=2):
+    if v is None:
+        return "-"
+    return f"{v:.{digits}f}" + ("" if sd is None else f" ± {sd:.{digits}f}")
+
+
+def summarise(rows):
+    ref = rows.get("ref", {})
+    out = {}
+    for tag, seeds in rows.items():
+        o = {"n": len(seeds), "seeds": sorted(seeds)}
+        for k, _ in KEYS:
+            v = [seeds[s][k] for s in seeds if seeds[s][k] is not None]
+            o[k] = (
+                (float(np.mean(v)), float(np.std(v, ddof=1)) if len(v) > 1 else None)
+                if v
+                else (None, None)
+            )
+            d = [
+                seeds[s][k] - ref[s][k]
+                for s in seeds
+                if s in ref and seeds[s][k] is not None and ref[s][k] is not None
+            ]
+            o[f"d_{k}"] = float(np.mean(d)) if d and tag != "ref" else None
+            o[f"dse_{k}"] = (
+                float(np.std(d, ddof=1) / np.sqrt(len(d)))
+                if len(d) > 1 and tag != "ref"
+                else None
+            )
+        out[tag] = o
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default=None)
+    # forecasting columns from the calibrated time-scale mixture readout (mix_postprocess.sh)
+    ap.add_argument("--mix", action="store_true")
+    a = ap.parse_args()
+    if a.out is None:
+        a.out = str(ROOT / "audit_report/results/ablation_table") + (
+            "_mix" if a.mix else ""
+        )
+    s = summarise(collect("test_score_mix.json" if a.mix else "test_score.json"))
+    dig = {"da": 3}
+    md = [
+        "| Variant | seeds | " + " | ".join(n for _, n in KEYS) + " |",
+        "|---|---|" + "---|" * len(KEYS),
+    ]
+    tex = []
+    md.append("| **Baselines (same cases and scorers)** |" + " |" * (len(KEYS) + 1))
+    tex.append(f"\\multicolumn{{{len(KEYS) + 2}}}{{l}}{{\\emph{{Baselines}}}}\\\\")
+    for lab, o in baselines():
+        cells = [fmt(o[k], None, dig.get(k, 2)) for k, _ in KEYS]
+        md.append(f"| {lab} | - | " + " | ".join(cells) + " |")
+        tex.append(lab + " & - & " + " & ".join(cells) + "\\\\")
+    sens = sorted(t for t in s if t.startswith("S_"))
+    for title, tags in GROUPS + [("Weight sensitivity (seed 0)", sens)]:
+        present = [t for t in tags if t in s]
+        if not present:
+            continue
+        md.append(f"| **{title}** |" + " |" * (len(KEYS) + 1))
+        tex.append(f"\\multicolumn{{{len(KEYS) + 2}}}{{l}}{{\\emph{{{title}}}}}\\\\")
+        for t in present:
+            o = s[t]
+            cells = []
+            for k, _ in KEYS:
+                m, sd = o[k]
+                c = fmt(m, sd, dig.get(k, 2))
+                if o.get(f"d_{k}") is not None:
+                    dd = dig.get(k, 2)
+                    se = o.get(f"dse_{k}")
+                    c += f" ({o[f'd_{k}']:+.{dd}f}" + (
+                        f" ± {se:.{dd}f})" if se else ")"
+                    )
+                cells.append(c)
+            lab = LABELS.get(t, t.replace("S_", "weight: "))
+            md.append(f"| {lab} | {o['n']} | " + " | ".join(cells) + " |")
+            tex.append(
+                lab.replace("->", "$\\to$").replace("mu", "$\\mu$")
+                + f" & {o['n']} & "
+                + " & ".join(c.replace("±", "$\\pm$") for c in cells)
+                + "\\\\"
+            )
+    Path(a.out + ".md").write_text("\n".join(md) + "\n")
+    Path(a.out + ".tex").write_text("\n".join(tex) + "\n")
+    Path(a.out + ".json").write_text(json.dumps(s, indent=1))
+    print("\n".join(md))
+
+
+if __name__ == "__main__":
+    main()

@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from torch.nn import utils as nn_utils
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, repeat
 from typing import List, Optional
 from torch import Tensor
 from dataclasses import dataclass
@@ -10,7 +10,6 @@ from dataclasses import dataclass
 # Attempt to import from local modules
 try:
     from .fourier import PositionalEncoding
-    from .adaptive_layers import AdaGN
     from .rbf import re_expansion, ma_expansion, forcing_expansion
 except ImportError:
     # Minimal fallback if local imports fail
@@ -21,25 +20,33 @@ except ImportError:
 # ==========================================
 
 
-def sn_conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0):
+def sn_conv2d(
+    in_channels,
+    out_channels,
+    kernel_size,
+    stride=1,
+    padding=0,
+    spectral=True,
+    padding_mode="zeros",
+):
     """Spectral Normalized Conv2d. Stabilizes Koopman operator gradients."""
-    return nn_utils.spectral_norm(
-        nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
+    conv = nn.Conv2d(
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        padding,
+        padding_mode=padding_mode,
     )
+    return nn_utils.spectral_norm(conv) if spectral else conv
 
 
-def sn_linear(in_features, out_features):
+def sn_linear(in_features, out_features, spectral=True):
     """Spectral Normalized Linear."""
-    return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
-
-
-# def sn_conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0):
-#     """Spectral Normalized Conv2d. Stabilizes Koopman operator gradients."""
-#     return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)
-
-# def sn_linear(in_features, out_features):
-#     """Spectral Normalized Linear."""
-#     return nn.Linear(in_features, out_features)
+    if spectral:
+        return nn_utils.spectral_norm(nn.Linear(in_features, out_features))
+    else:
+        return nn.Linear(in_features, out_features)
 
 
 # ==========================================
@@ -99,55 +106,132 @@ class CBAM(nn.Module):
 class PreActResBlock(nn.Module):
     """Standard Pre-activation ResBlock for Encoder."""
 
-    def __init__(self, in_ch, out_ch, stride=1):
+    def __init__(self, in_ch, out_ch, stride=1, spectral=True, padding_mode="zeros"):
         super().__init__()
         self.bn1 = nn.GroupNorm(8, in_ch)
-        self.conv1 = sn_conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1)
+        self.conv1 = sn_conv2d(
+            in_ch,
+            out_ch,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
+        )
+        self.dropout = nn.Dropout2d(p=0.1)
         self.bn2 = nn.GroupNorm(8, out_ch)
-        self.conv2 = sn_conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1)
+        self.conv2 = sn_conv2d(
+            out_ch,
+            out_ch,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
+        )
 
         self.shortcut = nn.Identity()
         if stride != 1 or in_ch != out_ch:
             self.shortcut = sn_conv2d(
-                in_ch, out_ch, kernel_size=1, stride=stride, padding=0
+                in_ch,
+                out_ch,
+                kernel_size=1,
+                stride=stride,
+                padding=0,
+                spectral=spectral,
             )
 
     def forward(self, x):
         x_norm = F.silu(self.bn1(x))
         residual = self.shortcut(x)  # Note: He et al. apply shortcut to x, not x_norm
         out = self.conv1(x_norm)
+        out = self.dropout(out)  # APPLY IT HERE
         out = self.conv2(F.silu(self.bn2(out)))
         return out + residual
 
 
 class ConditionedResBlock(nn.Module):
-    """Decoder ResBlock with Physics Injection (AdaGN)."""
+    """Decoder ResBlock with Physics Injection (GroupNorm)."""
 
-    def __init__(self, in_ch, out_ch, cond_dim):
+    def __init__(self, in_ch, out_ch, spectral=True, padding_mode="zeros"):
         super().__init__()
-        # AdaGN replaces static GroupNorm
-        self.gn1 = AdaGN(in_ch, cond_dim)
-        self.conv1 = sn_conv2d(in_ch, out_ch, kernel_size=3, padding=1)
-
-        self.gn2 = AdaGN(out_ch, cond_dim)
-        self.conv2 = sn_conv2d(out_ch, out_ch, kernel_size=3, padding=1)
+        self.gn1 = nn.GroupNorm(8, in_ch)
+        self.conv1 = sn_conv2d(
+            in_ch,
+            out_ch,
+            kernel_size=3,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
+        )
+        # self.dropout = nn.Dropout2d(p=0.1)
+        self.gn2 = nn.GroupNorm(8, out_ch)
+        self.conv2 = sn_conv2d(
+            out_ch,
+            out_ch,
+            kernel_size=3,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
+        )
 
         self.shortcut = nn.Identity()
         if in_ch != out_ch:
-            self.shortcut = sn_conv2d(in_ch, out_ch, kernel_size=1, padding=0)
+            self.shortcut = sn_conv2d(
+                in_ch, out_ch, kernel_size=1, padding=0, spectral=spectral
+            )
 
-    def forward(self, x, cond):
-        # 1. Norm + Condition
-        x_norm = F.silu(self.gn1(x, cond))
-
-        # 2. Convolution
-        out = self.conv1(x_norm)
-
-        # 3. Norm + Condition
-        out = F.silu(self.gn2(out, cond))
+    def forward(self, x):
+        out = F.silu(self.gn1(x))
+        out = self.conv1(out)
+        # out = self.dropout(out) # APPLY IT HERE
+        out = F.silu(self.gn2(out))
         out = self.conv2(out)
-
         return out + self.shortcut(x)
+
+
+class SpatialAttentionPooling(nn.Module):
+    def __init__(self, in_channels: int, latent_dim: int):
+        super().__init__()
+        self.latent_dim = latent_dim
+
+        # This is your "blank" Koopman state that learns how to query the fluid
+        self.latent_query = nn.Parameter(torch.randn(1, 1, latent_dim))
+
+        # Standard projections for Cross-Attention
+        self.to_q = nn.Linear(latent_dim, latent_dim)
+        self.to_kv = nn.Conv2d(in_channels, latent_dim * 2, kernel_size=1)
+
+        self.norm_q = nn.LayerNorm(latent_dim)
+        self.norm_kv = nn.GroupNorm(8, in_channels)
+
+    def forward(self, x: Tensor) -> Tensor:
+        B, C, H, W = x.shape
+
+        # 1. Prepare Key and Value from the 2D fluid features
+        x_norm = self.norm_kv(x)
+        kv = self.to_kv(x_norm)  # [B, latent_dim * 2, H, W]
+        k, v = kv.chunk(2, dim=1)  # Each is [B, latent_dim, H, W]
+
+        # Flatten spatial dims for attention: [B, latent_dim, H*W] -> [B, H*W, latent_dim]
+        k = k.view(B, self.latent_dim, -1).transpose(1, 2)
+        v = v.view(B, self.latent_dim, -1).transpose(1, 2)
+
+        # 2. Prepare the Latent Query
+        q = self.latent_query.expand(B, -1, -1)  # [B, 1, latent_dim]
+        q = self.norm_q(q)
+        q = self.to_q(q)
+
+        # 3. Cross Attention: Query the fluid space
+        # scale = 1 / sqrt(latent_dim)
+        scale = self.latent_dim**-0.5
+        dots = torch.bmm(q, k.transpose(1, 2)) * scale  # [B, 1, H*W]
+        attn = torch.softmax(dots, dim=-1)
+
+        # 4. Extract the 1D Vector
+        z = torch.bmm(attn, v)  # [B, 1, latent_dim]
+
+        return z.squeeze(1)  # Return pure 1D vector: [B, latent_dim]
 
 
 # ==========================================
@@ -166,42 +250,89 @@ class ConvEncoder(nn.Module):
         cond_embedding_dim: Optional[int] = None,
         cond_type: Optional[str] = None,
         cond_expansion_type: Optional[str] = None,
+        shared_expansion_map: Optional[nn.ModuleDict] = None,
+        use_attention: bool = True,  # Default to False for cleaner dynamics
+        spectral: bool = False,
+        latent_norm: bool = True,
+        honor_conv_kwargs: bool = False,
         **kwargs
     ):
         super().__init__()
+        # latent_norm: affine-free LayerNorm on the encoder output.  Every published KAE
+        # checkpoint (KS, TRA, Inc; Aug-Sep 2026) was trained with it; it was removed by
+        # mistake before a5f4796, which degraded the KS round trip from 0.009 to ~0.13.
+        # Set model.conv_kwargs.latent_norm=false only for checkpoints trained without it.
+        self.latent_norm = latent_norm
+        # Legacy behaviour (honor_conv_kwargs=False): res blocks are always
+        # spectral-normed and every conv zero-pads, whatever `spectral` and
+        # conv_kwargs["padding_mode"] say. Kept as default so existing checkpoints load.
+        block_spectral = spectral if honor_conv_kwargs else True
+        padding_mode = (
+            kwargs.get("padding_mode", "zeros") if honor_conv_kwargs else "zeros"
+        )
         self.cond_type = cond_type
-
-        # Physics Parameter Expansion (Re -> High Dim)
-        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
-        self.expansion_map = nn.ModuleDict(
-            {
-                "Re": re_expansion(dim_to_use),
-                "Ma": ma_expansion(dim_to_use),
-                "forcing": forcing_expansion(dim_to_use),
-            }
-        )
+        self.use_attention = use_attention
         self.cond_expansion_type = cond_expansion_type
+        # Physics Parameter Expansion (Re -> High Dim)
 
+        if cond_embedding_dim is not None:
+            dim_to_use = cond_embedding_dim
+
+        if shared_expansion_map is not None:
+            self.expansion_map = shared_expansion_map
+        elif shared_expansion_map is None and (
+            cond_expansion_type is not None or cond_embedding_dim is not None
+        ):
+            # Fallback only for unit tests
+            self.expansion_map = nn.ModuleDict(
+                {
+                    "Re": re_expansion(dim_to_use),
+                    "Ma": ma_expansion(dim_to_use),
+                    "forcing": forcing_expansion(dim_to_use),
+                }
+            )
+
+            self.cond_expansion_type = cond_expansion_type
+        else:
+            self.expansion_map = None
         # 1. Coordinate Injection Setup
-        input_channels = C + 2
-        yy, xx = torch.meshgrid(
-            torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+        # A width-1 grid (KS is 64 x 1) has only one coordinate to inject: the second
+        # channel of a meshgrid would be constant, so the 1-D case carries a single
+        # coordinate, stored already batched as [1, 1, H, 1].  2-D grids are unchanged.
+        if W == 1:
+            self.register_buffer("grid", torch.linspace(-1, 1, H).view(1, 1, H, 1))
+        else:
+            yy, xx = torch.meshgrid(
+                torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+            )
+            self.register_buffer("grid", torch.stack([xx, yy], dim=0))
+        input_channels = C + (
+            self.grid.shape[-3] if self.grid.dim() == 4 else self.grid.shape[0]
         )
-        self.register_buffer("grid", torch.stack([xx, yy], dim=0))
 
         # 2. Backbone
-        self.init_conv = sn_conv2d(input_channels, hiddens[0], kernel_size=3, padding=1)
+        self.init_conv = sn_conv2d(
+            input_channels,
+            hiddens[0],
+            kernel_size=(3, 1),
+            padding=(1, 0),
+            spectral=spectral,
+            padding_mode=padding_mode,
+        )
 
         layers = []
         in_c = hiddens[0]
+        block_kw = dict(spectral=block_spectral, padding_mode=padding_mode)
         for out_c in hiddens:
-            layers.append(PreActResBlock(in_c, out_c, stride=2))  # Downsample
-            layers.append(PreActResBlock(out_c, out_c, stride=1))  # Refine
+            layers.append(
+                PreActResBlock(in_c, out_c, stride=2, **block_kw)
+            )  # Downsample
+            layers.append(PreActResBlock(out_c, out_c, stride=1, **block_kw))  # Refine
             in_c = out_c
         self.backbone = nn.Sequential(*layers)
 
         # 3. Bottleneck Attention
-        self.attention = CBAM(in_c)
+        self.attention = CBAM(in_c) if use_attention else nn.Identity()
 
         # 4. Projection
         scale_factor = 2 ** len(hiddens)
@@ -212,10 +343,16 @@ class ConvEncoder(nn.Module):
         if self.cond_type == "late_fusion":
             flat_features += dim_to_use
 
-        self.to_latent = nn.Sequential(
-            nn.Flatten(),
-            nn.SiLU(),
-            sn_linear(flat_features, latent_dim),
+        # self.to_latent = nn.Sequential(
+        #     nn.Flatten(),
+        #     nn.SiLU(),
+        #     # sn_linear(flat_features, latent_dim),
+        #     nn.Linear(flat_features, latent_dim),
+        #     nn.LayerNorm(latent_dim),
+        # )
+        # Remove the old self.to_latent that used Flatten()
+        self.to_latent = SpatialAttentionPooling(
+            in_channels=in_c, latent_dim=latent_dim
         )
         self.latent_dim = latent_dim
 
@@ -229,9 +366,8 @@ class ConvEncoder(nn.Module):
         return cond
 
     def forward(self, x: Tensor, cond: Optional[Tensor] = None):
-        # Coordinate Injection
-        grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
-        x = torch.cat([x, grid], dim=1)
+        grid = self.grid if self.grid.dim() == 4 else self.grid.unsqueeze(0)
+        x = torch.cat([x, grid.expand(x.shape[0], -1, -1, -1)], dim=1)
 
         cond_emb = None
         if self.cond_type is not None and cond is not None:
@@ -240,18 +376,24 @@ class ConvEncoder(nn.Module):
         x = self.init_conv(x)
         x = self.backbone(x)
 
-        # Apply Attention at low-res
-        x = self.attention(x)
+        if self.use_attention:
+            x = self.attention(x)
 
-        flat = x.flatten(1)
+        # DO NOT flatten. Pass the spatial 4D grid to Attention Pooling.
+        z = self.to_latent(x)
+
         if self.cond_type == "late_fusion" and cond_emb is not None:
-            flat = torch.cat([flat, cond_emb], dim=1)
+            z = torch.cat([z, cond_emb], dim=1)
+            # Note: ensure you project z back to latent_dim here if you concatenate
 
-        return self.to_latent(flat)
+        if self.latent_norm:
+            z = F.layer_norm(z, (z.shape[-1],))
+
+        return z
 
 
 # ==========================================
-#   DECODER (Resize-Conv + AdaGN)
+#   DECODER (Resize-Conv)
 # ==========================================
 
 
@@ -263,22 +405,20 @@ class ConvDecoder(nn.Module):
         W: int,
         latent_dim: int,
         hiddens: List[int] = [64, 128, 256],
-        cond_embedding_dim: Optional[int] = None,
-        cond_type: Optional[str] = None,
-        cond_expansion_type: Optional[str] = None,
+        spectral: bool = False,
+        honor_conv_kwargs: bool = False,
         **kwargs
     ):
         super().__init__()
+        # See ConvEncoder: legacy default ignores `spectral` in res blocks and padding_mode.
+        block_spectral = spectral if honor_conv_kwargs else True
+        padding_mode = (
+            kwargs.get("padding_mode", "zeros") if honor_conv_kwargs else "zeros"
+        )
         # Decoder goes from small to large: [256, 128, 64]
         hiddens = hiddens[::-1]
 
-        scale_factor = 2 ** len(hiddens)
-        self.H_start = H // scale_factor
-        self.W_start = W // scale_factor
-
-        # Physics Expansion Setup
-        self.cond_expansion_type = cond_expansion_type
-        dim_to_use = cond_embedding_dim if cond_embedding_dim is not None else 64
+        dim_to_use = 64
         self.expansion_map = nn.ModuleDict(
             {
                 "Re": re_expansion(dim_to_use),
@@ -287,60 +427,75 @@ class ConvDecoder(nn.Module):
             }
         )
 
+        yy, xx = torch.meshgrid(
+            torch.linspace(-1, 1, H), torch.linspace(-1, 1, W), indexing="ij"
+        )
+        self.register_buffer("grid", torch.stack([xx, yy], dim=0))  # [2, H, W]
+
+        scale_factor = 2 ** len(hiddens)
+        # A degenerate axis (KS is 64 x 1) must not be divided away: the encoder's
+        # stride-2 convolutions already leave a length-1 axis at 1, so the decoder has to
+        # start it at 1 and never upsample it.  Both are no-ops on any axis long enough to
+        # halve len(hiddens) times, so 2-D runs are unaffected.
+        self.H_start = max(1, H // scale_factor)
+        self.W_start = max(1, W // scale_factor)
+        up = (2 if H > self.H_start else 1, 2 if W > self.W_start else 1)
+
         # 1. Expand Latent
         self.flat_features = hiddens[0] * self.H_start * self.W_start
-        self.from_latent = sn_linear(latent_dim, self.flat_features)
+        self.from_latent = sn_linear(latent_dim, self.flat_features, spectral=spectral)
 
         # 2. Build Layers (Manual list to handle conditional forwarding)
         self.layers = nn.ModuleList()
-        in_c = hiddens[0]
-
-        # If no condition is provided, we need a dummy dim for AdaGN
-        self.cond_dim = dim_to_use
+        curr_c = hiddens[0]
 
         for out_c in hiddens:
-            # Resize-Conv Block
-            # 1. Refine (Conditioned)
-            self.layers.append(ConditionedResBlock(in_c, in_c, self.cond_dim))
-
-            # 2. Upsample (Nearest + Conv) -> Eliminates Checkerboard
-            upsample_block = nn.Sequential(
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                sn_conv2d(in_c, out_c, kernel_size=3, padding=1),
-                nn.SiLU(),
+            # A. Refinement Block
+            self.layers.append(
+                ConditionedResBlock(
+                    curr_c, curr_c, spectral=block_spectral, padding_mode=padding_mode
+                )
             )
-            self.layers.append(upsample_block)
-            in_c = out_c
 
-        self.final_conv = sn_conv2d(in_c, C, kernel_size=3, padding=1)
+            # B. PixelShuffle Upsample
+            # Step 1: Conv to (out_c * 4) channels
+            # Step 2: PixelShuffle(2) folds channels into H and W
+            self.layers.append(
+                nn.Sequential(
+                    nn.Upsample(scale_factor=up, mode="nearest"),
+                    sn_conv2d(
+                        curr_c,
+                        out_c,
+                        kernel_size=3,
+                        padding=1,
+                        spectral=spectral,
+                        padding_mode=padding_mode,
+                    ),
+                    nn.SiLU(),
+                )
+            )
+            curr_c = out_c
 
-    def _encode_cond(self, cond: Optional[Tensor]) -> Tensor:
-        # Defaults to zero vector if cond is None, to satisfy AdaGN
-        if cond is None:
-            # Create a zero condition on the fly?
-            # Ideally this shouldn't happen if cond_type is set.
-            # But for safety, we return a zero tensor if strictly needed,
-            # though usually the caller ensures cond exists.
-            return torch.zeros(1, self.cond_dim).to(next(self.parameters()).device)
-
-        if cond.ndim == 1:
-            cond = cond.unsqueeze(-1)
-
-        if self.cond_expansion_type in self.expansion_map:
-            return self.expansion_map[self.cond_expansion_type](cond)
-
-        # If standard scalar, project it if dimensions don't match or use as is
-        # Note: AdaGN expects [B, cond_dim].
-        return cond
+        # 4. Final Projection: (Features 64 + Grid 2) -> Output Channels (C)
+        # curr_c is hiddens[-1] (usually 64)
+        # self.final_conv = sn_conv2d(
+        #     curr_c + 2, C, kernel_size=3, padding=1, spectral=spectral
+        # )
+        self.final_conv = sn_conv2d(
+            curr_c,
+            C,
+            kernel_size=3,
+            padding=1,
+            spectral=spectral,
+            padding_mode=padding_mode,
+        )
 
     def forward(self, z: Tensor, cond: Optional[Tensor] = None):
-        # Prepare Condition
-        cond_emb = self._encode_cond(cond)
-        # Ensure batch size matches if we generated a dummy
-        if cond_emb.shape[0] != z.shape[0]:
-            cond_emb = cond_emb.expand(z.shape[0], -1)
-
-        # 1. Expand Z
+        """
+        Deterministic forward pass.
+        'cond' is ignored to allow the decoder to focus purely on latent dynamics.
+        """
+        # 1. Expand Z from [B, latent_dim] to [B, C_start, H_start, W_start]
         x = self.from_latent(z)
         x = F.silu(x)
         x = x.view(
@@ -352,11 +507,20 @@ class ConvDecoder(nn.Module):
 
         # 2. Upsample Loop
         for layer in self.layers:
-            if isinstance(layer, ConditionedResBlock):
-                x = layer(x, cond_emb)
-            else:
-                x = layer(x)
+            x = layer(x)
 
+        # 3. Coordinate Injection (The "Crisp Detail" Engine)
+        # self.grid is [2, H, W], we expand it to [B, 2, H, W]
+        # grid = self.grid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        # Apply dropout to the grid during training so the network can't rely on it 100%
+        if self.training:
+            # Drop the FLUID features, not the coordinates
+            x = F.dropout2d(x, p=0.15)
+
+        # 4. Concatenate: [B, C_final, H, W] + [B, 2, H, W] -> [B, C_final + 2, H, W]
+        # x = torch.cat([x, grid], dim=1)
+
+        # 5. Final projection to physical space (e.g., 66 in -> 4 out)
         return self.final_conv(x)
 
 
@@ -377,15 +541,14 @@ class TransformerConfig:
 class HistoryEncoder(nn.Module):
     def __init__(
         self,
-        backbone: nn.Module,
+        backbone: ConvEncoder,
         use_positional_encoding: bool = True,
         transformer_config: TransformerConfig = TransformerConfig(),
     ):
         super().__init__()
         self.backbone = backbone
-        self.latent_dim = getattr(backbone, "latent_dim", 128)
+        self.latent_dim = backbone.latent_dim
 
-        self.norm = nn.LayerNorm(self.latent_dim)
         self.pos_enc = (
             PositionalEncoding(self.latent_dim, max_len=transformer_config.max_len)
             if use_positional_encoding
@@ -406,15 +569,20 @@ class HistoryEncoder(nn.Module):
     def forward(self, x: Tensor, cond: Optional[Tensor] = None) -> Tensor:
         B, T, C, H, W = x.shape
         x_flat = rearrange(x, "b t c h w -> (b t) c h w")
+        cond_flat = None
+        if cond is not None:
+            if cond.ndim == 2:  # [B, Dim] -> Static condition
+                # Repeat for each timestep
+                cond_flat = repeat(cond, "b d -> (b t) d", t=T)
+            elif cond.ndim == 3:  # [B, T, Dim] -> Dynamic condition
+                cond_flat = rearrange(cond, "b t d -> (b t) d")
 
-        # Encoder likely doesn't need temporal cond, or it's handled via broadcasting
-        # We pass cond if the backbone supports it
-        features = self.backbone(x_flat, cond=None)
+        features = self.backbone(x_flat, cond=cond_flat)
 
         features = rearrange(features, "(b t) d -> b t d", t=T)
-        features = self.norm(features)
         features = self.pos_enc(features)
         out = self.transformer(features)
 
         # Average pooling over time for the history context
-        return out.mean(dim=1)
+        # return out.mean(dim=1)
+        return out[:, -1, :]

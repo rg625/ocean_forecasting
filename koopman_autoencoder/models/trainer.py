@@ -58,6 +58,10 @@ class Trainer:
         num_visual_batches: int = 1,
         eval_metrics: Optional[Metric] = None,
         precision: Optional[str] = "bfloat16",
+        debug_nan_checks: bool = False,
+        drop_prob: float = 0.0,
+        run_metadata: Optional[Dict] = None,
+        consistent_latent_targets: bool = False,
     ):
         self.model = model
         self.train_loader, self.val_loader = train_loader, val_loader
@@ -70,9 +74,27 @@ class Trainer:
         self.device = device
         self.num_epochs, self.patience, self.log_epoch = num_epochs, patience, log_epoch
         self.save_latest_every, self.num_visual_batches = (
-            num_visual_batches,
+            save_latest_every,
             num_visual_batches,
         )
+        # Autograd anomaly mode + a NaN hook on every module make a TRA step ~16x
+        # slower (4.6 s -> 0.28 s, audit_report/results/smoke_profile_*.json); the
+        # non-finite-loss guard in _run_one_epoch already skips bad batches.
+        self.debug_nan_checks = debug_nan_checks
+        self._nan_hook_handles: List = []
+        # Frame-dropping (irregular dt) training was hard-wired off; now configurable.
+        self.drop_prob = drop_prob
+        # Resolved config + git state saved into every checkpoint (reproducibility).
+        self.run_metadata = run_metadata or {}
+        # ENC-01: the rollout starts from encode() (history + present) but latent
+        # targets used present_encoding() only -- two different charts. True encodes
+        # each target with the same input_frames-long window map. Default keeps legacy.
+        self.consistent_latent_targets = consistent_latent_targets
+
+        # AzencotDiscreteLoss has no latent-space term, and the backward chain now starts
+        # from `_encode_last_target_window`, so encoding every ground-truth target frame
+        # would be a wasted encoder pass over B x N frames on every step.
+        self._needs_true_latents = hasattr(criterion, "latent_loss")
 
         self.best_val_loss = float("inf")
         self.patience_counter = 0
@@ -95,6 +117,9 @@ class Trainer:
                 # GradScaler is not required for bfloat16
                 logger.info("Using bfloat16 mixed precision.")
             else:
+                # Without this assignment the attribute is never set and every later
+                # reference to self.autocast_dtype raises AttributeError.
+                self.autocast_dtype = torch.float32
                 logger.warning(
                     "bfloat16 not supported on this device, falling back to float32."
                 )
@@ -111,13 +136,10 @@ class Trainer:
             "loss_recon": {"train": [], "val": []},
             "loss_pred": {"train": [], "val": []},
             "loss_latent": {"train": [], "val": []},
-            "loss_grad": {"train": [], "val": []},
+            "loss_phys": {"train": [], "val": []},  # Changed from loss_grad
+            # You don't need to add the sub-metrics (like latent_energy) here
+            # because the new _log_metrics will add them automatically.
         }
-        if self.eval_metrics:
-            metric_key = (
-                f"metric_{self.eval_metrics.mode}_{self.eval_metrics.variable_mode}"
-            )
-            self.history[metric_key] = {"val": []}
 
     @staticmethod
     def is_main_process() -> bool:
@@ -141,6 +163,75 @@ class Trainer:
         dist.all_reduce(metric_tensor, op=dist.ReduceOp.AVG)
 
         return {key: val.item() for key, val in zip(metrics.keys(), metric_tensor)}
+
+    @staticmethod
+    def _encode_last_target_window(model_module, input_td, target_td):
+        """Encode the LAST target frame with the SAME map the forward rollout uses.
+
+        The paper has a single encoder chi_e, so the backward chain must start from the
+        same latent chart the forward operator acts on. With ``input_frames > 1`` the
+        forward pass uses ``encode()`` = (history + present) / 2, whereas
+        ``present_encoding()`` sees one frame only -- a materially different map. Taking
+        ``true_latents[:, -1]`` would therefore train B on a chart A never sees, and the
+        consistency penalty (B A = I) would be tying together two different bases.
+
+        Builds the ``input_frames``-long window ending at the last target frame by
+        concatenating the input and target sequences along time, so it stays correct even
+        when the target sequence is shorter than the input window.
+        """
+        n_frames = model_module.input_frames
+        var_keys = list(model_module.data_variables.keys())
+
+        window = {
+            k: torch.cat([input_td[k], target_td[k]], dim=1)[:, -n_frames:]
+            for k in var_keys
+        }
+        window_td = TensorDict(window, batch_size=[target_td.batch_size[0], n_frames])
+
+        window_cond = None
+        if "cond_input" in input_td and "cond_target" in target_td:
+            window_cond = torch.cat(
+                [input_td["cond_input"], target_td["cond_target"]], dim=1
+            )[:, -n_frames:]
+
+        return model_module.encode(window_td, cond_input=window_cond)
+
+    def _azencot_backward_rollout(
+        self, model_module, z_start, target_td, x_true_recon, obstacle_mask=None
+    ):
+        """Backward rollout for the Consistent Koopman AE (Azencot et al. 2020).
+
+        Starts from ``z_start`` (the latent of the LAST target frame, encoded with the
+        forward encoder -- see ``_encode_last_target_window``), propagates backward
+        through the separately-learned operator B, decodes, and returns the predictions
+        together with the time-reversed ground truth they should match. Mirroring the
+        reference (``data_list[::-1][k+1]``), the chain runs all the way back to the
+        *input* frame, so with targets x_1..x_N the N steps are matched against
+        ``[x_{N-1}, ..., x_1, x_0]`` where x_0 is the last input frame.
+
+        Returns (None, None) if the sequence is too short.
+        """
+        N = target_td.batch_size[1]
+        if N < 2:
+            return None, None
+
+        # N steps: N-1 land inside the target window, the last one lands on the input.
+        x_back, _ = model_module.backward_rollout(
+            z_start, N, obstacle_mask=obstacle_mask
+        )
+
+        var_keys = list(model_module.data_variables.keys())
+        rev_idx = torch.arange(N - 2, -1, -1, device=target_td.device)
+        reversed_targets = target_td.select(*var_keys)[:, rev_idx]
+
+        x_back_future = TensorDict(
+            {
+                k: torch.cat([reversed_targets[k], x_true_recon[k].unsqueeze(1)], dim=1)
+                for k in var_keys
+            },
+            batch_size=[target_td.batch_size[0], N],
+        )
+        return x_back, x_back_future
 
     def true_latent_encoding(self, target_td: TensorDict, model_module):
 
@@ -166,6 +257,32 @@ class Trainer:
             squashed_td_to_encode, cond_input=cond_target_flat
         )
         return rearrange(true_latents_flat, "(b t) d -> b t d", b=B)
+
+    @staticmethod
+    def window_latent_encoding(input_td, target_td, model_module):
+        """Encode every target frame with the same window map as the rollout start:
+        target j uses frames [j - input_frames + 1, j] of the concatenated sequence."""
+        n = model_module.input_frames
+        keys = list(model_module.data_variables.keys())
+        B, T = target_td.batch_size
+        windows = {}
+        for k in keys:
+            full = torch.cat([input_td[k], target_td[k]], dim=1)  # [B, Tin+T, ...]
+            w = full.unfold(1, n, 1)[:, -T:]  # [B, T, ..., n]
+            w = w.movedim(-1, 2)  # [B, T, n, ...]
+            windows[k] = w.reshape(B * T, n, *w.shape[3:])
+        win_td = TensorDict(windows, batch_size=[B * T, n])
+        cond = None
+        if "cond_input" in input_td and "cond_target" in target_td:
+            c = torch.cat([input_td["cond_input"], target_td["cond_target"]], dim=1)
+            cond = c.unfold(1, n, 1)[:, -T:].reshape(B * T, n)
+        z = model_module.encode(win_td, cond_input=cond)
+        return rearrange(z, "(b t) d -> b t d", b=B)
+
+    def _latent_targets(self, input_td, target_td, model_module):
+        if self.consistent_latent_targets:
+            return self.window_latent_encoding(input_td, target_td, model_module)
+        return self.true_latent_encoding(target_td=target_td, model_module=model_module)
 
     def _run_one_epoch(self) -> Dict[str, float]:
         """Runs a single training epoch with Crash Protection."""
@@ -206,8 +323,13 @@ class Trainer:
             # --- 2. INPUT CLAMPING (CRITICAL) ---
             # Even normalized data shouldn't exceed +/- 5 sigma.
             # Noise can sometimes push outlier pixels to +/- 20, which kills RBFs/SiLU.
-            noisy_input_td = noisy_input_td.apply(lambda t: torch.clamp(t, -5.0, 5.0))
+            noisy_input_td = noisy_input_td.apply(
+                lambda t: torch.nan_to_num(t, nan=0.0, posinf=5.0, neginf=-5.0).clamp(
+                    -5.0, 5.0
+                )
+            )
 
+            current_drop_prob = self.drop_prob
             with autocast(
                 device_type=str(self.device),
                 dtype=self.autocast_dtype,
@@ -215,31 +337,69 @@ class Trainer:
             ):
 
                 # Forward Pass
-                out = self.model(noisy_input_td, target_td["seq_length"])
+                out = self.model(
+                    noisy_input_td, target_td["seq_length"], drop_prob=current_drop_prob
+                )
+                # out = self.model(input_td, target_td["seq_length"])
+                # --- TARGET SLICING ---
+                # Align the ground truth sequence with the frames the model actually predicted
+                if hasattr(out, "kept_indices") and out.kept_indices is not None:
+                    # TensorDict natively supports slicing along the time dimension [Batch, Time, ...]
+                    sliced_target_td = target_td[:, out.kept_indices]
+                else:
+                    sliced_target_td = target_td
 
                 x_true_recon = TensorDict(
                     {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
                     batch_size=input_td.batch_size[0],
                 )
 
-                loss_dict = self.criterion(
-                    model_module.koopman_operator,
-                    out.x_recon,
-                    out.x_preds,
-                    out.z_preds,
-                    x_true_recon,  # Compare against CLEAN input
-                    target_td,  # Compare against CLEAN target
-                    self.true_latent_encoding(
-                        target_td=target_td, model_module=model_module
-                    ),
-                    out.reynolds,
-                    out.disturbed_latents,
-                    out.dz_dt,
-                    out.dz_dt_disturbed,
+                true_latents = (
+                    self._latent_targets(input_td, sliced_target_td, model_module)
+                    if self._needs_true_latents
+                    else None
                 )
 
+                criterion_kwargs = dict(
+                    koopman_operator=model_module.koopman_operator,
+                    x_recon=out.x_recon,
+                    x_preds=out.x_preds,
+                    latent_pred=out.z_preds,
+                    x_true=x_true_recon,  # Compare against CLEAN input
+                    x_future=sliced_target_td,  # Compare against SLICED target
+                    true_latents=true_latents,
+                    reynolds=out.reynolds,
+                    disturbed_latents=out.disturbed_latents,
+                    dz_dt=out.dz_dt,
+                    dz_dt_disturbed=out.dz_dt_disturbed,
+                )
+
+                # Consistent (Azencot) operator: add the genuine backward-rollout loss.
+                crit_cfg = getattr(self.criterion, "cfg", None)
+                if (
+                    crit_cfg is not None
+                    and getattr(crit_cfg, "use_backward", False)
+                    and hasattr(model_module.koopman_operator.dynamics, "backward_step")
+                ):
+                    z_start = self._encode_last_target_window(
+                        model_module, input_td, sliced_target_td
+                    )
+                    x_back, x_back_future = self._azencot_backward_rollout(
+                        model_module,
+                        z_start,
+                        sliced_target_td,
+                        x_true_recon,
+                        obstacle_mask=input_td.get("obstacle_mask"),
+                    )
+                    if x_back is not None:
+                        criterion_kwargs["x_back"] = x_back
+                        criterion_kwargs["x_back_future"] = x_back_future
+
+                loss = self.criterion(**criterion_kwargs)
+                loss_dict = loss.metrics
+
             # --- 3. LOSS SPIKE GUARD ---
-            total_loss = loss_dict["total_loss"]
+            total_loss = loss.total_loss
 
             # Check for NaN/Inf
             if not torch.isfinite(total_loss):
@@ -263,19 +423,19 @@ class Trainer:
                 self.scaler.unscale_(self.optimizer)
 
                 # Gradient Clipping is essential for SiLU/Koopman
-                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10.0)
                 self.optimizer.step()
 
-            detached_losses = {
-                k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
-            }
-            epoch_losses = accumulate_losses(epoch_losses, detached_losses)
+            # detached_losses = {
+            #     k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
+            # }
+            epoch_losses = accumulate_losses(epoch_losses, loss_dict)
             valid_batches += 1
 
         # Prevent division by zero if all batches failed
@@ -310,25 +470,48 @@ class Trainer:
                     {k: input_td[k][:, -1] for k in model_module.data_variables.keys()},
                     batch_size=input_td.batch_size[0],
                 )
-                loss_dict = self.criterion(
+                true_latents = (
+                    self._latent_targets(input_td, target_td, model_module)
+                    if self._needs_true_latents
+                    else None
+                )
+                eval_criterion_kwargs = dict(
                     koopman_operator=model_module.koopman_operator,
                     x_recon=out.x_recon,
                     x_preds=out.x_preds,
                     latent_pred=out.z_preds,
                     x_true=x_true_recon,
                     x_future=target_td,
-                    true_latents=self.true_latent_encoding(
-                        target_td=target_td, model_module=model_module
-                    ),
+                    true_latents=true_latents,
                     reynolds=out.reynolds,
                     disturbed_latents=out.disturbed_latents,
                     dz_dt=out.dz_dt,
                     dz_dt_disturbed=out.dz_dt_disturbed,
                 )
-                detached_losses = {
-                    k: v.detach() for k, v in loss_dict.items() if isinstance(v, Tensor)
-                }
-                total_losses = accumulate_losses(total_losses, detached_losses)
+
+                # Consistent (Azencot) operator: add the genuine backward-rollout loss.
+                crit_cfg = getattr(self.criterion, "cfg", None)
+                if (
+                    crit_cfg is not None
+                    and getattr(crit_cfg, "use_backward", False)
+                    and hasattr(model_module.koopman_operator.dynamics, "backward_step")
+                ):
+                    z_start = self._encode_last_target_window(
+                        model_module, input_td, target_td
+                    )
+                    x_back, x_back_future = self._azencot_backward_rollout(
+                        model_module,
+                        z_start,
+                        target_td,
+                        x_true_recon,
+                        obstacle_mask=input_td.get("obstacle_mask"),
+                    )
+                    if x_back is not None:
+                        eval_criterion_kwargs["x_back"] = x_back
+                        eval_criterion_kwargs["x_back_future"] = x_back_future
+
+                loss_dict = self.criterion(**eval_criterion_kwargs).metrics
+                total_losses = accumulate_losses(total_losses, loss_dict)
 
                 if self.eval_metrics and not out.x_preds.is_empty():
                     preds_denorm = dataloader.denormalize(out.x_preds)
@@ -375,8 +558,15 @@ class Trainer:
         logger.info(f"Epoch {epoch:04d} [{mode.upper()}] {metrics_str}")
 
         for key, value in metrics.items():
-            if key in self.history and mode in self.history[key]:
-                self.history[key][mode].append(value)
+            # Automatically initialize the key if it doesn't exist
+            if key not in self.history:
+                self.history[key] = {"train": [], "val": []}
+
+            # Ensure the specific mode list exists (e.g. if a metric is val-only)
+            if mode not in self.history[key]:
+                self.history[key][mode] = []
+
+            self.history[key][mode].append(value)
 
         wandb.log(self.model.timings)
 
@@ -395,6 +585,7 @@ class Trainer:
             "history": self.history,
             "model_state_dict": model_to_save.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "run_metadata": self.run_metadata,
         }
 
         cp_dir = self.output_dir / "checkpoints"
@@ -404,15 +595,43 @@ class Trainer:
         if self.save_latest_every > 0 and epoch % self.save_latest_every == 0:
             torch.save(state, cp_dir / f"epoch_{epoch}.pth")
 
+    def _setup_debug_instrumentation(self):
+        """Enable autograd anomaly mode and the per-module NaN hooks only when
+        ``debug_nan_checks`` is set (each hook forces a host sync per module)."""
+        for handle in self._nan_hook_handles:
+            handle.remove()
+        self._nan_hook_handles = []
+        torch.autograd.set_detect_anomaly(self.debug_nan_checks)
+        if not self.debug_nan_checks:
+            return
+
+        # --- THE NaN SNIPER ---
+        def nan_hook(module, inputs, outputs):
+            if isinstance(outputs, torch.Tensor) and torch.isnan(outputs).any():
+                raise RuntimeError(
+                    f"🚨 NaN originated exactly here: {module.__class__.__name__}"
+                )
+            elif isinstance(outputs, tuple):
+                for i, out in enumerate(outputs):
+                    if isinstance(out, torch.Tensor) and torch.isnan(out).any():
+                        raise RuntimeError(
+                            f"🚨 NaN originated exactly here: {module.__class__.__name__} (Output index {i})"
+                        )
+
+        # Register the hook on every single sub-module
+        for name, module in self.model.named_modules():
+            self._nan_hook_handles.append(module.register_forward_hook(nan_hook))
+        # ----------------------
+
     def run(self) -> Dict:
         logger.info(
             f"Starting training from epoch {self.start_epoch}/{self.num_epochs}"
         )
+        self._setup_debug_instrumentation()
 
         for epoch in (
             pbar := tqdm(range(self.start_epoch, self.num_epochs), desc="Epochs")
         ):
-            torch.autograd.set_detect_anomaly(True)
             self.current_epoch = epoch
 
             train_metrics = self._run_one_epoch()
@@ -464,54 +683,97 @@ class Trainer:
     def plot_and_save_history(self):
         if not self.is_main_process():
             return
-        fig, ax = plt.subplots(2, 1, figsize=(15, 12), sharex=True)
 
-        loss_keys = [k for k in self.history if "loss" in k]
-        metric_keys = [k for k in self.history if "metric" in k]
+        # Categorize keys
+        all_keys = list(self.history.keys())
+        loss_keys = sorted([k for k in all_keys if "loss" in k])
+        # External metrics (usually from self.eval_metrics)
+        metric_keys = sorted([k for k in all_keys if "metric" in k])
+        # Internal detailed metrics (e.g., latent_energy, phys_time, recon_u)
+        detail_keys = sorted(
+            [k for k in all_keys if k not in loss_keys and k not in metric_keys]
+        )
 
-        for key in loss_keys:
-            if self.history[key]["train"]:
-                ax[0].plot(self.history[key]["train"], label=f"Train {key}", alpha=0.8)
-            if self.history[key]["val"]:
-                val_epochs = range(
-                    self.start_epoch,
-                    self.start_epoch + len(self.history[key]["val"]) * self.log_epoch,
-                    self.log_epoch,
-                )
-                ax[0].plot(
-                    val_epochs,
-                    self.history[key]["val"],
-                    label=f"Val {key}",
-                    linestyle="--",
-                )
-        ax[0].set_ylabel("Loss")
-        ax[0].set_title("Training & Validation Loss")
-        ax[0].legend()
-        ax[0].grid(True, alpha=0.3)
+        # Determine how many subplots we need
+        rows = 1
+        if metric_keys:
+            rows += 1
+        if detail_keys:
+            rows += 1
 
-        if any(self.history[k]["val"] for k in metric_keys):
-            for key in metric_keys:
-                if self.history[key]["val"]:
-                    val_epochs = range(
-                        self.start_epoch,
-                        self.start_epoch
-                        + len(self.history[key]["val"]) * self.log_epoch,
-                        self.log_epoch,
+        fig, ax = plt.subplots(rows, 1, figsize=(15, 6 * rows), sharex=True)
+        if rows == 1:
+            ax = [ax]  # Ensure ax is iterable if only 1 row
+
+        # Helper to plot a group of keys on a specific axis
+        def plot_group(keys, axis, title):
+            has_data = False
+            for key in keys:
+                # Plot Train
+                if self.history[key].get("train"):
+                    axis.plot(
+                        self.history[key]["train"], label=f"Train {key}", alpha=0.7
                     )
-                    ax[1].plot(
+                    has_data = True
+
+                # Plot Val
+                if self.history[key].get("val"):
+                    val_len = len(self.history[key]["val"])
+                    # Calculate correct x-axis indices for validation steps
+                    val_epochs = [
+                        self.start_epoch + (i + 1) * self.log_epoch
+                        for i in range(val_len)
+                    ]
+                    # Handle case where validation might have run one extra time or differently
+                    # simple fallback: linspace
+                    if len(val_epochs) != val_len:
+                        val_epochs = list(range(val_len))
+
+                    axis.plot(
                         val_epochs,
                         self.history[key]["val"],
                         label=f"Val {key}",
                         linestyle="--",
+                        linewidth=2,
                     )
-            ax[1].set_ylabel("Metric Value")
-            ax[1].set_title("Validation Metrics")
-            ax[1].legend()
-            ax[1].grid(True, alpha=0.3)
+                    has_data = True
+
+            if has_data:
+                axis.set_ylabel("Value")
+                axis.set_title(title)
+                axis.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+                axis.grid(True, alpha=0.3)
+
+        # --- Plotting ---
+        current_ax_idx = 0
+
+        # 1. Main Losses
+        if loss_keys:
+            plot_group(loss_keys, ax[current_ax_idx], "Loss Functions")
+            current_ax_idx += 1
+
+        # 2. Detailed Physics/Latent Metrics
+        if detail_keys:
+            plot_group(
+                detail_keys, ax[current_ax_idx], "Detailed Diagnostics (Physics/Latent)"
+            )
+            current_ax_idx += 1
+
+        # 3. Validation Metrics
+        if metric_keys:
+            plot_group(metric_keys, ax[current_ax_idx], "Evaluation Metrics")
+            current_ax_idx += 1
 
         ax[-1].set_xlabel("Epoch")
         plt.tight_layout()
-        fig.savefig(self.output_dir / "training_history.png", dpi=300)
+
+        # Save
+        fig.savefig(
+            self.output_dir / "training_history.png", dpi=300, bbox_inches="tight"
+        )
+
+        # Save YAML
         with open(self.output_dir / "training_history.yaml", "w") as f:
             yaml.dump(self.history, f, indent=2)
+
         plt.close(fig)

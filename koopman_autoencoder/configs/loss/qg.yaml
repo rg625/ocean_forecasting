@@ -1,0 +1,18 @@
+# configs/loss/base.yaml
+
+# Prioritize reconstruction above all else right now
+alpha: 10.0           # Was 1.0. Reduce prediction weight.
+beta: 5.0         # Was 1.0. CRITICAL. Stop forcing linearity until the encoder works.
+loss_type: "l1"
+physics_weight: 1.0  # Was 1.0. Turn this OFF.
+
+# Set all these to 0.0 for the first 50 epochs
+gamma_time: 0.1     # Was 1.0
+gamma_space: 0.1     # Was 1.0
+gamma_spectral: 1.0  # Was 5.0. This was definitely killing your gradients.
+
+ssim_weight: null
+re_weight: null
+stability_weight: 0.1
+weighting_type: "uniform"
+sigma_blur: null

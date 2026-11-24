@@ -2,29 +2,35 @@ import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-
+import seaborn as sns
 from plot_color_and_name_mapping import getModelName, getFieldIndex, getColormapAndNorm
 
 plt.rcParams["pdf.fonttype"] = 42  # prevent type3 fonts in matplotlib output files
 plt.rcParams["ps.fonttype"] = 42
+# Set plotting style
+plt.style.use("seaborn-v0_8-whitegrid")
 
+cmap = sns.color_palette("icefire", as_cmap=True)
 
-datasetName = "zInterp"
+datasetName = "longer"
 modelMinMax = (0, 1)
 evalMinMax = (0, 1)
-# sequenceMinMax = (0,1)
-sequenceMinMax = (8, 9)
+sequenceMinMax = (0, 1)
+# sequenceMinMax = (8, 9)
+# frame indices; the panel label is index + 1, so "longer" ends at t = 240, the last
+# step of the 240-step rollout the paper reports.  The wide spacing used for the _play
+# variant is kept alongside it rather than overwritten.
+longerSteps = [9, 49, 129, 239]          # t =  10,  50, 130, 240
+# longerSteps = [99, 249, 749, 996]      # t = 100, 250, 750, 997   (the _play variant)
+outputSuffix = ""                        # "_play" for the variant above
 timeSteps = (
     [14, 29, 44, 59]
-    if datasetName in ["lowRey", "highRey", "varReyIn"]
-    else (
-        [9, 49, 129, 209]
-        if datasetName in ["interp", "extrap", "longer"]
-        else [9, 39, 69, 99]
-    )
+    if datasetName in ["lowRey", "highRey", "varReyIn", "interp", "extrap"]
+    else (longerSteps if datasetName in ["longer"] else [9, 39, 69, 99])
 )
 spatialZoom = (
     [[20, 84], [0, 64]]
+    # [[0, 128], [0, 64]]
     if datasetName in ["lowRey", "highRey", "varReyIn"]
     else (
         [[6, 70], [0, 64]]
@@ -32,41 +38,54 @@ spatialZoom = (
         else [[0, 40], [0, 40]]
     )
 )
-field = "vort"
+field = "pres"
 
-predictionFolder = "results/sampling/%s" % datasetName
-outputFolder = "results"
+predictionFolder = (
+    "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/results/%s"
+    % datasetName
+)
+outputFolder = "/home/rg625/mnt/ocean_forecasting/autoreg_pde_diffusion/src/results"
 
 models = {
-    "Simulation": "groundTruth.dict",
+    "Simulation": "groundTruth.dict",  # groundTruth_on_stable_only for incompressible
     # "ResNet": "resnet-m2.npz",
-    "Dil-ResNet": "dil-resnet-m2.npz",
+    # "Dil-ResNet": "dil-resnet-m2.npz",
     # "FNO16": "fno-16modes-m2.npz",
-    "FNO32": "fno-32modes-m2.npz",
+    # "FNO32": "fno-32modes-m2.npz",
     # "TF-MGN": "tf-mgn.npz",
     # "TF-Enc": "tf-enc.npz",
     # "TF-VAE": "tf-vae.npz",
     # "U-Net": "unet-m2.npz",
-    "U-Net-ut": "unet-m8.npz",
+    # "U-Net-ut": "unet-m8.npz",
     # "U-Net-tn": "unet-m2-noise0.01.npz",
-    "Refiner": "refiner-r4_std%s.npz"
-    % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
-    # "ACDM-ncn": "acdm%d_ncn.npz" % (100 if datasetName in ["zInterp"] else 20),
-    "ACDM": "acdm%d.npz" % (100 if datasetName in ["zInterp"] else 20),
+    # "Refiner": "refiner-r4_std%s.npz"
+    # % ("0.00001" if datasetName in ["zInterp"] else "0.000001"),
+    # "ACDM-ncn": "acdm-r%d_ncn.npz" % (100 if datasetName in ["zInterp"] else 20),
+    "ACDM": "acdm-r%d.npz" % (100 if datasetName in ["zInterp"] else 20),
+    "KAE": "continous_linear_128_tra.npz",
+    # "EXP": "continous_linear_128_exp.npz",
 }
 
 
 modelNames = []
 frameData = []
+gtFrames = None  # will store ground-truth frames for MSE
 
 for modelName, modelPath in models.items():
     modelNames += [modelName]
-
+    # if modelPath == "groundTruth_on_stable_only.dict":
+    #     groundTruthDict = torch.load(os.path.join(predictionFolder, "groundTruth_on_stable_only.dict"))
     if modelPath == "groundTruth.dict":
         groundTruthDict = torch.load(os.path.join(predictionFolder, "groundTruth.dict"))
         groundTruth = groundTruthDict["data"].unsqueeze(0).unsqueeze(0)
-        # obsMask = groundTruthDict["obsMask"].unsqueeze(1).unsqueeze(2).unsqueeze(0).unsqueeze(0)
-        # groundTruth = groundTruth * obsMask # ignore obstacle area
+        obsMask = (
+            groundTruthDict["obsMask"]
+            .unsqueeze(1)
+            .unsqueeze(2)
+            .unsqueeze(0)
+            .unsqueeze(0)
+        )
+        groundTruth = groundTruth * obsMask  # ignore obstacle area
         print("Original ground truth shape: %s" % (str(list(groundTruth.shape))))
         prediction = groundTruth[
             :,
@@ -80,12 +99,15 @@ for modelName, modelPath in models.items():
         prediction = torch.squeeze(
             prediction[:, :, :, :, getFieldIndex(datasetName, field)]
         )
+        # Store GT frames for MSE (shape: [T, H, W])
+        gtFrames = prediction.permute(0, 2, 1).numpy()
+        # gtFrames = prediction.permute(0, 2, 1).numpy()
         print("Loaded ground truth with shape: %s" % (str(list(prediction.shape))))
 
     else:
         fullPath = os.path.join(predictionFolder, modelPath)
         prediction = torch.from_numpy(np.load(fullPath)["arr_0"])
-        # prediction = prediction * obsMask
+        prediction = prediction * obsMask
         prediction = prediction[
             modelMinMax[0] : modelMinMax[1],
             evalMinMax[0] : evalMinMax[1],
@@ -118,22 +140,73 @@ fig, axs = plt.subplots(
     dpi=250,
     squeeze=False,
 )
+
+
+mseData = []
+assert gtFrames is not None, "Cannot iterate through empty gt."
+for i, frames in enumerate(frameData):
+    if modelNames[i] == "Simulation":
+        mseData.append([0.0 for _ in timeSteps])
+    else:
+        mse_per_t = []
+        for j in range(len(timeSteps)):
+            diff = frames[j] - gtFrames[j]
+            mse = np.mean(diff**2)
+            mse_per_t.append(mse)
+        mseData.append(mse_per_t)
+
+# Plot the frames
 for i in range(len(modelNames)):
     for j in range(len(timeSteps)):
         if i == len(modelNames) - 1:
-            axs[i, j].set_xlabel("$t=%s$" % (timeSteps[j] + 1))
+            axs[i, j].set_xlabel(f"$t={timeSteps[j]+1}$", fontsize=8)
         if j == 0:
-            axs[i, j].set_ylabel(getModelName(modelNames[i]))
+            axs[i, j].set_ylabel(getModelName(modelNames[i]), fontsize=8)
         axs[i, j].set_xticks([])
         axs[i, j].set_yticks([])
         cmap, norm = getColormapAndNorm(datasetName, field)
         im = axs[i, j].imshow(
             frameData[i][j], interpolation="nearest", cmap=cmap, norm=norm
         )
+        mse_val = mseData[i][j]
+        # axs[i, j].text(
+        #     0.5,
+        #     0.95,
+        #     f"MSE={mse_val:.2e}",
+        #     transform=axs[i, j].transAxes,
+        #     ha="center",
+        #     va="top",
+        #     fontsize=7,
+        #     color="black",
+        #     bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1.5),
+        # )
+# Reduce space between rows/columns
+fig.subplots_adjust(
+    left=0.05,
+    right=0.87,  # leave space for colorbar
+    top=0.97,
+    bottom=0.03,
+    hspace=-0.80,  # small vertical space between rows
+    wspace=0.02,  # small horizontal space between columns
+)
 
-fig.tight_layout(pad=0.4, w_pad=0.1, h_pad=0.2)
-fig.subplots_adjust(right=0.87)
-cbarAx = fig.add_axes([0.875, 0.05, 0.025, 0.92])
-fig.colorbar(im, cax=cbarAx)
-cbarAx.tick_params()
-fig.savefig("%s/data_%s_%s.pdf" % (outputFolder, datasetName, field))
+# Make colorbar exactly match the height of all rows
+# Get the positions of the first and last axes in the first column
+first_ax_pos = axs[0, 0].get_position()
+last_ax_pos = axs[-1, 0].get_position()
+cbar_ax = fig.add_axes(
+    [
+        0.88,  # x position
+        last_ax_pos.y0,  # bottom aligned with last row
+        0.025,  # width
+        first_ax_pos.y1 - last_ax_pos.y0,  # height from bottom of last to top of first
+    ]
+)
+fig.colorbar(im, cax=cbar_ax)
+cbar_ax.tick_params(labelsize=8)
+
+fig.savefig(
+    f"{outputFolder}/data_{datasetName}_{field}{outputSuffix}.pdf",
+    dpi=250,
+    bbox_inches="tight",
+)

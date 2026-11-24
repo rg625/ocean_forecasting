@@ -1,19 +1,18 @@
-# main.py
 import torch
 import torch.optim as optim
+import torch.nn as nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from pathlib import Path
 from datetime import datetime
 import wandb
 import logging
-import argparse
-from omegaconf import OmegaConf, DictConfig
-from omegaconf.errors import OmegaConfBaseException
+from omegaconf import OmegaConf, DictConfig, open_dict
 import os
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+import hydra
 
 # Refactored project imports
-from models.config_classes import Config
 from models.autoencoder import KoopmanAutoencoder
 from models.loss import KoopmanLoss
 from models.lr_schedule import CosineWarmup
@@ -25,58 +24,152 @@ from models.dataloader import (
 )
 from models.trainer import Trainer
 from models.metrics import Metric
-from models.utils import load_checkpoint, load_datasets
+from models.utils import (
+    load_checkpoint,
+    load_datasets,
+)
+from models.config_classes import Config
 
-# Configure logging for clear and informative output
+# --- Logging Setup ---
+# We use a filter to ensure only Rank 0 logs to console to avoid clutter
+class RankFilter(logging.Filter):
+    def filter(self, record):
+        return int(os.environ.get("RANK", 0)) == 0
+
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    force=True
 )
 logger = logging.getLogger(__name__)
+logger.addFilter(RankFilter())
 
 
 def setup_ddp():
     """Initializes the distributed process group."""
+    if not dist.is_available():
+        return 0, 0, 1
+        
     dist.init_process_group(backend="nccl")
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+    
     torch.cuda.set_device(local_rank)
     logger.info(f"DDP setup: Rank {rank}/{world_size}, Local Rank {local_rank}")
     return rank, local_rank, world_size
 
 
+def get_shared_run_name(rank, is_ddp):
+    """
+    Ensures all DDP ranks agree on the run name (timestamp) 
+    so they write to the same output directory.
+    """
+    if not is_ddp:
+        return f"run-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    # Container to broadcast name
+    name_obj = [None]
+    if rank == 0:
+        # If wandb is active, use its name, else generate time
+        if wandb.run and wandb.run.name:
+            name_obj[0] = wandb.run.name
+        else:
+            name_obj[0] = f"run-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    # Broadcast from rank 0 to all others
+    dist.broadcast_object_list(name_obj, src=0)
+    return name_obj[0]
+
+
+def find_and_extract_config(node, key_to_find="output_dir"):
+    """Recursively searches for a specific key in a nested DictConfig."""
+    if not isinstance(node, (dict, DictConfig)):
+        return None
+
+    if key_to_find in node:
+        return node
+
+    for key, value in node.items():
+        if isinstance(value, (dict, DictConfig)):
+            result = find_and_extract_config(value, key_to_find)
+            if result is not None:
+                return result
+    return None
+
+
 def main(cfg: DictConfig):
     """Main function to set up and run the training pipeline."""
-    # --- Distributed Training Setup ---
+
+    # --- 1. Configuration Flattening Logic (Same as original) ---
+    if "experiment" in cfg:
+        # Check if output_dir is already at root
+        if "output_dir" in cfg:
+            with open_dict(cfg):
+                del cfg["experiment"]
+        else:
+            logger.info("Config 'output_dir' missing at root. searching nested 'experiment' config...")
+            nested_config = find_and_extract_config(cfg.experiment, "output_dir")
+
+            if nested_config:
+                logger.info("Found nested configuration. Merging to root level.")
+                with open_dict(cfg):
+                    cfg = OmegaConf.merge(cfg, nested_config)
+
+            with open_dict(cfg):
+                if "experiment" in cfg:
+                    del cfg["experiment"]
+
+    # Merge with Schema
+    cfg = OmegaConf.merge(OmegaConf.structured(Config), cfg)
+
+    if OmegaConf.is_missing(cfg, "output_dir"):
+        logger.warning("Config 'output_dir' is still missing. Defaulting to 'outputs'.")
+        cfg.output_dir = "outputs"
+
+    # --- 2. Distributed Training Setup ---
     is_ddp = "WORLD_SIZE" in os.environ
     rank, local_rank, world_size = setup_ddp() if is_ddp else (0, 0, 1)
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
-    # --- W&B Initialization (only on main process) ---
+    # --- 3. W&B Initialization (Rank 0 only) ---
     if rank == 0:
-        try:
-            wandb.init(
-                project="koopman-autoencoder",
-                config=OmegaConf.to_container(cfg, resolve=True),
-                name=f"run-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            )
-            logger.info("Weights & Biases initialized.")
-        except Exception as e:
-            logger.error(f"Failed to initialize W&B: {e}. Running without logging.")
-            # Disable wandb if it fails, preventing crashes
-            wandb.init(mode="disabled")
+        logger.info(f"Initializing WandB on Rank {rank}...")
+        
+        # Ensure the directory exists BEFORE wandb tries to use it
+        wandb_dir = Path(cfg.output_dir).absolute()
+        wandb_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize WITHOUT a broad try/except first to see the error
+        wandb.init(
+            project="koopman-autoencoder",
+            # [FIX] Explicitly set dir to avoid Hydra path confusion
+            dir=str(wandb_dir), 
+            # [FIX] Convert config to standard dict to prevent serialization errors
+            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True),
+            name=f"run-{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            # [FIX] Allow re-initialization if script is called repeatedly
+            reinit=True,
+            # [FIX] Resume allows proper recovery if the run ID persists
+            resume="allow",
+        )
+        logger.info(f"Weights & Biases initialized. Run ID: {wandb.run.id}")
 
-    # --- Output Directory (only on main process) ---
-    output_dir = (
-        Path(cfg.output_dir) / wandb.run.name
-        if rank == 0 and wandb.run
-        else Path(cfg.output_dir) / "local_run"
-    )
+    # --- 4. Consistent Output Directory ---
+    # Sync run name across all GPUs so they point to the same folder
+    run_name = get_shared_run_name(rank, is_ddp)
+    
+    output_dir = Path(cfg.output_dir) / run_name
+
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Output directory: {output_dir}")
+    
+    # Wait for Rank 0 to create the directory
+    if is_ddp:
+        dist.barrier()
 
-    # --- Dataset and DataLoader Creation ---
+    # --- 5. Dataset and DataLoader Creation ---
     logger.info("Loading datasets...")
     try:
         train_dataset, val_dataset, test_dataset = load_datasets(cfg)
@@ -100,7 +193,7 @@ def main(cfg: DictConfig):
         )
     logger.info("Dataloaders created.")
 
-    # --- Model Initialization ---
+    # --- 6. Model Initialization ---
     logger.info("Initializing KoopmanAutoencoder model...")
     try:
         model = KoopmanAutoencoder(
@@ -109,57 +202,94 @@ def main(cfg: DictConfig):
             height=cfg.model.height,
             width=cfg.model.width,
             latent_dim=cfg.model.latent_dim,
+            cond_embedding_dim=cfg.model.cond_embedding_dim,
+            cond_type=cfg.model.cond_type,
+            operator_mode=cfg.model.operator_mode,
             hidden_dims=cfg.model.hidden_dims,
             transformer_config=cfg.model.transformer,
             use_checkpoint=cfg.training.use_checkpoint,
             predict_cond=cfg.model.predict_cond,
             cond_grad_enabled=cfg.model.cond_grad_enabled,
+            disturb_std=cfg.model.disturb_std,
+            is_continuous=cfg.model.is_continuous,
             rank=cfg.model.rank,
+            cond_expansion_type=cfg.data.selection_param,
+            use_attention=cfg.model.use_attention,
             **cfg.model.conv_kwargs,
         ).to(device)
+
         if is_ddp:
-            model = DDP(model, device_ids=[local_rank])
+            # Crucial for DDP convergence: Sync Batch Norm stats across GPUs
+            model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            # find_unused_parameters=True is safer for complex models with conditional logic
+            model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)
+            
     except Exception as e:
         logger.critical(f"Model initialization failed: {e}", exc_info=True)
         exit(1)
 
-    # --- Optimizer, Loss, Metrics, and Scheduler ---
+    # --- 7. Optimizer, Loss, Metrics, Scheduler ---
     model_params = model.module.parameters() if is_ddp else model.parameters()
-    optimizer = optim.Adam(model_params, lr=cfg.lr_scheduler.lr)
-    criterion = KoopmanLoss(**cfg.loss)
+    optimizer = optim.AdamW(model_params, lr=cfg.lr_scheduler.lr, weight_decay=1e-4)
+    
+    if cfg.loss.get("ssim_weight", None) is not None:
+        criterion = KoopmanLoss(to_unit_range=train_dataset.to_unit_range, **cfg.loss)
+    else:
+        criterion = KoopmanLoss(**cfg.loss)
+        
     eval_metrics = Metric(**cfg.metric) if cfg.metric else None
 
-    # --- Learning Rate Scheduler ---
     logger.info("Initializing learning rate scheduler...")
     try:
         scheduler_args = OmegaConf.to_container(cfg.lr_scheduler, resolve=True)
-        # Remove the 'lr' key as it's not a direct argument for CosineWarmup constructor
         scheduler_args.pop("lr", None)
+
+        if "warmup" not in scheduler_args:
+            logger.warning("'warmup' not found in scheduler args. Attempting recovery.")
+            scheduler_args["warmup"] = getattr(cfg.lr_scheduler, "warmup", 0)
+
         lr_scheduler = CosineWarmup(optimizer=optimizer, **scheduler_args)
-        logger.info("Learning rate scheduler initialized.")
     except Exception as e:
         logger.critical(f"Failed to initialize LR scheduler: {e}", exc_info=True)
         exit(1)
 
-    # --- Checkpoint Loading ---
+    # --- 8. Checkpoint Loading ---
     start_epoch = 0
     if cfg.ckpt:
         logger.info(f"Attempting to load checkpoint from: {cfg.ckpt}")
         model_to_load = model.module if is_ddp else model
+        
         try:
-            _, _, _, start_epoch = load_checkpoint(cfg.ckpt, model_to_load, optimizer)
+            # load_checkpoint should handle map_location internally, 
+            # or we rely on the fact that model is already on device.
+            _, _, _, start_epoch = load_checkpoint(
+                cfg.ckpt, model_to_load, optimizer, strict=True
+            )
+            
             # Ensure optimizer state is on the correct device after loading
             for state in optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(device)
-        except RuntimeError as e:
-            logger.critical(
-                f"Fatal checkpoint loading error: {e}. Exiting.", exc_info=True
+
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = cfg.lr_scheduler.lr
+                param_group["initial_lr"] = cfg.lr_scheduler.lr
+
+            # Re-init scheduler to match resumed state
+            lr_scheduler = CosineWarmup(
+                optimizer=optimizer,
+                warmup=0, 
+                decay=cfg.lr_scheduler.decay,
+                final_lr=cfg.lr_scheduler.final_lr,
+                last_epoch=cfg.lr_scheduler.last_epoch,
             )
+            logger.info(f"Checkpoint loaded. Resuming at epoch {start_epoch}")
+        except RuntimeError as e:
+            logger.critical(f"Fatal checkpoint loading error: {e}. Exiting.", exc_info=True)
             exit(1)
 
-    # --- Trainer Initialization ---
+    # --- 9. Trainer Initialization ---
     logger.info("Initializing Trainer...")
     try:
         trainer = Trainer(
@@ -178,29 +308,32 @@ def main(cfg: DictConfig):
             log_epoch=cfg.log_epoch,
             save_latest_every=cfg.training.save_latest_every,
             num_visual_batches=cfg.training.num_visual_batches,
+            precision=cfg.training.precision,
         )
         logger.info("Trainer initialized.")
     except Exception as e:
         logger.critical(f"Trainer initialization failed: {e}", exc_info=True)
         exit(1)
 
-    # --- Run Training ---
+    # --- 10. Run Training ---
     logger.info(f"Starting training from epoch {start_epoch}...")
-    try:
-        history = trainer.run()
-        logger.info("Training finished successfully.")
-    except Exception as e:
-        logger.critical(f"Unhandled error during training: {e}", exc_info=True)
-        exit(1)
+    with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+        try:
+            history = trainer.run()
+            logger.info("Training finished successfully.")
+        except Exception as e:
+            logger.critical(f"Unhandled error during training: {e}", exc_info=True)
+            exit(1)
 
-    # --- Final Evaluation and Saving (on main process) ---
+    # --- 11. Final Evaluation and Saving (Rank 0 Only) ---
     if rank == 0:
         logger.info("Evaluating final model on the test set...")
         test_metrics = trainer.evaluate(
             test_loader, epoch=trainer.current_epoch, mode="test"
         )
         logger.info(f"Test Metrics: {test_metrics}")
-        wandb.log({"test/final_metrics": test_metrics})
+        if wandb.run:
+            wandb.log({"test/final_metrics": test_metrics})
 
         logger.info("Saving final model and artifacts...")
         final_model_path = output_dir / "final_model.pth"
@@ -229,33 +362,25 @@ def main(cfg: DictConfig):
 
         torch.save(save_data, final_model_path)
         logger.info(f"Final model saved to {final_model_path}")
-        wandb.save(str(final_model_path))
+        if wandb.run:
+            wandb.save(str(final_model_path))
+            wandb.finish()
 
+    # Cleanup DDP
     if is_ddp:
         dist.destroy_process_group()
-    if rank == 0:
-        wandb.finish()
     logger.info("Script finished.")
 
 
+@hydra.main(version_base=None, config_path="configs", config_name="experiment/base")
+def hydra_train(cfg: DictConfig):
+    """
+    Main entry point for Hydra.
+    """
+    # Prevent duplicate logging from Hydra
+    logger.info("Hydra initialized. Starting main execution...")
+    main(cfg)
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Koopman Autoencoder")
-    parser.add_argument(
-        "--config", type=str, required=True, help="Path to YAML config file"
-    )
-    args, unknown_args = parser.parse_known_args()
-
-    try:
-        base_config = OmegaConf.structured(Config)
-        file_config = OmegaConf.load(args.config)
-        cli_config = OmegaConf.from_cli(unknown_args)
-
-        cfg = OmegaConf.merge(base_config, file_config, cli_config)
-        OmegaConf.resolve(cfg)
-
-        logger.info(f"Configuration loaded and merged:\n{OmegaConf.to_yaml(cfg)}")
-        main(cfg)
-
-    except (FileNotFoundError, OmegaConfBaseException) as e:
-        logger.critical(f"Configuration setup failed: {e}", exc_info=True)
-        exit(1)
+    hydra_train()

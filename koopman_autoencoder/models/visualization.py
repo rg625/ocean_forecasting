@@ -1,3 +1,4 @@
+# ruff: noqa: F841
 # models/utils.py
 
 import numpy as np
@@ -536,6 +537,146 @@ def plot_rollout(gt_dict, pred_dict, variable_name, frame_stride=5):
     plt.show()
 
 
+def plot_ks_rollout(gt_dict, pred_dict, variable_name="u", L=64.0):
+    """
+    Plots a simplified KS rollout comparison:
+    - Row 0: GT and Prediction heatmaps
+    - Row 1: Overlayed snapshots (GT vs Pred)
+
+    Focus: clean visual comparison instead of redundancy.
+    """
+
+    # ─── 1. Extract and Squeeze Data ────────────────────────────────────────────
+    if gt_dict.batch_dims == 1 and gt_dict.batch_size[0] == 1:
+        gt_dict = gt_dict.squeeze(0)
+    if pred_dict.batch_dims == 1 and pred_dict.batch_size[0] == 1:
+        pred_dict = pred_dict.squeeze(0)
+
+    gt = np.squeeze(gt_dict[variable_name].cpu().numpy())
+    pred = np.squeeze(pred_dict[variable_name].cpu().numpy())
+
+    # ─── 2. Match Lengths ───────────────────────────────────────────────────────
+    min_len = min(gt.shape[0], pred.shape[0])
+    gt = gt[:min_len]
+    pred = pred[:min_len]
+
+    print(f"Stats for {variable_name} (Length: {min_len}):")
+    print(
+        f"GT   | Min: {gt.min():.4f}, Max: {gt.max():.4f}, Mean: {gt.mean():.4f}, Std: {gt.std():.4f}"
+    )
+    print(
+        f"Pred | Min: {pred.min():.4f}, Max: {pred.max():.4f}, Mean: {pred.mean():.4f}, Std: {pred.std():.4f}"
+    )
+
+    err = np.abs(gt - pred)
+
+    # ─── 3. Setup Variables ─────────────────────────────────────────────────────
+    T, n_x = gt.shape
+    x_space = np.linspace(0, L, n_x, endpoint=False)
+    t_space = np.arange(T)
+
+    vmax = np.percentile(np.abs(gt), 99)
+    snaps = [0.0, 0.25, 0.5, 0.75, 1.0]
+    snap_idx = [int(f * (T - 1)) for f in snaps]
+
+    # Dynamic sizing
+    time_to_space_ratio = T / n_x
+    plot_width = max(4.0, min(25.0, time_to_space_ratio * 4.0))
+
+    fig_width = (plot_width * 2) + 1.5
+    fig_height = 8.0
+
+    # ─── 4. GridSpec Layout ─────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    gs = fig.add_gridspec(2, 2, height_ratios=[3, 1.5], hspace=0.4, wspace=0.3)
+
+    # ─── Row 0: Heatmaps ────────────────────────────────────────────────────────
+    titles = ["Ground Truth", "Prediction"]
+    data_arrays = [gt, pred]
+
+    for i, (data, title) in enumerate(zip(data_arrays, titles)):
+        ax = fig.add_subplot(gs[0, i])
+
+        im = ax.imshow(
+            data.T,
+            aspect="auto",
+            origin="lower",
+            extent=[t_space[0], t_space[-1], 0, L],
+            cmap="RdBu_r",
+            vmin=-vmax,
+            vmax=vmax,
+        )
+
+        fig.colorbar(im, ax=ax, shrink=0.8)
+        ax.set_xlabel("t")
+        ax.set_ylabel("x")
+        ax.set_title(title)
+
+    # ─── Row 1: Overlayed Snapshots ─────────────────────────────────────────────
+    ax_snap = fig.add_subplot(gs[1, :])
+    colors = plt.cm.viridis(np.linspace(0, 1, len(snap_idx)))
+
+    for si, color in zip(snap_idx, colors):
+        # Ground Truth (solid)
+        ax_snap.plot(
+            x_space, gt[si], lw=1.5, color=color, label=f"GT t={t_space[si]:.1f}"
+        )
+
+        # Prediction (dashed)
+        ax_snap.plot(
+            x_space,
+            pred[si],
+            lw=1.5,
+            ls="--",
+            color=color,
+            label=f"Pred t={t_space[si]:.1f}",
+        )
+
+        # Optional: faint error curve
+        ax_snap.plot(x_space, gt[si] - pred[si], lw=1.0, color=color, alpha=0.25)
+
+    ax_snap.set_xlabel("x")
+    ax_snap.set_ylabel("u(x,t)")
+    ax_snap.set_title("GT vs Prediction Snapshots")
+
+    ax_snap.legend(fontsize=7, ncol=2)
+
+    # ─── Final Layout ───────────────────────────────────────────────────────────
+    plt.suptitle(
+        f"1D Kuramoto-Sivashinsky Rollout (Variable: {variable_name})", fontsize=16
+    )
+
+    plt.show()
+
+
+def plot_assimilation_comparison(gt, standard_pred, assimilated_pred):
+    plt.figure(figsize=(12, 4))
+
+    # Assuming 'u' is 64 spatial points
+    x_axis = np.arange(64)
+
+    plt.plot(
+        x_axis, gt.cpu().numpy().flatten(), "k-", label="Ground Truth", linewidth=2
+    )
+    plt.plot(
+        x_axis,
+        standard_pred.cpu().numpy().flatten(),
+        "r--",
+        label="Standard Prediction",
+    )
+    plt.plot(
+        x_axis,
+        assimilated_pred.cpu().numpy().flatten(),
+        "g--",
+        label="Assimilated Prediction",
+    )
+
+    plt.title("Data Assimilation Comparison")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
 def plot_model_rollouts(
     models,
     gt_dict,
@@ -772,30 +913,15 @@ def run_full_analysis(
 ) -> Dict:
     """
     Unified workflow: load GT/KAE/ACDM, apply optional obstacle mask, compute MSE,
-    and generate plots.
-
-    Saves figures and CSVs in structured folders.
-
-    Args:
-        gt_path: path to ground truth tensor (torch .pt)
-        kae_path: path to KAE predictions (.npz)
-        acdm_path: path to ACDM predictions (.npz)
-        output_folder: base folder to save results
-        obstacle_mask: 2D array (H, W) or None
-        sequence_idx: which sequence to visualize
-        time_idx: which timestep to visualize
-        channel_idx: which channel to visualize
-        model_label: label for saving files
-        dataset_label: label for dataset
-        regime: experimental regime
-        save_metadata: whether to save metadata CSV
-
-    Returns:
-        dict with masked arrays, MSE, and Mach numbers
+    and generate plots including MSE vs Mach, Temporal MSE, and Distributions.
     """
+
+    sns.set_context("talk")
+    sns.set_style("whitegrid")
 
     fields = ["v_x", "v_y", "p", "rho"] if regime == "tra" else ["v_x", "v_y", "p"]
     cond = "Mach" if regime == "tra" else "Re"
+
     # --- Setup directories ---
     BASE_RESULTS = Path(output_folder)
     RESULTS_DIR = BASE_RESULTS / dataset_label / model_label
@@ -820,16 +946,11 @@ def run_full_analysis(
     if obstacle_mask is None:
         obstacle_mask = np.ones((H, W))
 
-    # Ensure mask broadcasting works for arbitrary leading dims
     def apply_mask(data: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """
-        Apply obstacle mask to the first C-1 channels of any data array.
-        Last two dims must be H x W.
-        """
         data_masked = np.copy(data)
         mask_bc = mask
         for _ in range(data_masked.ndim - 2):
-            mask_bc = mask_bc[None, ...]  # add leading axes
+            mask_bc = mask_bc[None, ...]
         data_masked[..., :-1, :, :] *= mask_bc
         return data_masked
 
@@ -838,20 +959,22 @@ def run_full_analysis(
     kae_masked_all = apply_mask(kae_data, obstacle_mask)
     acdm_masked_all = apply_mask(acdm_data, obstacle_mask)
 
-    # --- Compute per-sample, per-field, per-time MSE ---
+    # --- Compute per-sample, per-field, per-time MSE (Shape: N_seq, T, C-1) ---
     kae_mse = np.mean(
-        (kae_masked_all[..., :-1, :, :] - gt_masked_all[..., :-1, :, :]) ** 2,
+        (kae_masked_all[0, 0, ..., :-1, :, :] - gt_masked_all[0, 0, ..., :-1, :, :])
+        ** 2,
         axis=(-2, -1),
-    )[0, 0]
+    )
     acdm_mse = np.mean(
-        (acdm_masked_all[..., :-1, :, :] - gt_masked_all[..., :-1, :, :]) ** 2,
+        (acdm_masked_all[0, 0, ..., :-1, :, :] - gt_masked_all[0, 0, ..., :-1, :, :])
+        ** 2,
         axis=(-2, -1),
-    )[0, 0]
+    )
 
     # --- Extract Mach numbers ---
     Mach_numbers = np.round(kae_data[0, 0, :, 0, -1, 0, 0].astype(float), 2)
 
-    # --- Field comparison + error ---
+    # --- 1. Visual Comparison + Error Field ---
     gt_vx = gt_data[sequence_idx, time_idx, channel_idx, :, :]
     kae_vx = kae_masked_all[0, 0, sequence_idx, time_idx, channel_idx, :, :]
     acdm_vx = acdm_masked_all[0, 0, sequence_idx, time_idx, channel_idx, :, :]
@@ -862,36 +985,36 @@ def run_full_analysis(
 
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
     axes[0, 0].imshow(gt_vx.T, origin="lower")
-    axes[0, 0].set_title("GT v_x")
+    axes[0, 0].set_title("GT Field")
     axes[0, 1].imshow(kae_vx.T, origin="lower")
-    axes[0, 1].set_title("KAE v_x")
+    axes[0, 1].set_title("KAE Prediction")
     axes[0, 2].imshow(acdm_vx.T, origin="lower")
-    axes[0, 2].set_title("ACDM v_x")
-    axes[1, 0].imshow(
+    axes[0, 2].set_title("ACDM Prediction")
+
+    _ = axes[1, 0].imshow(
         error_kae.T, origin="lower", cmap="coolwarm", vmin=vmin, vmax=vmax
     )
-    axes[1, 0].set_title("KAE - GT")
-    axes[1, 1].imshow(
+    axes[1, 0].set_title("KAE Error")
+    im2 = axes[1, 1].imshow(
         error_acdm.T, origin="lower", cmap="coolwarm", vmin=vmin, vmax=vmax
     )
-    axes[1, 1].set_title("ACDM - GT")
-    axes[1, 2].imshow(gt_vx.T, origin="lower")
-    axes[1, 2].set_title("GT diagnostic")
+    axes[1, 1].set_title("ACDM Error")
+    axes[1, 2].axis("off")
+    fig.colorbar(im2, ax=axes[1, :], shrink=0.6, label="Error")
     save_figure(fig, DIR_FIELD / "comparison_field_error.png")
 
-    # --- MSE vs Mach (bar + line) ---
+    # --- 2. MSE vs Mach (Bar + Facet Line) ---
     df_list = []
-    for model_name, mse_data in zip(
-        ["KAE", "ACDM"], [kae_mse.mean(axis=1), acdm_mse.mean(axis=1)]
-    ):
+    for model_name, mse_arr in zip(["KAE", "ACDM"], [kae_mse, acdm_mse]):
+        mse_per_sample_field = mse_arr.mean(axis=1)  # (N_seq, C)
         for i in range(N_seq):
             for j, field in enumerate(fields):
                 df_list.append(
                     {
                         "Model": model_name,
-                        "Mach": Mach_numbers[i],
+                        cond: Mach_numbers[i],
                         "Field": field,
-                        "MSE": mse_data[i, j],
+                        "MSE": mse_per_sample_field[i, j],
                     }
                 )
     df_mach = pd.DataFrame(df_list)
@@ -899,14 +1022,26 @@ def run_full_analysis(
 
     fig = plt.figure(figsize=(10, 6))
     sns.barplot(
-        data=df_mach, x="Mach", y="MSE", hue="Model", errorbar="sd", palette="Set2"
+        data=df_mach, x=cond, y="MSE", hue="Model", errorbar="sd", palette="Set2"
     )
     plt.yscale("log")
-    plt.title("Field-wise MSE vs Mach")
+    plt.title(f"Field-averaged MSE vs {cond}")
     save_figure(fig, DIR_MACH / f"bar_mse_vs_{cond}.png")
 
-    # --- Temporal MSE ---
-    kae_time_field = kae_mse.mean(axis=0)
+    g = sns.FacetGrid(
+        df_mach, col="Field", hue="Model", sharey=False, height=4, aspect=1.2
+    )
+    g.map(sns.lineplot, cond, "MSE", marker="o")
+    g.add_legend()
+    for ax in g.axes.flat:
+        ax.set_yscale("log")
+    g.fig.subplots_adjust(top=0.85)
+    g.fig.suptitle(f"MSE vs {cond} Number per Field")
+    g.savefig(DIR_MACH / f"fieldwise_mse_vs_{cond}.png", dpi=200)
+    plt.close()
+
+    # --- 3. Temporal MSE ---
+    kae_time_field = kae_mse.mean(axis=0)  # (T, C)
     acdm_time_field = acdm_mse.mean(axis=0)
     fig = plt.figure(figsize=(10, 6))
     for j, field in enumerate(fields):
@@ -915,32 +1050,25 @@ def run_full_analysis(
     plt.yscale("log")
     plt.xlabel("Timestep")
     plt.ylabel("Mean MSE")
-    plt.legend()
-    plt.title("Temporal MSE")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.title("Temporal Evolution of MSE")
     save_figure(fig, DIR_TEMPORAL / "temporal_mse.png")
 
-    # --- Distribution of per-sample MSE ---
-    kae_mse_flat = kae_mse.reshape(-1)
-    acdm_mse_flat = acdm_mse.reshape(-1)
+    # --- 4. Distribution of per-sample MSE (Violin) ---
+    # Flattening into (N_seq * T * C) long-form
+    df_dist_list = []
+    for model_name, mse_arr in zip(["KAE", "ACDM"], [kae_mse, acdm_mse]):
+        for i in range(N_seq):
+            for t in range(T):
+                for j, field in enumerate(fields):
+                    df_dist_list.append(
+                        {"Model": model_name, "Field": field, "MSE": mse_arr[i, t, j]}
+                    )
 
-    Mach_repeated = np.repeat(Mach_numbers, T * len(fields))
-    Field_repeated = np.tile(np.repeat(fields, T), N_seq)
-    Model_repeated = np.concatenate(
-        [np.repeat("KAE", len(kae_mse_flat)), np.repeat("ACDM", len(acdm_mse_flat))]
-    )
-
-    df_dist = pd.DataFrame(
-        {
-            "Mach": np.concatenate([Mach_repeated, Mach_repeated]),
-            "Field": np.concatenate([Field_repeated, Field_repeated]),
-            "Model": Model_repeated,
-            "MSE": np.concatenate([kae_mse_flat, acdm_mse_flat]),
-        }
-    )
-
+    df_dist = pd.DataFrame(df_dist_list)
     df_dist.replace([np.inf, -np.inf], np.nan, inplace=True)
     df_dist.dropna(subset=["MSE"], inplace=True)
-    df_dist["log_MSE"] = np.log10(df_dist["MSE"].clip(1e-12))
+    df_dist["log_MSE"] = np.log10(df_dist["MSE"].clip(lower=1e-4))
     df_dist.to_csv(DIR_DIST / "mse_distribution.csv", index=False)
 
     fig = plt.figure(figsize=(10, 6))
@@ -952,10 +1080,11 @@ def run_full_analysis(
         inner="quartile",
         cut=2,
         bw_adjust=0.5,
+        palette="Set2",
     )
-    plt.title("Distribution of Field-wise MSE")
-    fig.savefig(DIR_DIST / "violin_mse_distribution.png", dpi=200)
-    plt.close(fig)
+    plt.ylabel("log10(MSE)")
+    plt.title("MSE Distribution across all Timesteps/Simulations")
+    save_figure(fig, DIR_DIST / "violin_mse_distribution.png")
 
     # --- Metadata ---
     if save_metadata:
@@ -968,7 +1097,7 @@ def run_full_analysis(
             "Fields": ", ".join(fields),
         }
         pd.Series(metadata).to_csv(RESULTS_DIR / "metadata.csv")
-        print("[saved] metadata.csv")
+        print(f"[saved] metadata to {RESULTS_DIR}")
 
     return {
         "gt_masked_all": gt_masked_all,
